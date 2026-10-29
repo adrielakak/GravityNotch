@@ -280,6 +280,128 @@ final class ImageProcessingService {
         return tempURL
     }
     
+    // MARK: - Extract Text (OCR - Droppy Feature)
+
+    /// Checks if a URL is an image or PDF suitable for OCR text extraction
+    func isOCRCompatible(_ url: URL) -> Bool {
+        if isImageFile(url) { return true }
+        guard let contentType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType else {
+            return url.pathExtension.lowercased() == "pdf"
+        }
+        return contentType.conforms(to: .pdf)
+    }
+
+    /// Extracts text from an image or PDF using Vision framework (VNRecognizeTextRequest)
+    func extractText(from url: URL) async throws -> String {
+        if url.pathExtension.lowercased() == "pdf" || ((try? url.resourceValues(forKeys: [.contentTypeKey]).contentType?.conforms(to: .pdf)) == true) {
+            if let pdf = PDFDocument(url: url) {
+                if let directText = pdf.string?.trimmingCharacters(in: .whitespacesAndNewlines), !directText.isEmpty {
+                    return directText
+                }
+                var pageTexts: [String] = []
+                for idx in 0..<min(pdf.pageCount, 10) {
+                    if let page = pdf.page(at: idx) {
+                        let pageRect = page.bounds(for: .mediaBox)
+                        let img = page.thumbnail(of: NSSize(width: pageRect.width * 2, height: pageRect.height * 2), for: .mediaBox)
+                        if let recognized = try? await recognizeText(in: img), !recognized.isEmpty {
+                            pageTexts.append(recognized)
+                        }
+                    }
+                }
+                let combined = pageTexts.joined(separator: "\n\n")
+                if !combined.isEmpty { return combined }
+            }
+        }
+
+        guard let inputImage = NSImage(contentsOf: url) else {
+            throw ImageProcessingError.invalidImage
+        }
+        return try await recognizeText(in: inputImage)
+    }
+
+    func recognizeText(in image: NSImage) async throws -> String {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            throw ImageProcessingError.invalidImage
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let request = VNRecognizeTextRequest { req, err in
+                    if let err = err {
+                        continuation.resume(throwing: err)
+                        return
+                    }
+                    let observations = (req.results as? [VNRecognizedTextObservation]) ?? []
+                    let lines = observations.compactMap { $0.topCandidates(1).first?.string }
+                    continuation.resume(returning: lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = true
+
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                do {
+                    try handler.perform([request])
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func presentOCRResultModal(text: String, sourceName: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "No Text Found"
+            alert.informativeText = "No readable text was detected in \"\(sourceName)\"."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(trimmed, forType: .string)
+
+        let alert = NSAlert()
+        alert.messageText = "Extracted Text (OCR) — Copied to Clipboard"
+        alert.informativeText = "From \"\(sourceName)\" (\(trimmed.count) characters):"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Done")
+        alert.addButton(withTitle: "Save to Shelf (.txt)")
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
+        scrollView.hasVerticalScroller = true
+        scrollView.borderType = .bezelBorder
+
+        let textView = NSTextView(frame: scrollView.bounds)
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.string = trimmed
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        scrollView.documentView = textView
+
+        alert.accessoryView = scrollView
+        let response = alert.runModal()
+        let finalString = textView.string
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(finalString, forType: .string)
+
+        if response == .alertSecondButtonReturn {
+            Task { @MainActor in
+                let baseName = (sourceName as NSString).deletingPathExtension
+                let data = Data(finalString.utf8)
+                if let tempURL = await TemporaryFileStorageService.shared.createTempFile(for: .data(data, suggestedName: "\(baseName)_ocr.txt")),
+                   let bookmark = try? Bookmark(url: tempURL) {
+                    let item = ShelfItem(kind: .file(bookmark: bookmark.data), isTemporary: true)
+                    ShelfStateViewModel.shared.add([item])
+                }
+            }
+        }
+    }
+
     // MARK: - Helper Methods
     
     /// Checks if a URL is an image file

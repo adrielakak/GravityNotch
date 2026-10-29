@@ -319,14 +319,24 @@ final class ShelfItemViewModel: ObservableObject {
 
         menu.addItem(NSMenuItem.separator())
         addMenuItem(title: "Share…")
+        if !selectedFileURLs.isEmpty {
+            addMenuItem(title: "Quickshare Link (0x0.st)")
+        }
         
         // Add image processing options for image files grouped under "Image Actions"
         let imageURLs = selectedFileURLs.filter { ImageProcessingService.shared.isImageFile($0) }
+        let ocrURLs = selectedFileURLs.filter { ImageProcessingService.shared.isOCRCompatible($0) }
         if !imageURLs.isEmpty {
             menu.addItem(NSMenuItem.separator())
 
             let imageActions = NSMenuItem(title: "Image Actions", action: nil, keyEquivalent: "")
             let imageSubmenu = NSMenu()
+
+            // Extract Text (OCR) - Droppy feature
+            if imageURLs.count == 1 {
+                let extractOCR = NSMenuItem(title: "Extract Text (OCR)", action: nil, keyEquivalent: "")
+                imageSubmenu.addItem(extractOCR)
+            }
 
             // Remove Background - only for single images
             if imageURLs.count == 1 {
@@ -346,6 +356,10 @@ final class ShelfItemViewModel: ObservableObject {
 
             imageActions.submenu = imageSubmenu
             menu.addItem(imageActions)
+            menu.addItem(NSMenuItem.separator())
+        } else if ocrURLs.count == 1 {
+            menu.addItem(NSMenuItem.separator())
+            addMenuItem(title: "Extract Text (OCR)")
             menu.addItem(NSMenuItem.separator())
         }
 
@@ -477,6 +491,17 @@ final class ShelfItemViewModel: ObservableObject {
 
             case "Share…":
                 viewModel.shareItem(from: view)
+
+            case "Quickshare Link (0x0.st)":
+                let selected = ShelfSelectionModel.shared.selectedItems(in: ShelfStateViewModel.shared.items)
+                let fileURLs = selected.compactMap { $0.fileURL }
+                guard !fileURLs.isEmpty else { break }
+                Task {
+                    await QuickShareService.shared.uploadTo0x0(urls: fileURLs)
+                }
+
+            case "Extract Text (OCR)":
+                handleExtractTextOCR()
 
             case "Rename":
                 let selected = ShelfSelectionModel.shared.selectedItems(in: ShelfStateViewModel.shared.items)
@@ -787,6 +812,27 @@ final class ShelfItemViewModel: ObservableObject {
             }
         }
         
+        @MainActor
+        private func handleExtractTextOCR() {
+            let selected = ShelfSelectionModel.shared.selectedItems(in: ShelfStateViewModel.shared.items)
+            let ocrURLs = selected.compactMap { $0.fileURL }.filter { ImageProcessingService.shared.isOCRCompatible($0) }
+            guard let targetURL = ocrURLs.first else { return }
+
+            Task {
+                do {
+                    let recognized = try await targetURL.accessSecurityScopedResource { scoped in
+                        try await ImageProcessingService.shared.extractText(from: scoped)
+                    }
+                    ImageProcessingService.shared.presentOCRResultModal(
+                        text: recognized,
+                        sourceName: targetURL.lastPathComponent
+                    )
+                } catch {
+                    showErrorAlert(title: "OCR Extraction Failed", message: error.localizedDescription)
+                }
+            }
+        }
+
         @MainActor
         private func handleRemoveBackground() {
             let selected = ShelfSelectionModel.shared.selectedItems(in: ShelfStateViewModel.shared.items)

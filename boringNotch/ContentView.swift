@@ -23,6 +23,8 @@ struct ContentView: View {
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var brightnessManager = BrightnessManager.shared
     @ObservedObject var volumeManager = VolumeManager.shared
+    @ObservedObject var clipboardManager = DroppyClipboardManager.shared
+    @ObservedObject var agentMonitor = AntigravityAgentMonitor.shared
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -290,6 +292,21 @@ struct ContentView: View {
                       } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music) && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle) && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed {
                           MusicLiveActivity()
                               .frame(alignment: .center)
+                      } else if !coordinator.expandingView.show && vm.notchState == .closed && (!musicManager.isPlaying && musicManager.isPlayerIdle) && agentMonitor.isActive && !vm.hideOnClosed {
+                          HStack(spacing: 0) {
+                              Image(systemName: "sparkles")
+                                  .font(.system(size: 11, weight: .bold))
+                                  .foregroundStyle(.purple)
+                                  .frame(width: max(0, vm.effectiveClosedNotchHeight - 12), height: max(0, vm.effectiveClosedNotchHeight - 12))
+                              Rectangle()
+                                  .fill(.black)
+                                  .frame(width: vm.closedNotchSize.width - cornerRadiusInsets.closed.top)
+                              Text("\(Int(agentMonitor.contextPercentage))%")
+                                  .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                  .foregroundStyle(.cyan)
+                                  .frame(width: max(0, vm.effectiveClosedNotchHeight - 4), height: max(0, vm.effectiveClosedNotchHeight - 12))
+                          }
+                          .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
                       } else if !coordinator.expandingView.show && vm.notchState == .closed && (!musicManager.isPlaying && musicManager.isPlayerIdle) && Defaults[.showNotHumanFace] && !vm.hideOnClosed  {
                           BoringFaceAnimation()
                        } else if vm.notchState == .open {
@@ -349,6 +366,10 @@ struct ContentView: View {
                         NotchHomeView(albumArtNamespace: albumArtNamespace)
                     case .shelf:
                         ShelfView()
+                    case .clipboard:
+                        ClipboardNotchView()
+                    case .agents:
+                        AgentsNotchView()
                     }
                 }
                 .transition(

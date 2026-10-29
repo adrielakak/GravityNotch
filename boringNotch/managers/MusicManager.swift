@@ -341,26 +341,36 @@ class MusicManager: ObservableObject {
     }
 
     // MARK: - Lyrics
+    func refreshLyrics() {
+        guard !songTitle.isEmpty else { return }
+        fetchLyricsIfAvailable(bundleIdentifier: bundleIdentifier, title: songTitle, artist: artistName)
+    }
+
     private func fetchLyricsIfAvailable(bundleIdentifier: String?, title: String, artist: String) {
-        guard Defaults[.enableLyrics], !title.isEmpty else {
+        guard !title.isEmpty else {
             DispatchQueue.main.async {
                 self.isFetchingLyrics = false
                 self.currentLyrics = ""
+                self.syncedLyrics = []
             }
             return
         }
 
-        // Prefer native Apple Music lyrics when available
-        if let bundleIdentifier = bundleIdentifier, bundleIdentifier.contains("com.apple.Music") {
-            Task { @MainActor in
-                let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music")
-                guard !runningApps.isEmpty else {
-                    await self.fetchLyricsFromWeb(title: title, artist: artist)
-                    return
-                }
+        Task { @MainActor in
+            self.isFetchingLyrics = true
+            self.currentLyrics = ""
+            self.syncedLyrics = []
 
-                self.isFetchingLyrics = true
-                self.currentLyrics = ""
+            // 1. Try LRCLIB web lookup first to obtain time-synced lyrics ([mm:ss.xx])
+            await self.fetchLyricsFromWeb(title: title, artist: artist)
+            if !self.syncedLyrics.isEmpty || !self.currentLyrics.isEmpty {
+                self.isFetchingLyrics = false
+                return
+            }
+
+            // 2. Fallback to native Apple Music embedded track lyrics if available
+            let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music")
+            if !runningApps.isEmpty {
                 do {
                     let script = """
                     tell application \"Music\"
@@ -384,23 +394,14 @@ class MusicManager: ObservableObject {
                         end if
                     end tell
                     """
-                    if let result = try await AppleScriptHelper.execute(script), let lyricsString = result.stringValue, !lyricsString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if let result = try await AppleScriptHelper.execute(script),
+                       let lyricsString = result.stringValue,
+                       !lyricsString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         self.currentLyrics = lyricsString.trimmingCharacters(in: .whitespacesAndNewlines)
-                        self.isFetchingLyrics = false
-                        self.syncedLyrics = []
-                        return
                     }
-                } catch {
-                    // fall through to web lookup
-                }
-                await self.fetchLyricsFromWeb(title: title, artist: artist)
+                } catch {}
             }
-        } else {
-            Task { @MainActor in
-                self.isFetchingLyrics = true
-                self.currentLyrics = ""
-                await self.fetchLyricsFromWeb(title: title, artist: artist)
-            }
+            self.isFetchingLyrics = false
         }
     }
 
@@ -410,53 +411,65 @@ class MusicManager: ObservableObject {
             .replacingOccurrences(of: "\u{FFFD}", with: "")
     }
 
+    private func strippedSongTitle(_ title: String) -> String {
+        let pattern = #"\s*[\(\[][^\)\]]*(?:slowed|sped up|reverb|remix|edit|feat\.|ft\.|version|live)[^\)\]]*[\)\]]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return title
+        }
+        let range = NSRange(location: 0, length: (title as NSString).length)
+        return regex.stringByReplacingMatches(in: title, options: [], range: range, withTemplate: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     @MainActor
     private func fetchLyricsFromWeb(title: String, artist: String) async {
+        if await queryLRCLib(title: title, artist: artist) {
+            return
+        }
+        let cleaned = strippedSongTitle(title)
+        if !cleaned.isEmpty && cleaned.lowercased() != title.lowercased() {
+            _ = await queryLRCLib(title: cleaned, artist: artist)
+        }
+    }
+
+    @MainActor
+    private func queryLRCLib(title: String, artist: String) async -> Bool {
         let cleanTitle = normalizedQuery(title)
         let cleanArtist = normalizedQuery(artist)
         guard let encodedTitle = cleanTitle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let encodedArtist = cleanArtist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            self.currentLyrics = ""
-            self.isFetchingLyrics = false
-            return
+            return false
         }
 
-        // LRCLIB simple search (no auth): https://lrclib.net/api/search?track_name=...&artist_name=...
         let urlString = "https://lrclib.net/api/search?track_name=\(encodedTitle)&artist_name=\(encodedArtist)"
-        guard let url = URL(string: urlString) else {
-            self.currentLyrics = ""
-            self.isFetchingLyrics = false
-            return
-        }
+        guard let url = URL(string: urlString) else { return false }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                self.currentLyrics = ""
-                self.isFetchingLyrics = false
-                return
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                  !jsonArray.isEmpty else {
+                return false
             }
-            if let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-               let first = jsonArray.first {
-                // Prefer plain lyrics (syncedLyrics may also be present)
-                let plain = (first["plainLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let synced = (first["syncedLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let resolved = plain.isEmpty ? synced : plain
-                self.currentLyrics = resolved
-                self.isFetchingLyrics = false
-                if !synced.isEmpty {
-                    self.syncedLyrics = self.parseLRC(synced)
-                } else {
-                    self.syncedLyrics = []
-                }
+            // Prefer an entry that has syncedLyrics
+            let bestMatch = jsonArray.first(where: {
+                guard let s = $0["syncedLyrics"] as? String else { return false }
+                return !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }) ?? jsonArray.first!
+
+            let plain = (bestMatch["plainLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let synced = (bestMatch["syncedLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let resolved = plain.isEmpty ? synced : plain
+            guard !resolved.isEmpty else { return false }
+
+            self.currentLyrics = resolved
+            if !synced.isEmpty {
+                self.syncedLyrics = self.parseLRC(synced)
             } else {
-                self.currentLyrics = ""
-                self.isFetchingLyrics = false
                 self.syncedLyrics = []
             }
+            return true
         } catch {
-            self.currentLyrics = ""
-            self.isFetchingLyrics = false
-            self.syncedLyrics = []
+            return false
         }
     }
 

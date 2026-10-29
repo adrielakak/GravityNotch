@@ -15,6 +15,8 @@ enum MusicControlButton: String, CaseIterable, Identifiable, Codable, Defaults.S
     case repeatMode
     case volume
     case favorite
+    case audioOutput
+    case playingNext
     case goBackward
     case goForward
     case none
@@ -22,11 +24,11 @@ enum MusicControlButton: String, CaseIterable, Identifiable, Codable, Defaults.S
     var id: String { rawValue }
 
     static let defaultLayout: [MusicControlButton] = [
-        .none,
+        .shuffle,
         .previous,
         .playPause,
         .next,
-        .none
+        .playingNext
     ]
 
     static let minSlotCount: Int = 3
@@ -37,9 +39,11 @@ enum MusicControlButton: String, CaseIterable, Identifiable, Codable, Defaults.S
         .previous,
         .playPause,
         .next,
+        .playingNext,
         .repeatMode,
         .favorite,
         .volume,
+        .audioOutput,
         .goBackward,
         .goForward
     ]
@@ -60,6 +64,10 @@ enum MusicControlButton: String, CaseIterable, Identifiable, Codable, Defaults.S
             return "Volume"
         case .favorite:
             return "Favorite"
+        case .audioOutput:
+            return "Audio Output"
+        case .playingNext:
+            return "Playing Next"
         case .goBackward:
             return "Backward 15s"
         case .goForward:
@@ -85,6 +93,10 @@ enum MusicControlButton: String, CaseIterable, Identifiable, Codable, Defaults.S
             return "speaker.wave.2.fill"
         case .favorite:
             return "heart"
+        case .audioOutput:
+            return "airplayaudio"
+        case .playingNext:
+            return "music.note.list"
         case .goBackward:
             return "gobackward.15"
         case .goForward:

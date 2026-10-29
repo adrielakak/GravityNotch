@@ -25,115 +25,248 @@ final class MediaKeyInterceptor {
         case keyboardBrightnessDown = 22
     }
     
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    fileprivate var hidTap: CFMachPort?
+    fileprivate var sessionTap: CFMachPort?
+    fileprivate var annotatedTap: CFMachPort?
+    private var hidSource: CFRunLoopSource?
+    private var sessionSource: CFRunLoopSource?
+    private var annotatedSource: CFRunLoopSource?
+    private var eventTapQueue: DispatchQueue?
+    private var eventTapRunLoop: CFRunLoop?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
+    private var permissionPollTimer: Timer?
+    private var lastProcessedTimestamp: CGEventTimestamp = 0
     private let step: Float = 1.0 / 16.0
     private var audioPlayer: AVAudioPlayer?
     
     private init() {}
     
-    // MARK: - Accessibility (via XPC)
+    private func logStatus(_ message: String) {
+        // Diagnostic hook for HUD tap verification
+    }
+    
+    // MARK: - Accessibility
     
     func requestAccessibilityAuthorization() {
-        XPCHelperClient.shared.requestAccessibilityAuthorization()
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
     
     func ensureAccessibilityAuthorization(promptIfNeeded: Bool = false) async -> Bool {
-        await XPCHelperClient.shared.ensureAccessibilityAuthorization(promptIfNeeded: promptIfNeeded)
+        if AXIsProcessTrusted() { return true }
+        if promptIfNeeded {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            if AXIsProcessTrustedWithOptions(options) { return true }
+        }
+        return await XPCHelperClient.shared.ensureAccessibilityAuthorization(promptIfNeeded: promptIfNeeded)
     }
     
-    // MARK: - Event Tap
+    // MARK: - Event Tap (Zero-Blocking Multi-Layer Tap for macOS Tahoe 26)
     
     func start(promptIfNeeded: Bool = false) async {
-        guard eventTap == nil else { return }
-        
-        // Ensure HUD replacement is enabled
         guard Defaults[.hudReplacement] else {
             stop()
             return
         }
         
-        // Check accessibility authorization
-        let authorized = await XPCHelperClient.shared.isAccessibilityAuthorized()
-        if !authorized {
-            if promptIfNeeded {
-                let granted = await ensureAccessibilityAuthorization(promptIfNeeded: true)
-                guard granted else { return }
-            } else {
-                return
+        if installEventTapIfAuthorized() {
+            return
+        }
+        
+        if promptIfNeeded {
+            requestAccessibilityAuthorization()
+        }
+        
+        if permissionPollTimer == nil {
+            DispatchQueue.main.async { [weak self] in
+                self?.permissionPollTimer?.invalidate()
+                self?.permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+                    guard let self else { return }
+                    if self.installEventTapIfAuthorized() {
+                        self.permissionPollTimer?.invalidate()
+                        self.permissionPollTimer = nil
+                    }
+                }
             }
+        }
+        
+        if hidTap == nil && sessionTap == nil && annotatedTap == nil && globalMonitor == nil {
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+                self?.handlePassiveSystemEvent(event)
+            }
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+                self?.handlePassiveSystemEvent(event)
+                return event
+            }
+        }
+    }
+    
+    @discardableResult
+    private func installEventTapIfAuthorized() -> Bool {
+        if hidTap != nil || sessionTap != nil || annotatedTap != nil { return true }
+        let trusted = AXIsProcessTrusted()
+        guard trusted else {
+            logStatus("Waiting for Accessibility permission (AXIsProcessTrusted=false)")
+            return false
         }
         
         let mask = CGEventMask(1 << kSystemDefinedEventType.rawValue)
-        eventTap = CGEvent.tapCreate(
-            tap: .cghidEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: { _, _, cgEvent, userInfo in
-                guard let userInfo else { return Unmanaged.passRetained(cgEvent) }
-                let interceptor = Unmanaged<MediaKeyInterceptor>.fromOpaque(userInfo).takeUnretainedValue()
-                return interceptor.handleEvent(cgEvent)
-            },
-            userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        )
-        
-        if let eventTap {
-            runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
-            if let runLoopSource {
-                CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        let callback: CGEventTapCallBack = { _, type, cgEvent, userInfo in
+            guard let userInfo else { return Unmanaged.passUnretained(cgEvent) }
+            let interceptor = Unmanaged<MediaKeyInterceptor>.fromOpaque(userInfo).takeUnretainedValue()
+            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                if AXIsProcessTrusted() {
+                    if let t = interceptor.hidTap { CGEvent.tapEnable(tap: t, enable: true) }
+                    if let t = interceptor.sessionTap { CGEvent.tapEnable(tap: t, enable: true) }
+                    if let t = interceptor.annotatedTap { CGEvent.tapEnable(tap: t, enable: true) }
+                }
+                return Unmanaged.passUnretained(cgEvent)
             }
-            CGEvent.tapEnable(tap: eventTap, enable: true)
+            return interceptor.handleEventFast(cgEvent, type: type)
         }
+        
+        let selfPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        
+        // Install at all 3 levels (HID, Session, AnnotatedSession) so ControlCenter on macOS Tahoe never receives the key event
+        hidTap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap, eventsOfInterest: mask, callback: callback, userInfo: selfPtr)
+        sessionTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap, eventsOfInterest: mask, callback: callback, userInfo: selfPtr)
+        annotatedTap = CGEvent.tapCreate(tap: .cgAnnotatedSessionEventTap, place: .headInsertEventTap, options: .defaultTap, eventsOfInterest: mask, callback: callback, userInfo: selfPtr)
+        
+        guard hidTap != nil || sessionTap != nil || annotatedTap != nil else {
+            logStatus("AXIsProcessTrusted=true but tapCreate returned nil")
+            return false
+        }
+        
+        logStatus("ACTIVE TAPS INSTALLED: hid=\(hidTap != nil), session=\(sessionTap != nil), annotated=\(annotatedTap != nil)")
+        
+        if let t = hidTap { hidSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0) }
+        if let t = sessionTap { sessionSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0) }
+        if let t = annotatedTap { annotatedSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0) }
+        
+        let queue = DispatchQueue(label: "com.droppy.MediaKeyTap", qos: .userInteractive)
+        eventTapQueue = queue
+        queue.async { [weak self] in
+            guard let self else { return }
+            let rl = CFRunLoopGetCurrent()
+            self.eventTapRunLoop = rl
+            if let s = self.hidSource { CFRunLoopAddSource(rl, s, .commonModes) }
+            if let s = self.sessionSource { CFRunLoopAddSource(rl, s, .commonModes) }
+            if let s = self.annotatedSource { CFRunLoopAddSource(rl, s, .commonModes) }
+            if let t = self.hidTap { CGEvent.tapEnable(tap: t, enable: true) }
+            if let t = self.sessionTap { CGEvent.tapEnable(tap: t, enable: true) }
+            if let t = self.annotatedTap { CGEvent.tapEnable(tap: t, enable: true) }
+            CFRunLoopRun()
+        }
+        
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
+            self.globalMonitor = nil
+        }
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+            self.localMonitor = nil
+        }
+        return true
     }
     
     func stop() {
-        if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
+        if let t = hidTap { CGEvent.tapEnable(tap: t, enable: false) }
+        if let t = sessionTap { CGEvent.tapEnable(tap: t, enable: false) }
+        if let t = annotatedTap { CGEvent.tapEnable(tap: t, enable: false) }
+        if let rl = eventTapRunLoop {
+            if let s = hidSource { CFRunLoopRemoveSource(rl, s, .commonModes) }
+            if let s = sessionSource { CFRunLoopRemoveSource(rl, s, .commonModes) }
+            if let s = annotatedSource { CFRunLoopRemoveSource(rl, s, .commonModes) }
+            CFRunLoopStop(rl)
         }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        runLoopSource = nil
-        eventTap = nil
+        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        globalMonitor = nil
+        localMonitor = nil
+        hidSource = nil
+        sessionSource = nil
+        annotatedSource = nil
+        eventTapRunLoop = nil
+        eventTapQueue = nil
+        hidTap = nil
+        sessionTap = nil
+        annotatedTap = nil
     }
-    
-    // MARK: - Event Handling
-    
-    private func handleEvent(_ cgEvent: CGEvent) -> Unmanaged<CGEvent>? {
-        // Ensure the CGEvent has a valid type before converting to NSEvent
-        guard cgEvent.type != .null else {
-            return Unmanaged.passRetained(cgEvent)
-        }
-        guard let nsEvent = NSEvent(cgEvent: cgEvent),
-              nsEvent.type == .systemDefined,
-              nsEvent.subtype.rawValue == 8 else {
-            return Unmanaged.passRetained(cgEvent)
-        }
-        
+
+    private func handlePassiveSystemEvent(_ nsEvent: NSEvent) {
+        if installEventTapIfAuthorized() { return }
+        guard nsEvent.type == .systemDefined, nsEvent.subtype.rawValue == 8 else { return }
         let data1 = nsEvent.data1
         let keyCode = (data1 & 0xFFFF_0000) >> 16
         let stateByte = ((data1 & 0xFF00) >> 8)
-        
-        // 0xA = key down, 0xB = key up. Only handle key down.
-        guard stateByte == 0xA,
-              let keyType = NXKeyType(rawValue: keyCode) else {
-            return Unmanaged.passRetained(cgEvent)
+        guard stateByte == 0xA, let keyType = NXKeyType(rawValue: keyCode) else { return }
+        let command = nsEvent.modifierFlags.contains(.command)
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(35))
+            self.showHUD(for: keyType, command: command)
+        }
+    }
+    
+    // MARK: - Zero-Blocking CGEvent Field Extraction (< 1 microsecond, no NSEvent, no main.sync)
+    
+    private func handleEventFast(_ cgEvent: CGEvent, type: CGEventType) -> Unmanaged<CGEvent>? {
+        guard type.rawValue == 14 else {
+            return Unmanaged.passUnretained(cgEvent)
         }
         
-        let flags = nsEvent.modifierFlags
-        let option = flags.contains(.option)
-        let shift = flags.contains(.shift)
-        let command = flags.contains(.command)
+        // Field 99 = NSEvent.subtype (8 = NX_SUBTYPE_AUX_CONTROL_BUTTONS)
+        // Field 149 = NSEvent.data1 ((keyCode << 16) | (keyState << 8) | repeatFlag)
+        guard let subtypeField = CGEventField(rawValue: 99),
+              let data1Field = CGEventField(rawValue: 149) else {
+            return Unmanaged.passUnretained(cgEvent)
+        }
         
-        // Handle option key action (without shift)
+        let subtype = cgEvent.getIntegerValueField(subtypeField)
+        guard subtype == 8 else {
+            return Unmanaged.passUnretained(cgEvent)
+        }
+        
+        let data1 = Int(cgEvent.getIntegerValueField(data1Field))
+        let keyCode = (data1 & 0xFFFF_0000) >> 16
+        let keyFlags = data1 & 0x0000_FFFF
+        let stateByte = (keyFlags & 0xFF00) >> 8
+        
+        // Pass through transport keys (Play/Pause/Next/Prev: 16..20) immediately untouched
+        guard let keyType = NXKeyType(rawValue: keyCode) else {
+            return Unmanaged.passUnretained(cgEvent)
+        }
+        
+        let keyDown = (stateByte == 0x0A || stateByte == 0x08)
+        let keyUp = (stateByte == 0x0B)
+        let keyRepeat = (keyFlags & 0x1) != 0
+        let shouldProcess = (keyDown || keyRepeat) && !keyUp
+        
+        guard shouldProcess else {
+            // Swallow keyUp (0x0B) so ControlCenter never sees it
+            return nil
+        }
+        
+        // Deduplicate if the same event was already handled by an earlier tap layer
+        let ts = cgEvent.timestamp
+        if ts != 0 && ts == lastProcessedTimestamp {
+            return nil
+        }
+        lastProcessedTimestamp = ts
+        
+        let rawFlags = cgEvent.flags
+        let option = rawFlags.contains(.maskAlternate)
+        let shift = rawFlags.contains(.maskShift)
+        let command = rawFlags.contains(.maskCommand)
+        
         if option && !shift {
             if handleOptionAction(for: keyType, command: command) {
                 return nil
             }
         }
         
-        // Handle normal key press
         handleKeyPress(keyType: keyType, option: option, shift: shift, command: command)
         return nil
     }

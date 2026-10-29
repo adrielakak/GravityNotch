@@ -91,7 +91,7 @@ extension Defaults.Keys {
     static let nonNotchHeight = Key<CGFloat>("nonNotchHeight", default: 32)
     static let notchHeight = Key<CGFloat>("notchHeight", default: 32)
     //static let openLastTabByDefault = Key<Bool>("openLastTabByDefault", default: false)
-    static let showOnLockScreen = Key<Bool>("showOnLockScreen", default: false)
+    static let showOnLockScreen = Key<Bool>("showOnLockScreen", default: true)
     static let hideFromScreenRecording = Key<Bool>("hideFromScreenRecording", default: false)
     
     // MARK: Appearance
@@ -106,7 +106,7 @@ extension Defaults.Keys {
 
     static let showNotHumanFace = Key<Bool>("showNotHumanFace", default: false)
     static let tileShowLabels = Key<Bool>("tileShowLabels", default: false)
-    static let showCalendar = Key<Bool>("showCalendar", default: false)
+    static let showCalendar = Key<Bool>("showCalendar", default: true)
     static let hideCompletedReminders = Key<Bool>("hideCompletedReminders", default: true)
     static let sliderColor = Key<SliderColorEnum>(
         "sliderUseAlbumArtColor",
@@ -128,7 +128,7 @@ extension Defaults.Keys {
     static let sneakPeekStyles = Key<SneakPeekStyle>("sneakPeekStyles", default: .standard)
     static let waitInterval = Key<Double>("waitInterval", default: 3)
     static let showShuffleAndRepeat = Key<Bool>("showShuffleAndRepeat", default: false)
-    static let enableLyrics = Key<Bool>("enableLyrics", default: false)
+    static let enableLyrics = Key<Bool>("enableLyrics", default: true)
     static let musicControlSlots = Key<[MusicControlButton]>(
         "musicControlSlots",
         default: MusicControlButton.defaultLayout
@@ -151,8 +151,8 @@ extension Defaults.Keys {
     static let selectedDownloadIconStyle = Key<DownloadIconStyle>("selectedDownloadIconStyle", default: DownloadIconStyle.onlyAppIcon)
     
     // MARK: HUD
-    static let hudReplacement = Key<Bool>("hudReplacement", default: false)
-    static let inlineHUD = Key<Bool>("inlineHUD", default: false)
+    static let hudReplacement = Key<Bool>("hudReplacement", default: true)
+    static let inlineHUD = Key<Bool>("inlineHUD", default: true)
     static let enableGradient = Key<Bool>("enableGradient", default: false)
     static let systemEventIndicatorShadow = Key<Bool>("systemEventIndicatorShadow", default: false)
     static let systemEventIndicatorUseAccent = Key<Bool>("systemEventIndicatorUseAccent", default: false)

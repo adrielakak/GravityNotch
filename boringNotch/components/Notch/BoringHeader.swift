@@ -13,6 +13,7 @@ struct BoringHeader: View {
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @StateObject var tvm = ShelfStateViewModel.shared
+    @ObservedObject var caffeine = CaffeineManager.shared
     var body: some View {
         HStack(spacing: 0) {
             HStack {
@@ -57,6 +58,66 @@ struct BoringHeader: View {
                                     }
                             }
                             .buttonStyle(PlainButtonStyle())
+                        }
+                        Button(action: {
+                            vm.close()
+                            ScreenCaptureOCRService.shared.capture(mode: .ocrText)
+                        }) {
+                            Capsule()
+                                .fill(.black)
+                                .frame(width: 30, height: 30)
+                                .overlay {
+                                    Image(systemName: "text.viewfinder")
+                                        .foregroundColor(.white)
+                                        .padding()
+                                        .imageScale(.medium)
+                                }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .help("Text Capture (OCR) — Right-click for Element / Area Capture & Audio Output")
+                        .contextMenu {
+                            Button("Capture Screen Text (OCR → Clipboard)") {
+                                vm.close()
+                                ScreenCaptureOCRService.shared.capture(mode: .ocrText)
+                            }
+                            Button("Capture Area → Shelf") {
+                                vm.close()
+                                ScreenCaptureOCRService.shared.capture(mode: .areaToShelf)
+                            }
+                            Button("Capture Window / Element → Shelf") {
+                                vm.close()
+                                ScreenCaptureOCRService.shared.capture(mode: .windowToShelf)
+                            }
+                            Divider()
+                            Button("Switch Audio Output…") {
+                                AudioOutputRoutingMenu.shared.popUpAtMouseLocation()
+                            }
+                        }
+                        Button(action: {
+                            caffeine.toggle()
+                        }) {
+                            Capsule()
+                                .fill(.black)
+                                .frame(width: 30, height: 30)
+                                .overlay {
+                                    Image(systemName: caffeine.isActive ? "cup.and.saucer.fill" : "cup.and.saucer")
+                                        .foregroundColor(caffeine.isActive ? .orange : .white)
+                                        .padding()
+                                        .imageScale(.medium)
+                                }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .help(caffeine.isActive ? "Caffeine Active (\(caffeine.remainingText)) — Right-click for timer" : "Keep Mac Awake (Caffeine)")
+                        .contextMenu {
+                            Button("Keep Awake Indefinitely (∞)") { caffeine.activate(durationMinutes: nil) }
+                            Button("15 Minutes") { caffeine.activate(durationMinutes: 15) }
+                            Button("30 Minutes") { caffeine.activate(durationMinutes: 30) }
+                            Button("1 Hour") { caffeine.activate(durationMinutes: 60) }
+                            Button("2 Hours") { caffeine.activate(durationMinutes: 120) }
+                            if caffeine.isActive {
+                                Divider()
+                                Button("Turn Off Caffeine") { caffeine.deactivate() }
+                            }
                         }
                         if Defaults[.settingsIconInNotch] {
                             Button(action: {

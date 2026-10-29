@@ -21,8 +21,9 @@ struct DynamicNotchApp: App {
     let updaterController: SPUStandardUpdaterController
 
     init() {
+        // Sparkle auto-updater permanently disabled to preserve custom Droppy-enhanced build
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
 
         // Initialize the settings window controller with the updater controller
         SettingsWindowController.shared.setUpdaterController(updaterController)
@@ -36,7 +37,6 @@ struct DynamicNotchApp: App {
                 }
             }
             .keyboardShortcut(KeyEquivalent(","), modifiers: .command)
-            CheckForUpdatesView(updater: updaterController.updater)
             Divider()
             Button("Restart Boring Notch") {
                 ApplicationRelauncher.restart()
@@ -95,12 +95,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             cleanupWindows()
         } else {
             enableSkyLightOnAllWindows()
+            DroppyLockScreenMediaPanelManager.shared.showOnLockScreen()
         }
     }
 
     @MainActor
     func onScreenUnlocked(_ notification: Notification) {
         isScreenLocked = false
+        DroppyLockScreenMediaPanelManager.shared.hideFromLockScreen()
         if !Defaults[.showOnLockScreen] {
             adjustWindowPosition(changeAlpha: true)
         } else {

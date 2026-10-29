@@ -70,11 +70,91 @@ struct ShelfView: View {
                 content
                     .padding()
             }
+            .overlay(alignment: .bottomTrailing) {
+                if !tvm.isEmpty {
+                    droppyQuickActionsBar
+                        .padding(8)
+                }
+            }
             .transaction { transaction in
                 transaction.animation = vm.animation
             }
             .contentShape(Rectangle())
             .onTapGesture { selection.clear() }
+    }
+
+    private var activeShelfItems: [ShelfItem] {
+        let selected = selection.selectedItems(in: tvm.items)
+        return selected.isEmpty ? tvm.items : selected
+    }
+
+    private var droppyQuickActionsBar: some View {
+        let targetURLs = activeShelfItems.compactMap { $0.fileURL }
+        let ocrURLs = targetURLs.filter { ImageProcessingService.shared.isOCRCompatible($0) }
+        return HStack(spacing: 5) {
+            if let firstOCR = ocrURLs.first {
+                quickActionPill(icon: "text.viewfinder", title: "OCR") {
+                    Task {
+                        if let text = try? await firstOCR.accessSecurityScopedResource(accessor: { scoped in
+                            try await ImageProcessingService.shared.extractText(from: scoped)
+                        }) {
+                            ImageProcessingService.shared.presentOCRResultModal(
+                                text: text,
+                                sourceName: firstOCR.lastPathComponent
+                            )
+                        }
+                    }
+                }
+            }
+            if !targetURLs.isEmpty {
+                quickActionPill(icon: "doc.zipper", title: "ZIP") {
+                    Task {
+                        if let zipURL = try? await targetURLs.accessSecurityScopedResources(accessor: { urls in
+                            await TemporaryFileStorageService.shared.createZip(from: urls)
+                        }), let bookmark = try? Bookmark(url: zipURL) {
+                            let newItem = ShelfItem(kind: .file(bookmark: bookmark.data), isTemporary: true)
+                            ShelfStateViewModel.shared.add([newItem])
+                        }
+                    }
+                }
+                quickActionPill(icon: "link.icloud.fill", title: "0x0.st") {
+                    Task {
+                        await QuickShareService.shared.uploadTo0x0(urls: targetURLs)
+                    }
+                }
+                quickActionPill(icon: "airplayaudio", title: "AirDrop") {
+                    NSSharingService(named: .sendViaAirDrop)?.perform(withItems: targetURLs)
+                }
+            }
+            quickActionPill(icon: "trash", title: "Clear", isDestructive: true) {
+                for item in tvm.items {
+                    ShelfActionService.remove(item)
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(Color.black.opacity(0.75))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
+        )
+    }
+
+    private func quickActionPill(icon: String, title: String, isDestructive: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+            }
+            .foregroundStyle(isDestructive ? Color.red.opacity(0.9) : Color.white.opacity(0.88))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.white.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
     }
 
     var content: some View {

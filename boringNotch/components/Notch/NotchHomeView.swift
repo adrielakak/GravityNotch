@@ -111,6 +111,7 @@ struct AlbumArtView: View {
 
 struct MusicControlsView: View {
     @ObservedObject var musicManager = MusicManager.shared
+    @ObservedObject var playingNext = PlayingNextManager.shared
         @EnvironmentObject var vm: BoringViewModel
         @ObservedObject var webcamManager = WebcamManager.shared
     @State private var sliderValue: Double = 0
@@ -264,6 +265,14 @@ struct MusicControlsView: View {
             VolumeControlView()
         case .favorite:
             FavoriteControlButton()
+        case .audioOutput:
+            HoverButton(icon: "airplayaudio", scale: .medium) {
+                AudioOutputRoutingMenu.shared.popUpAtMouseLocation()
+            }
+        case .playingNext:
+            HoverButton(icon: "music.note.list", iconColor: playingNext.showQueueInHome ? .effectiveAccent : .primary, scale: .medium) {
+                playingNext.toggleQueueView()
+            }
         case .goBackward:
             HoverButton(icon: "gobackward.15", scale: .medium) {
                 MusicManager.shared.skip(seconds: -15)
@@ -273,7 +282,7 @@ struct MusicControlsView: View {
                 MusicManager.shared.skip(seconds: 15)
             }
         case .none:
-            Color.clear.frame(height: 1)
+            EmptyView()
         }
     }
 
@@ -423,6 +432,7 @@ struct NotchHomeView: View {
     @ObservedObject var webcamManager = WebcamManager.shared
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var coordinator = BoringViewCoordinator.shared
+    @ObservedObject var playingNext = PlayingNextManager.shared
     let albumArtNamespace: Namespace.ID
 
     var body: some View {
@@ -440,10 +450,17 @@ struct NotchHomeView: View {
     }
 
     private var mainContent: some View {
-        HStack(alignment: .top, spacing: (shouldShowCamera && Defaults[.showCalendar]) ? 10 : 15) {
+        HStack(alignment: .top, spacing: (shouldShowCamera && (Defaults[.showCalendar] || playingNext.showQueueInHome)) ? 10 : 15) {
             MusicPlayerView(albumArtNamespace: albumArtNamespace)
 
-            if Defaults[.showCalendar] {
+            if playingNext.showQueueInHome {
+                PlayingNextView()
+                    .frame(width: shouldShowCamera ? 170 : 215)
+                    .onHover { isHovering in
+                        vm.isHoveringCalendar = isHovering
+                    }
+                    .transition(.opacity)
+            } else if Defaults[.showCalendar] {
                 CalendarView()
                     .frame(width: shouldShowCamera ? 170 : 215)
                     .onHover { isHovering in

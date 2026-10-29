@@ -65,6 +65,12 @@ class QuickShareService: ObservableObject {
             providers.insert(ad, at: 0)
         }
 
+        let zeroStIcon = NSImage(systemSymbolName: "link.icloud.fill", accessibilityDescription: "0x0.st")?.tiffRepresentation
+        let droppyQuickshare = QuickShareProvider(id: "Droppy Quickshare (0x0.st)", imageData: zeroStIcon, supportsRawText: true)
+        if !providers.contains(where: { $0.id == droppyQuickshare.id }) {
+            providers.insert(droppyQuickshare, at: min(1, providers.count))
+        }
+
         if !providers.contains(where: { $0.id == "System Share Menu" }) {
             providers.append(QuickShareProvider(id: "System Share Menu", imageData: nil, supportsRawText: true))
         }
@@ -112,6 +118,18 @@ class QuickShareService: ObservableObject {
     @MainActor
     func shareFilesOrText(_ items: [Any], using provider: QuickShareProvider, from view: NSView?) async {
         let fileURLs = items.compactMap { $0 as? URL }.filter { $0.isFileURL }
+        if provider.id == "Droppy Quickshare (0x0.st)" {
+            if !fileURLs.isEmpty {
+                await uploadTo0x0(urls: fileURLs)
+                return
+            } else if let text = items.compactMap({ $0 as? String }).first,
+                      let tempURL = await TemporaryFileStorageService.shared.createTempFile(for: .text(text)) {
+                await uploadTo0x0(urls: [tempURL])
+                TemporaryFileStorageService.shared.removeTemporaryFileIfNeeded(at: tempURL)
+                return
+            }
+        }
+
         // Stop any previous sharing access
         stopSharingAccessingURLs()
         // Start security-scoped access for all file URLs
@@ -194,6 +212,80 @@ private class SharingServiceDelegate: NSObject {}
         }
         print("❌ Failed to resolve bookmark for shelf item")
         return nil
+    }
+
+    // MARK: - Droppy Quickshare (0x0.st Cloud Link Upload)
+
+    @MainActor
+    func uploadTo0x0(urls: [URL]) async {
+        guard !urls.isEmpty else { return }
+        SharingStateManager.shared.beginInteraction()
+        defer { SharingStateManager.shared.endInteraction() }
+
+        do {
+            let targetURL: URL
+            var tempZipURL: URL?
+            if urls.count > 1 {
+                guard let zipped = try await urls.accessSecurityScopedResources(accessor: { accessible in
+                    await TemporaryFileStorageService.shared.createZip(from: accessible)
+                }) else { return }
+                targetURL = zipped
+                tempZipURL = zipped
+            } else {
+                targetURL = urls[0]
+            }
+
+            defer {
+                if let tempZipURL {
+                    TemporaryFileStorageService.shared.removeTemporaryFileIfNeeded(at: tempZipURL)
+                }
+            }
+
+            let fileData = try targetURL.accessSecurityScopedResource { scoped in
+                try Data(contentsOf: scoped)
+            }
+            let filename = targetURL.lastPathComponent
+            let boundary = "Boundary-\(UUID().uuidString)"
+            var request = URLRequest(url: URL(string: "https://0x0.st")!)
+            request.httpMethod = "POST"
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            request.setValue("BoringNotch/1.0 (DroppyQuickshare)", forHTTPHeaderField: "User-Agent")
+
+            var body = Data()
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".utf8))
+            body.append(Data("Content-Type: application/octet-stream\r\n\r\n".utf8))
+            body.append(fileData)
+            body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+            request.httpBody = body
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode),
+                  let link = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  link.hasPrefix("http") else {
+                throw NSError(domain: "QuickShare", code: -1, userInfo: [NSLocalizedDescriptionKey: "Upload rejected by 0x0.st"])
+            }
+
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(link, forType: .string)
+
+            let alert = NSAlert()
+            alert.messageText = "Quickshare Link Copied!"
+            alert.informativeText = "\(filename) uploaded to:\n\(link)\n\nThe link has been copied to your clipboard."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Open in Browser")
+            if alert.runModal() == .alertSecondButtonReturn, let webURL = URL(string: link) {
+                NSWorkspace.shared.open(webURL)
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Quickshare Upload Failed"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 }
 
