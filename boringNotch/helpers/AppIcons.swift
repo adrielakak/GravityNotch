@@ -11,7 +11,6 @@ import Combine
 import CoreAudio
 import Defaults
 import IOKit.pwr_mgt
-import IOKit.ps
 
 struct AppIcons {
     
@@ -1386,10 +1385,10 @@ final class DroppyLockScreenMediaPanelManager {
 
     private func presentPanel(delegateToSkyLight: Bool) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let width: CGFloat = 416
-        let height: CGFloat = 264
+        let width: CGFloat = 396
+        let height: CGFloat = 236
         let originX = screen.frame.midX - (width / 2)
-        let originY = screen.frame.origin.y + (screen.frame.height * 0.20)
+        let originY = screen.frame.origin.y + (screen.frame.height * 0.21)
         let frame = NSRect(x: originX, y: originY, width: width, height: height)
 
         if MusicManager.shared.currentLyrics.isEmpty && MusicManager.shared.syncedLyrics.isEmpty && !MusicManager.shared.isFetchingLyrics {
@@ -1429,501 +1428,176 @@ final class DroppyLockScreenMediaPanelManager {
     }
 }
 
-// MARK: - Mini Animated Audio Visualizer for Lock Screen
-struct LockScreenMiniVisualizer: View {
-    let isPlaying: Bool
-    let tintColor: Color
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 0.12)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            HStack(spacing: 2.2) {
-                ForEach(0..<4) { i in
-                    let factor = isPlaying ? (0.35 + 0.65 * abs(sin(t * 7.5 + Double(i) * 1.4))) : 0.2
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(tintColor)
-                        .frame(width: 2.8, height: max(3.5, 14 * factor))
-                }
-            }
-            .frame(height: 14)
-        }
-    }
-}
-
 struct DroppyLockScreenMediaPanelView: View {
     @ObservedObject var musicManager = MusicManager.shared
+    @State private var showLyricsCard: Bool = true
     var onClosePreview: (() -> Void)? = nil
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.25 : 2.0)) { context in
-            DroppyLockScreenContentView(date: context.date, onClosePreview: onClosePreview)
-        }
-    }
-}
+            let elapsed = musicManager.estimatedPlaybackPosition(at: context.date)
+            let progress = musicManager.songDuration > 0 ? min(1, max(0, elapsed / musicManager.songDuration)) : 0
+            let lyricTriple = lyricLines(at: elapsed, duration: musicManager.songDuration)
 
-struct DroppyLockScreenContentView: View {
-    let date: Date
-    var onClosePreview: (() -> Void)? = nil
-
-    @ObservedObject var musicManager = MusicManager.shared
-    @ObservedObject var volumeManager = VolumeManager.shared
-    @ObservedObject var calendarManager = CalendarManager.shared
-
-    @Default(.lockScreenAmbientGlow) var ambientGlow
-    @Default(.lockScreenVisualizer) var showVisualizer
-    @Default(.lockScreenExpandableArtwork) var allowExpandableArtwork
-    @Default(.lockScreenInteractiveLyrics) var interactiveLyrics
-    @Default(.lockScreenQuickControls) var quickControls
-    @Default(.lockScreenIdleWidget) var showIdleWidget
-
-    @State private var isArtworkExpanded: Bool = false
-    @State private var showLyricsCard: Bool = true
-    @State private var batteryLevel: Float = 0
-    @State private var isBatteryCharging: Bool = false
-
-    fileprivate struct LyricItem: Identifiable {
-        let id = UUID()
-        let text: String
-        let time: Double?
-    }
-
-    var body: some View {
-        let elapsed = musicManager.estimatedPlaybackPosition(at: date)
-        let progress = musicManager.songDuration > 0 ? min(1, max(0, elapsed / musicManager.songDuration)) : 0
-        let items = lyricItems(at: elapsed, duration: musicManager.songDuration)
-        let accentColor = Color(nsColor: musicManager.avgColor)
-        let isIdle = musicManager.songTitle.isEmpty && !musicManager.isPlaying
-
-        ZStack {
-            // Ambient Glow
-            if ambientGlow {
-                Circle()
-                    .fill(isIdle ? Color.blue.opacity(0.18) : accentColor.opacity(musicManager.isPlaying ? 0.38 : 0.18))
-                    .frame(width: 340, height: 210)
-                    .blur(radius: 55)
-                    .animation(.easeInOut(duration: 0.6), value: musicManager.isPlaying)
-            }
-
-            if isIdle && showIdleWidget {
-                // Idle Widget View
-                idleWidgetView(date: date)
-            } else {
-                // Media Player View
-                VStack(spacing: 9) {
-                    headerView(accentColor: accentColor)
-                    middleSectionView(items: items, accentColor: accentColor)
-                    progressBarView(elapsed: elapsed, progress: progress, accentColor: accentColor)
-                    bottomControlsView
-                }
-            }
-        }
-        .padding(15)
-        .frame(width: 416, height: 264)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .environment(\.colorScheme, .dark)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                )
-        )
-        .onAppear {
-            refreshBattery()
-            if musicManager.currentLyrics.isEmpty && musicManager.syncedLyrics.isEmpty && !musicManager.isFetchingLyrics {
-                musicManager.refreshLyrics()
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func headerView(accentColor: Color) -> some View {
-        HStack(spacing: 11) {
-            Button {
-                if allowExpandableArtwork {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
-                        isArtworkExpanded.toggle()
-                    }
-                }
-            } label: {
-                ZStack(alignment: .bottomTrailing) {
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
                     Image(nsImage: musicManager.albumArt)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .frame(width: isArtworkExpanded ? 42 : 48, height: isArtworkExpanded ? 42 : 48)
+                        .frame(width: 50, height: 50)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                        .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
 
-                    if allowExpandableArtwork {
-                        Image(systemName: isArtworkExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 8, weight: .bold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(musicManager.songTitle.isEmpty ? "Not Playing" : musicManager.songTitle)
+                            .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.white)
-                            .padding(2.5)
-                            .background(Circle().fill(Color.black.opacity(0.55)))
-                            .offset(x: 2, y: 2)
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(musicManager.songTitle.isEmpty ? "Not Playing" : musicManager.songTitle)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-
-                    if showVisualizer && musicManager.isPlaying {
-                        LockScreenMiniVisualizer(isPlaying: true, tintColor: accentColor)
-                    }
-                }
-
-                Text(musicManager.artistName.isEmpty ? "Apple Music" : musicManager.artistName)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-
-            // Quick Controls: Favorite
-            if quickControls {
-                Button {
-                    musicManager.toggleFavoriteTrack()
-                } label: {
-                    Image(systemName: musicManager.isFavoriteTrack ? "heart.fill" : "heart")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(musicManager.isFavoriteTrack ? .red : .white.opacity(0.65))
-                        .padding(6)
-                        .background(Circle().fill(Color.white.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
-            }
-
-            // Lyrics toggle
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    showLyricsCard.toggle()
-                }
-                if musicManager.currentLyrics.isEmpty && musicManager.syncedLyrics.isEmpty {
-                    musicManager.refreshLyrics()
-                }
-            } label: {
-                Image(systemName: showLyricsCard ? "quote.bubble.fill" : "quote.bubble")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(showLyricsCard ? .white : .white.opacity(0.55))
-                    .padding(6)
-                    .background(Circle().fill(Color.white.opacity(showLyricsCard ? 0.22 : 0.08)))
-            }
-            .buttonStyle(.plain)
-
-            if let onClosePreview {
-                Button(action: onClosePreview) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.white.opacity(0.55))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func middleSectionView(items: (previous: LyricItem?, current: LyricItem, next: LyricItem?), accentColor: Color) -> some View {
-        if isArtworkExpanded {
-            HStack(spacing: 16) {
-                Image(nsImage: musicManager.albumArt)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 86, height: 86)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .shadow(color: accentColor.opacity(0.4), radius: 10, y: 3)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(musicManager.album.isEmpty ? musicManager.songTitle : musicManager.album)
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-
-                    if !musicManager.artistName.isEmpty {
-                        Text(musicManager.artistName)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(0.55))
+                            .lineLimit(1)
+                        Text(musicManager.artistName.isEmpty ? "Apple Music" : musicManager.artistName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .lineLimit(1)
                     }
 
                     Spacer()
-                }
-                Spacer()
-            }
-            .frame(height: 86)
-            .padding(.horizontal, 6)
-        } else if showLyricsCard {
-            VStack(spacing: 2.5) {
-                if let prev = items.previous, !prev.text.isEmpty {
+
                     Button {
-                        if interactiveLyrics, let t = prev.time {
-                            musicManager.seek(to: t)
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            showLyricsCard.toggle()
+                        }
+                        if musicManager.currentLyrics.isEmpty && musicManager.syncedLyrics.isEmpty {
+                            musicManager.refreshLyrics()
                         }
                     } label: {
-                        Text(prev.text)
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.35))
-                            .lineLimit(1)
+                        Image(systemName: showLyricsCard ? "quote.bubble.fill" : "quote.bubble")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(showLyricsCard ? .white : .white.opacity(0.55))
+                            .padding(6)
+                            .background(Circle().fill(Color.white.opacity(showLyricsCard ? 0.22 : 0.08)))
                     }
                     .buttonStyle(.plain)
-                }
 
-                Button {
-                    if interactiveLyrics, let t = items.current.time {
-                        musicManager.seek(to: t)
-                    }
-                } label: {
-                    Text(items.current.text)
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .shadow(color: accentColor.opacity(0.3), radius: 6)
-                }
-                .buttonStyle(.plain)
-                .id(items.current.text)
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-
-                if let next = items.next, !next.text.isEmpty {
-                    Button {
-                        if interactiveLyrics, let t = next.time {
-                            musicManager.seek(to: t)
+                    if let onClosePreview {
+                        Button(action: onClosePreview) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.white.opacity(0.5))
                         }
-                    } label: {
-                        Text(next.text)
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .lineLimit(1)
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 60)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-                    .overlay(
+
+                if showLyricsCard {
+                    VStack(spacing: 3) {
+                        if let prev = lyricTriple.previous, !prev.isEmpty {
+                            Text(prev)
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.35))
+                                .lineLimit(1)
+                        }
+                        Text(lyricTriple.current)
+                            .font(.system(size: 13.5, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .shadow(color: .white.opacity(0.25), radius: 6)
+                            .id(lyricTriple.current)
+                            .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        if let next = lyricTriple.next, !next.isEmpty {
+                            Text(next)
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.45))
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 58)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.8)
+                            .fill(Color.white.opacity(0.07))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.8)
+                            )
+                    )
+                    .animation(.easeInOut(duration: 0.22), value: lyricTriple.current)
+                }
+
+                HStack(spacing: 8) {
+                    Text(formatTime(elapsed))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(width: 32, alignment: .leading)
+
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.white.opacity(0.2))
+                            Capsule()
+                                .fill(Color.white)
+                                .frame(width: max(4, geo.size.width * progress))
+                        }
+                    }
+                    .frame(height: 5)
+
+                    Text(formatTime(musicManager.songDuration))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(width: 32, alignment: .trailing)
+                }
+
+                HStack(spacing: 38) {
+                    Button {
+                        musicManager.previousTrack()
+                    } label: {
+                        Image(systemName: "backward.fill")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        musicManager.togglePlay()
+                    } label: {
+                        Image(systemName: musicManager.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 25, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        musicManager.nextTrack()
+                    } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.system(size: 19, weight: .medium))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(16)
+            .frame(width: 396, height: 236)
+            .background(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .environment(\.colorScheme, .dark)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
                     )
             )
-            .animation(.easeInOut(duration: 0.22), value: items.current.text)
-        }
-    }
-
-    @ViewBuilder
-    private func progressBarView(elapsed: Double, progress: Double, accentColor: Color) -> some View {
-        HStack(spacing: 8) {
-            Text(formatTime(elapsed))
-                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.65))
-                .frame(width: 32, alignment: .leading)
-
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.2))
-                    Capsule()
-                        .fill(accentColor == .white ? Color.white : accentColor)
-                        .frame(width: max(4, geo.size.width * progress))
-                }
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onEnded { value in
-                            let pct = max(0, min(1, value.location.x / geo.size.width))
-                            let targetTime = pct * musicManager.songDuration
-                            musicManager.seek(to: targetTime)
-                        }
-                )
-            }
-            .frame(height: 5)
-
-            Text(formatTime(musicManager.songDuration))
-                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.65))
-                .frame(width: 32, alignment: .trailing)
-        }
-    }
-
-    private var bottomControlsView: some View {
-        HStack {
-            Spacer()
-
-            HStack(spacing: 30) {
-                Button {
-                    musicManager.previousTrack()
-                } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    musicManager.togglePlay()
-                } label: {
-                    Image(systemName: musicManager.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 23, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    musicManager.nextTrack()
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-            }
-
-            Spacer()
-
-            if quickControls {
-                HStack(spacing: 5) {
-                    Image(systemName: volumeManager.rawVolume > 0.5 ? "speaker.wave.2.fill" : (volumeManager.rawVolume > 0 ? "speaker.wave.1.fill" : "speaker.slash.fill"))
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.white.opacity(0.6))
-
-                    Slider(value: Binding(
-                        get: { Double(volumeManager.rawVolume) },
-                        set: { volumeManager.setAbsolute(Float($0)) }
-                    ), in: 0...1)
-                    .frame(width: 62)
-                    .tint(.white.opacity(0.85))
+            .onAppear {
+                if musicManager.currentLyrics.isEmpty && musicManager.syncedLyrics.isEmpty && !musicManager.isFetchingLyrics {
+                    musicManager.refreshLyrics()
                 }
             }
         }
     }
 
-    // MARK: - Idle Mode View (Battery & Calendar)
-    private func idleWidgetView(date: Date) -> some View {
-        VStack(spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(date.formatted(.dateTime.weekday(.wide).day().month(.wide)))
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(date.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                }
-
-                Spacer()
-
-                if let onClosePreview {
-                    Button(action: onClosePreview) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.white.opacity(0.55))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Divider().background(Color.white.opacity(0.1))
-
-            HStack(spacing: 14) {
-                // Battery Card
-                HStack(spacing: 8) {
-                    Image(systemName: isBatteryCharging ? "battery.100.bolt" : "battery.100")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(isBatteryCharging ? .green : .white)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("\(Int(batteryLevel)) %")
-                            .font(.system(size: 12.5, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                        Text(isBatteryCharging ? "En charge" : "Sur batterie")
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
-
-                // Quick Resume Playback Button
-                Button {
-                    musicManager.togglePlay()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.white)
-                        Text("Reprendre")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
-            }
-
-            // Next Calendar Event
-            if let nextEvent = calendarManager.events.first(where: { $0.end > Date() }) {
-                HStack(spacing: 7) {
-                    Image(systemName: "calendar")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.cyan)
-                    Text(nextEvent.title)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .lineLimit(1)
-                        .foregroundStyle(.white.opacity(0.9))
-                    Spacer()
-                    Text(nextEvent.start.formatted(date: .omitted, time: .shortened))
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
-            } else {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.green)
-                    Text("Aucun événement à venir")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.6))
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
-            }
-        }
-    }
-
-    private func refreshBattery() {
-        guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
-              let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef],
-              let source = sources.first,
-              let desc = IOPSGetPowerSourceDescription(snapshot, source)?.takeUnretainedValue() as? [String: Any] else {
-            return
-        }
-        if let cap = desc[kIOPSCurrentCapacityKey] as? Float {
-            batteryLevel = cap
-        } else if let capInt = desc[kIOPSCurrentCapacityKey] as? Int {
-            batteryLevel = Float(capInt)
-        }
-        isBatteryCharging = desc["Is Charging"] as? Bool ?? false
-    }
-
-    private func lyricItems(at elapsed: Double, duration: Double) -> (previous: LyricItem?, current: LyricItem, next: LyricItem?) {
+    private func lyricLines(at elapsed: Double, duration: Double) -> (previous: String?, current: String, next: String?) {
         if musicManager.isFetchingLyrics {
-            return (nil, LyricItem(text: "Synchronisation des paroles…", time: nil), nil)
+            return (nil, "Synchronisation des paroles…", nil)
         }
         if !musicManager.syncedLyrics.isEmpty {
             let synced = musicManager.syncedLyrics
@@ -1939,9 +1613,9 @@ struct DroppyLockScreenContentView: View {
                     high = mid - 1
                 }
             }
-            let prev = idx > 0 ? LyricItem(text: synced[idx - 1].text, time: synced[idx - 1].time) : nil
-            let curr = LyricItem(text: synced[idx].text, time: synced[idx].time)
-            let next = (idx + 1) < synced.count ? LyricItem(text: synced[idx + 1].text, time: synced[idx + 1].time) : nil
+            let prev = idx > 0 ? synced[idx - 1].text : nil
+            let curr = synced[idx].text
+            let next = (idx + 1) < synced.count ? synced[idx + 1].text : nil
             return (prev, curr, next)
         }
         let plainLines = musicManager.currentLyrics
@@ -1949,13 +1623,13 @@ struct DroppyLockScreenContentView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !plainLines.isEmpty else {
-            return (nil, LyricItem(text: "♪ Instrumental / Aucune parole trouvée", time: nil), nil)
+            return (nil, "♪ Instrumental / Aucune parole trouvée", nil)
         }
         let ratio = duration > 0 ? min(0.999, max(0, elapsed / duration)) : 0
         let idx = min(plainLines.count - 1, max(0, Int(Double(plainLines.count) * ratio)))
-        let prev = idx > 0 ? LyricItem(text: plainLines[idx - 1], time: nil) : nil
-        let curr = LyricItem(text: plainLines[idx], time: nil)
-        let next = (idx + 1) < plainLines.count ? LyricItem(text: plainLines[idx + 1], time: nil) : nil
+        let prev = idx > 0 ? plainLines[idx - 1] : nil
+        let curr = plainLines[idx]
+        let next = (idx + 1) < plainLines.count ? plainLines[idx + 1] : nil
         return (prev, curr, next)
     }
 

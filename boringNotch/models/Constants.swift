@@ -94,14 +94,6 @@ extension Defaults.Keys {
     static let showOnLockScreen = Key<Bool>("showOnLockScreen", default: true)
     static let hideFromScreenRecording = Key<Bool>("hideFromScreenRecording", default: false)
     
-    // MARK: Lock Screen Enhancements
-    static let lockScreenAmbientGlow = Key<Bool>("lockScreenAmbientGlow", default: true)
-    static let lockScreenVisualizer = Key<Bool>("lockScreenVisualizer", default: true)
-    static let lockScreenExpandableArtwork = Key<Bool>("lockScreenExpandableArtwork", default: true)
-    static let lockScreenInteractiveLyrics = Key<Bool>("lockScreenInteractiveLyrics", default: true)
-    static let lockScreenQuickControls = Key<Bool>("lockScreenQuickControls", default: true)
-    static let lockScreenIdleWidget = Key<Bool>("lockScreenIdleWidget", default: true)
-    
     // MARK: Appearance
     static let showEmojis = Key<Bool>("showEmojis", default: false)
     //static let alwaysShowTabs = Key<Bool>("alwaysShowTabs", default: true)

@@ -1619,54 +1619,14 @@ struct Advanced: View {
                 Defaults.Toggle(key: .hideTitleBar) {
                     Text("Hide title bar")
                 }
+                Defaults.Toggle(key: .showOnLockScreen) {
+                    Text("Show notch on lock screen")
+                }
                 Defaults.Toggle(key: .hideFromScreenRecording) {
                     Text("Hide from screen recording")
                 }
             } header: {
                 Text("Window Behavior")
-            }
-
-            Section {
-                Defaults.Toggle(key: .showOnLockScreen) {
-                    Text("Enable lock screen panel")
-                }
-
-                if showOnLockScreen {
-                    Defaults.Toggle(key: .lockScreenAmbientGlow) {
-                        Text("Ambient album glow")
-                    }
-                    Defaults.Toggle(key: .lockScreenVisualizer) {
-                        Text("Live audio visualizer")
-                    }
-                    Defaults.Toggle(key: .lockScreenExpandableArtwork) {
-                        Text("Expandable album cover")
-                    }
-                    Defaults.Toggle(key: .lockScreenInteractiveLyrics) {
-                        Text("Interactive lyrics (tap to seek)")
-                    }
-                    Defaults.Toggle(key: .lockScreenQuickControls) {
-                        Text("Quick controls (volume & favorite)")
-                    }
-                    Defaults.Toggle(key: .lockScreenIdleWidget) {
-                        Text("Idle widget (battery & calendar)")
-                    }
-
-                    Button {
-                        DroppyLockScreenMediaPanelManager.shared.togglePreviewOnDesktop()
-                    } label: {
-                        HStack {
-                            Image(systemName: "eye.fill")
-                            Text("Preview Lock Screen Panel")
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.effectiveAccent)
-                    .padding(.top, 4)
-                }
-            } header: {
-                Text("Lock Screen Experience")
-            } footer: {
-                Text("Displays an interactive media player and smart widget above the macOS lock screen and screensaver.")
             }
         }
         .accentColor(.effectiveAccent)
