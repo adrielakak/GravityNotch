@@ -1008,22 +1008,173 @@ final class ScreenCaptureOCRService {
     }
 }
 
-// MARK: - Antigravity & Coding Agents Live Monitor (Droppy Agents Feature)
+// MARK: - Coding Agents Live Monitor & Droppy Agents UI (Claude Code / Antigravity / Codex)
+
+enum AgentKind: String, Equatable, CaseIterable {
+    case claudeCode = "Claude Code"
+    case antigravity = "Antigravity"
+    case codex = "Codex CLI"
+
+    var shortLabel: String {
+        switch self {
+        case .claudeCode: return "Claude"
+        case .antigravity: return "AGY"
+        case .codex: return "Codex"
+        }
+    }
+
+    var badgeIcon: String {
+        switch self {
+        case .claudeCode: return "sparkles"
+        case .antigravity: return "atom"
+        case .codex: return "chevron.left.forwardslash.chevron.right"
+        }
+    }
+
+    var accentColor: Color {
+        switch self {
+        case .claudeCode: return Color(red: 0.91, green: 0.49, blue: 0.34) // Claude coral-amber
+        case .antigravity: return Color(red: 0.32, green: 0.80, blue: 0.98) // Antigravity sky-cyan
+        case .codex: return Color(red: 0.16, green: 0.78, blue: 0.56) // Codex emerald
+        }
+    }
+
+    var secondaryAccentColor: Color {
+        switch self {
+        case .claudeCode: return Color(red: 0.98, green: 0.67, blue: 0.42)
+        case .antigravity: return Color(red: 0.62, green: 0.44, blue: 0.98)
+        case .codex: return Color(red: 0.32, green: 0.90, blue: 0.72)
+        }
+    }
+}
+
+enum AgentWorkPhase: String, Equatable {
+    case thinking = "Thinking"
+    case editing = "Editing"
+    case running = "Running"
+    case reading = "Reading"
+    case searching = "Searching"
+    case waiting = "Ready"
+    case idle = "Idle"
+
+    var shortBadge: String {
+        switch self {
+        case .thinking: return "THINK"
+        case .editing: return "EDIT"
+        case .running: return "RUN"
+        case .reading: return "READ"
+        case .searching: return "FIND"
+        case .waiting: return "DONE"
+        case .idle: return "IDLE"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .thinking: return "brain.head.profile"
+        case .editing: return "pencil.and.outline"
+        case .running: return "terminal.fill"
+        case .reading: return "doc.text.magnifyingglass"
+        case .searching: return "magnifyingglass"
+        case .waiting: return "checkmark.circle.fill"
+        case .idle: return "cpu.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .thinking: return Color(red: 0.68, green: 0.52, blue: 0.98)
+        case .editing: return Color(red: 0.30, green: 0.85, blue: 0.58)
+        case .running: return Color(red: 0.98, green: 0.65, blue: 0.25)
+        case .reading: return Color(red: 0.36, green: 0.78, blue: 0.98)
+        case .searching: return Color(red: 0.48, green: 0.64, blue: 0.98)
+        case .waiting: return Color.white.opacity(0.65)
+        case .idle: return Color.gray
+        }
+    }
+
+    static func classify(toolName: String) -> AgentWorkPhase {
+        let lower = toolName.lowercased()
+        if lower.contains("edit") || lower.contains("write") || lower.contains("replace") || lower.contains("patch") {
+            return .editing
+        }
+        if lower.contains("bash") || lower.contains("command") || lower.contains("shell") || lower.contains("exec") || lower.contains("terminal") {
+            return .running
+        }
+        if lower.contains("read") || lower.contains("view") || lower.contains("list") {
+            return .reading
+        }
+        if lower.contains("search") || lower.contains("grep") || lower.contains("glob") || lower.contains("find") || lower.contains("web") || lower.contains("fetch") {
+            return .searching
+        }
+        return .thinking
+    }
+}
 
 struct AgentToolEvent: Identifiable, Equatable {
     let id: String
     let stepIndex: Int
     let toolName: String
+    let phase: AgentWorkPhase
     let summary: String
+    let targetFile: String?
     let timestamp: Date
 
     var iconName: String {
-        switch toolName {
-        case "edit_file", "write_file": return "pencil.and.outline"
-        case "run_command": return "terminal.fill"
-        case "read_file": return "doc.text.magnifyingglass"
-        default: return "cpu.fill"
+        phase == .thinking || phase == .waiting || phase == .idle ? "cpu.fill" : phase.iconName
+    }
+
+    var tintColor: Color {
+        phase.color
+    }
+}
+
+struct AgentSessionSnapshot: Identifiable, Equatable {
+    let id: String
+    let kind: AgentKind
+    let projectName: String
+    let sessionTitle: String
+    let modelName: String?
+    let phase: AgentWorkPhase
+    let isActive: Bool
+    let isWorkingNow: Bool
+    let lastUpdated: Date
+    let stepCount: Int
+    let contextTokens: Int
+    let maxContextWindow: Double
+    let cacheReadTokens: Int
+    let outputTokens: Int
+    let filesModifiedCount: Int
+    let linesAdded: Int
+    let linesRemoved: Int
+    let currentFile: String?
+    let currentActionTitle: String
+    let currentActionDetail: String
+    let recentEvents: [AgentToolEvent]
+
+    var contextPercentage: Double {
+        guard maxContextWindow > 0 else { return 0 }
+        return min(100.0, (Double(contextTokens) / maxContextWindow) * 100.0)
+    }
+
+    var cacheHitPercentage: Double {
+        guard contextTokens > 0 else { return 0 }
+        return min(100.0, (Double(cacheReadTokens) / Double(contextTokens)) * 100.0)
+    }
+
+    var formattedContextTokens: String { Self.formatCompactTokens(contextTokens) }
+    var formattedMaxContext: String { Self.formatCompactTokens(Int(maxContextWindow)) }
+    var formattedOutputTokens: String { Self.formatCompactTokens(outputTokens) }
+
+    static func formatCompactTokens(_ value: Int) -> String {
+        if value >= 1_000_000 {
+            let m = Double(value) / 1_000_000.0
+            return m == floor(m) ? "\(Int(m))M" : String(format: "%.1fM", m)
         }
+        if value >= 1_000 {
+            return String(format: "%.1fK", Double(value) / 1_000.0)
+        }
+        return "\(value)"
     }
 }
 
@@ -1032,6 +1183,12 @@ final class AntigravityAgentMonitor: ObservableObject {
     static let shared = AntigravityAgentMonitor()
 
     @Published private(set) var isActive: Bool = false
+    @Published private(set) var isWorkingNow: Bool = false
+    @Published private(set) var activeAgentCount: Int = 0
+    @Published private(set) var sessions: [AgentSessionSnapshot] = []
+    @Published var selectedSessionID: String? = nil
+
+    // Backwards-compatible summary properties bound to selected (or latest) session
     @Published private(set) var conversationID: String = ""
     @Published private(set) var stepCount: Int = 0
     @Published private(set) var contextTokens: Int = 0
@@ -1042,39 +1199,113 @@ final class AntigravityAgentMonitor: ObservableObject {
     @Published private(set) var currentActionDetail: String = "Waiting for prompt…"
     @Published private(set) var recentEvents: [AgentToolEvent] = []
 
+    private struct CachedSessionEntry: Sendable {
+        let modDate: Date
+        let fileSize: Int
+        let snapshot: AgentSessionSnapshot
+        let rawPhase: AgentWorkPhase
+        let turnComplete: Bool
+    }
+
+    private struct ISODateParser {
+        let frac: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return f
+        }()
+        let basic: ISO8601DateFormatter = {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime]
+            return f
+        }()
+
+        func parse(_ raw: String?) -> Date? {
+            guard let raw, !raw.isEmpty else { return nil }
+            return frac.date(from: raw) ?? basic.date(from: raw)
+        }
+    }
+
     private var timer: Timer?
-    private let maxContextWindow: Double = 1_000_000.0
+    private var maxContextWindow: Double = 1_000_000.0
+    private var sessionCache: [String: CachedSessionEntry] = [:]
+    private var isRefreshing: Bool = false
+
+    var activeSession: AgentSessionSnapshot? {
+        if let selectedSessionID, let match = sessions.first(where: { $0.id == selectedSessionID }) {
+            return match
+        }
+        return sessions.first(where: { $0.isActive }) ?? sessions.first
+    }
+
+    var activeKind: AgentKind {
+        activeSession?.kind ?? .antigravity
+    }
+
+    var activePhase: AgentWorkPhase {
+        activeSession?.phase ?? .idle
+    }
+
+    var activeBrandColor: Color {
+        activeKind.accentColor
+    }
 
     var contextPercentage: Double {
-        min(100.0, (Double(contextTokens) / maxContextWindow) * 100.0)
+        activeSession?.contextPercentage ?? min(100.0, (Double(contextTokens) / max(1.0, maxContextWindow)) * 100.0)
     }
 
     var cacheHitPercentage: Double {
+        if let activeSession { return activeSession.cacheHitPercentage }
         guard contextTokens > 0 else { return 0 }
         return min(100.0, (Double(cacheReadTokens) / Double(contextTokens)) * 100.0)
     }
 
     var formattedContextTokens: String {
-        if contextTokens >= 1_000 {
-            return String(format: "%.1fK", Double(contextTokens) / 1_000.0)
-        }
-        return "\(contextTokens)"
+        AgentSessionSnapshot.formatCompactTokens(contextTokens)
     }
 
     var formattedOutputTokens: String {
-        if totalOutputTokens >= 1_000 {
-            return String(format: "%.1fK", Double(totalOutputTokens) / 1_000.0)
-        }
-        return "\(totalOutputTokens)"
+        AgentSessionSnapshot.formatCompactTokens(totalOutputTokens)
     }
 
     private init() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refresh()
             }
         }
+    }
+
+    func selectSession(_ id: String) {
+        selectedSessionID = id
+        syncSummaryProperties()
+    }
+
+    private func syncSummaryProperties() {
+        guard let session = activeSession else {
+            if !conversationID.isEmpty { conversationID = "" }
+            if stepCount != 0 { stepCount = 0 }
+            if contextTokens != 0 { contextTokens = 0 }
+            if cacheReadTokens != 0 { cacheReadTokens = 0 }
+            if totalOutputTokens != 0 { totalOutputTokens = 0 }
+            if filesModifiedCount != 0 { filesModifiedCount = 0 }
+            if currentActionTitle != "Idle" { currentActionTitle = "Idle" }
+            if currentActionDetail != "Waiting for prompt…" { currentActionDetail = "Waiting for prompt…" }
+            if !recentEvents.isEmpty { recentEvents = [] }
+            maxContextWindow = 1_000_000.0
+            return
+        }
+        let nextConvID = String(session.id.suffix(8))
+        if conversationID != nextConvID { conversationID = nextConvID }
+        if stepCount != session.stepCount { stepCount = session.stepCount }
+        if contextTokens != session.contextTokens { contextTokens = session.contextTokens }
+        if cacheReadTokens != session.cacheReadTokens { cacheReadTokens = session.cacheReadTokens }
+        if totalOutputTokens != session.outputTokens { totalOutputTokens = session.outputTokens }
+        if filesModifiedCount != session.filesModifiedCount { filesModifiedCount = session.filesModifiedCount }
+        if currentActionTitle != session.currentActionTitle { currentActionTitle = session.currentActionTitle }
+        if currentActionDetail != session.currentActionDetail { currentActionDetail = session.currentActionDetail }
+        if recentEvents != session.recentEvents { recentEvents = session.recentEvents }
+        maxContextWindow = session.maxContextWindow
     }
 
     private nonisolated static func realHomeDirectory() -> String {
@@ -1084,36 +1315,117 @@ final class AntigravityAgentMonitor: ObservableObject {
         return NSHomeDirectory()
     }
 
-    func refresh() {
-        Task.detached(priority: .utility) {
-            let home = Self.realHomeDirectory()
-            let brainDir = URL(fileURLWithPath: home).appendingPathComponent(".gemini/antigravity/brain")
-            guard let subdirs = try? FileManager.default.contentsOfDirectory(
-                at: brainDir,
-                includingPropertiesForKeys: [.contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            ) else { return }
+    private nonisolated static func readTailLines(from url: URL, maxBytes: UInt64 = 196_608) -> [String] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        let fileSize = (try? handle.seekToEnd()) ?? 0
+        let offset = fileSize > maxBytes ? fileSize - maxBytes : 0
+        try? handle.seek(toOffset: offset)
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        var lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        if offset > 0 && !lines.isEmpty {
+            // Discard partial JSON fragment at arbitrary byte boundary
+            lines.removeFirst()
+        }
+        return lines
+    }
 
-            var newestTranscript: URL?
-            var newestConvID: String = ""
-            var newestDate: Date = .distantPast
+    private nonisolated static func resolveSnapshot(from entry: CachedSessionEntry, now: Date) -> AgentSessionSnapshot {
+        let s = entry.snapshot
+        let age = now.timeIntervalSince(entry.modDate)
+        let isActive = age < 45.0
+        let isWorkingNow: Bool
+        let effectivePhase: AgentWorkPhase
 
-            for dir in subdirs {
-                let transcript = dir.appendingPathComponent(".system_generated/logs/transcript.jsonl")
-                if let vals = try? transcript.resourceValues(forKeys: [.contentModificationDateKey]),
-                   let modDate = vals.contentModificationDate,
-                   modDate > newestDate {
-                    newestDate = modDate
-                    newestTranscript = transcript
-                    newestConvID = dir.lastPathComponent
-                }
+        switch s.kind {
+        case .antigravity:
+            isWorkingNow = age < 18.0
+            if isWorkingNow && entry.rawPhase == .waiting {
+                effectivePhase = .thinking
+            } else if !isActive {
+                effectivePhase = .waiting
+            } else {
+                effectivePhase = entry.rawPhase
+            }
+        case .claudeCode, .codex:
+            isWorkingNow = age < 22.0 && !entry.turnComplete
+            effectivePhase = (entry.turnComplete || !isActive) ? .waiting : entry.rawPhase
+        }
+
+        return AgentSessionSnapshot(
+            id: s.id,
+            kind: s.kind,
+            projectName: s.projectName,
+            sessionTitle: s.sessionTitle,
+            modelName: s.modelName,
+            phase: effectivePhase,
+            isActive: isActive,
+            isWorkingNow: isWorkingNow,
+            lastUpdated: s.lastUpdated,
+            stepCount: s.stepCount,
+            contextTokens: s.contextTokens,
+            maxContextWindow: s.maxContextWindow,
+            cacheReadTokens: s.cacheReadTokens,
+            outputTokens: s.outputTokens,
+            filesModifiedCount: s.filesModifiedCount,
+            linesAdded: s.linesAdded,
+            linesRemoved: s.linesRemoved,
+            currentFile: s.currentFile,
+            currentActionTitle: s.currentActionTitle,
+            currentActionDetail: s.currentActionDetail,
+            recentEvents: s.recentEvents
+        )
+    }
+
+    private nonisolated static func inferProjectName(fromPath path: String) -> String {
+        let components = URL(fileURLWithPath: path).pathComponents
+        if let idx = components.firstIndex(where: { $0.contains("Développement") || $0.lowercased() == "projects" || $0.lowercased() == "repos" }),
+           idx + 1 < components.count {
+            return components[idx + 1]
+        }
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
+        return parent.isEmpty || parent == "/" ? URL(fileURLWithPath: path).lastPathComponent : parent
+    }
+
+    private nonisolated static func parseAntigravitySessions(
+        home: String,
+        now: Date,
+        dateParser: ISODateParser,
+        cache: inout [String: CachedSessionEntry]
+    ) -> [AgentSessionSnapshot] {
+        let brainDir = URL(fileURLWithPath: home).appendingPathComponent(".gemini/antigravity/brain")
+        guard let subdirs = try? FileManager.default.contentsOfDirectory(
+            at: brainDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var candidates: [(url: URL, id: String, modDate: Date, fileSize: Int)] = []
+        let cutoff = now.addingTimeInterval(-86_400)
+        for dir in subdirs {
+            let transcript = dir.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+            if let vals = try? transcript.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+               let modDate = vals.contentModificationDate,
+               modDate > cutoff {
+                candidates.append((transcript, dir.lastPathComponent, modDate, vals.fileSize ?? 0))
+            }
+        }
+        candidates.sort { $0.modDate > $1.modDate }
+
+        var snapshots: [AgentSessionSnapshot] = []
+        for candidate in candidates.prefix(3) {
+            let key = "ag:\(candidate.id)"
+            if let cached = cache[key],
+               cached.modDate == candidate.modDate,
+               cached.fileSize == candidate.fileSize {
+                snapshots.append(resolveSnapshot(from: cached, now: now))
+                continue
             }
 
-            guard let transcriptURL = newestTranscript,
-                  let data = try? Data(contentsOf: transcriptURL),
-                  let text = String(data: data, encoding: .utf8) else { return }
+            let lines = readTailLines(from: candidate.url)
+            guard !lines.isEmpty else { continue }
 
-            let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
             var lastStep = 0
             var lastContext = 0
             var lastCache = 0
@@ -1121,21 +1433,23 @@ final class AntigravityAgentMonitor: ObservableObject {
             var editCount = 0
             var latestTitle = "Antigravity Ready"
             var latestDetail = "Session active"
+            var latestPhase: AgentWorkPhase = .waiting
+            var latestFile: String? = nil
+            var inferredProject = "Antigravity"
             var events: [AgentToolEvent] = []
+            var lastStepDate: Date = candidate.modDate
+            var lastRecordType = ""
 
-            let isoFormatter = ISO8601DateFormatter()
-            var lastStepDate: Date = newestDate
-
-            for line in lines.suffix(120) {
+            for line in lines.suffix(160) {
                 guard let lineData = line.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
 
                 let stepIdx = (obj["step_index"] as? Int) ?? lastStep
                 lastStep = max(lastStep, stepIdx)
+                lastRecordType = (obj["type"] as? String) ?? lastRecordType
 
-                if let createdStr = obj["created_at"] as? String,
-                   let parsedDate = isoFormatter.date(from: createdStr) {
-                    lastStepDate = parsedDate
+                if let d = dateParser.parse(obj["created_at"] as? String) {
+                    lastStepDate = d
                 }
 
                 let inTok = (obj["input_tokens"] as? Int) ?? 0
@@ -1147,223 +1461,1131 @@ final class AntigravityAgentMonitor: ObservableObject {
                 }
                 sumOutput += outTok
 
-                if let toolCalls = obj["tool_calls"] as? [[String: Any]] {
+                if let toolCalls = obj["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty {
                     for tc in toolCalls {
                         let name = (tc["name"] as? String) ?? "tool"
                         let args = (tc["args"] as? [String: Any]) ?? [:]
-                        if name == "edit_file" || name == "write_file" {
-                            editCount += 1
+                        let phase = AgentWorkPhase.classify(toolName: name)
+                        if phase == .editing { editCount += 1 }
+
+                        var targetFile: String? = nil
+                        if let path = (args["Path"] as? String) ?? (args["TargetFile"] as? String) ?? (args["AbsolutePath"] as? String) {
+                            let clean = path.replacingOccurrences(of: "\"", with: "")
+                            targetFile = URL(fileURLWithPath: clean).lastPathComponent
+                            let isWorkspacePath = clean.contains("Développement")
+                                || clean.localizedCaseInsensitiveContains("/projects/")
+                                || clean.localizedCaseInsensitiveContains("/repos/")
+                            let proj = inferProjectName(fromPath: clean)
+                            if !proj.isEmpty && proj != "/" && (inferredProject == "Antigravity" || isWorkspacePath) {
+                                inferredProject = proj
+                            }
                         }
+
                         let detail: String
-                        if let summary = args["toolSummary"] as? String {
+                        if let summary = args["toolSummary"] as? String, !summary.isEmpty {
                             detail = summary.replacingOccurrences(of: "\"", with: "")
-                        } else if let path = args["Path"] as? String {
-                            detail = URL(fileURLWithPath: path.replacingOccurrences(of: "\"", with: "")).lastPathComponent
+                        } else if let targetFile {
+                            detail = targetFile
+                        } else if let cmd = args["CommandLine"] as? String {
+                            detail = String(cmd.prefix(64))
                         } else {
                             detail = name
                         }
+
                         latestTitle = name
                         latestDetail = detail
+                        latestPhase = phase
+                        if let targetFile { latestFile = targetFile }
+
                         events.append(
                             AgentToolEvent(
-                                id: "\(stepIdx)-\(name)-\(events.count)",
+                                id: "ag-\(candidate.id.prefix(6))-\(stepIdx)-\(events.count)",
                                 stepIndex: stepIdx,
                                 toolName: name,
+                                phase: phase,
                                 summary: detail,
+                                targetFile: targetFile,
                                 timestamp: lastStepDate
+                            )
+                        )
+                    }
+                } else if lastRecordType == "USER_INPUT" {
+                    latestPhase = .thinking
+                    latestTitle = "Processing prompt"
+                    latestDetail = "Analyzing context…"
+                }
+            }
+
+            let baseSnapshot = AgentSessionSnapshot(
+                id: key,
+                kind: .antigravity,
+                projectName: inferredProject,
+                sessionTitle: "Step #\(lastStep)",
+                modelName: "Gemini",
+                phase: latestPhase,
+                isActive: false,
+                isWorkingNow: false,
+                lastUpdated: candidate.modDate,
+                stepCount: lastStep,
+                contextTokens: lastContext,
+                maxContextWindow: 1_000_000.0,
+                cacheReadTokens: lastCache,
+                outputTokens: sumOutput,
+                filesModifiedCount: editCount,
+                linesAdded: 0,
+                linesRemoved: 0,
+                currentFile: latestFile,
+                currentActionTitle: latestTitle,
+                currentActionDetail: latestDetail,
+                recentEvents: Array(events.suffix(12).reversed())
+            )
+            let entry = CachedSessionEntry(
+                modDate: candidate.modDate,
+                fileSize: candidate.fileSize,
+                snapshot: baseSnapshot,
+                rawPhase: latestPhase,
+                turnComplete: false
+            )
+            cache[key] = entry
+            snapshots.append(resolveSnapshot(from: entry, now: now))
+        }
+        return snapshots
+    }
+
+    private nonisolated static func parseClaudeSessions(
+        home: String,
+        now: Date,
+        dateParser: ISODateParser,
+        cache: inout [String: CachedSessionEntry]
+    ) -> [AgentSessionSnapshot] {
+        let projectsDir = URL(fileURLWithPath: home).appendingPathComponent(".claude/projects")
+        guard let projectFolders = try? FileManager.default.contentsOfDirectory(
+            at: projectsDir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var candidates: [(url: URL, id: String, modDate: Date, fileSize: Int)] = []
+        let cutoff = now.addingTimeInterval(-86_400)
+
+        for folder in projectFolders {
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for file in files where file.pathExtension == "jsonl" && !file.lastPathComponent.hasPrefix("agent-") {
+                if let vals = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                   let modDate = vals.contentModificationDate,
+                   modDate > cutoff {
+                    candidates.append((file, file.deletingPathExtension().lastPathComponent, modDate, vals.fileSize ?? 0))
+                }
+            }
+        }
+        candidates.sort { $0.modDate > $1.modDate }
+
+        var snapshots: [AgentSessionSnapshot] = []
+        for candidate in candidates.prefix(4) {
+            let key = "cc:\(candidate.id)"
+            if let cached = cache[key],
+               cached.modDate == candidate.modDate,
+               cached.fileSize == candidate.fileSize {
+                snapshots.append(resolveSnapshot(from: cached, now: now))
+                continue
+            }
+
+            let lines = readTailLines(from: candidate.url)
+            guard !lines.isEmpty else { continue }
+
+            var projectName = "Claude Code"
+            var sessionTitle = ""
+            var modelDisplay: String? = nil
+            var contextTokens = 0
+            var cacheRead = 0
+            var sumOutput = 0
+            var stepCounter = 0
+            var editCount = 0
+            var linesAdded = 0
+            var linesRemoved = 0
+            var latestTitle = "Claude Ready"
+            var latestDetail = "Session active"
+            var latestPhase: AgentWorkPhase = .waiting
+            var latestFile: String? = nil
+            var events: [AgentToolEvent] = []
+            var eventTime = candidate.modDate
+            var lastTurnComplete = false
+
+            for line in lines.suffix(180) {
+                guard let lineData = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
+
+                let rowType = (obj["type"] as? String) ?? ""
+                if let d = dateParser.parse(obj["timestamp"] as? String) {
+                    eventTime = d
+                }
+                if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
+                    projectName = URL(fileURLWithPath: cwd).lastPathComponent
+                }
+
+                if rowType == "ai-title", let title = obj["aiTitle"] as? String, !title.isEmpty {
+                    sessionTitle = title
+                    continue
+                }
+                if rowType == "cost-state" {
+                    linesAdded = max(linesAdded, (obj["totalLinesAdded"] as? Int) ?? 0)
+                    linesRemoved = max(linesRemoved, (obj["totalLinesRemoved"] as? Int) ?? 0)
+                    continue
+                }
+                if rowType == "system" {
+                    let subtype = (obj["subtype"] as? String) ?? ""
+                    if subtype == "turn_duration" || subtype == "stop_hook_summary" {
+                        lastTurnComplete = true
+                    }
+                    continue
+                }
+
+                guard rowType == "assistant", let message = obj["message"] as? [String: Any] else {
+                    if rowType == "user" && ((obj["isMeta"] as? Bool) != true) {
+                        lastTurnComplete = false
+                        latestPhase = .thinking
+                        latestTitle = "Thinking"
+                        latestDetail = sessionTitle.isEmpty ? "Analyzing context…" : sessionTitle
+                    }
+                    continue
+                }
+
+                lastTurnComplete = false
+                stepCounter += 1
+
+                if let model = message["model"] as? String, !model.isEmpty {
+                    modelDisplay = formatClaudeModelName(model)
+                }
+
+                if let usage = message["usage"] as? [String: Any] {
+                    let inTok = (usage["input_tokens"] as? Int) ?? 0
+                    let cacheCreate = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+                    let cRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+                    let outTok = (usage["output_tokens"] as? Int) ?? 0
+                    let totalIn = inTok + cacheCreate + cRead
+                    if totalIn > 0 {
+                        contextTokens = totalIn
+                        cacheRead = cRead
+                    }
+                    sumOutput += outTok
+                }
+
+                if let content = message["content"] as? [[String: Any]] {
+                    for item in content {
+                        let cType = (item["type"] as? String) ?? ""
+                        if cType == "thinking" {
+                            latestPhase = .thinking
+                            latestTitle = "Thinking"
+                            latestDetail = sessionTitle.isEmpty ? "Reasoning…" : sessionTitle
+                        } else if cType == "tool_use" {
+                            let name = (item["name"] as? String) ?? "Tool"
+                            let input = (item["input"] as? [String: Any]) ?? [:]
+                            let phase = AgentWorkPhase.classify(toolName: name)
+                            if phase == .editing { editCount += 1 }
+
+                            var targetFile: String? = nil
+                            if let fp = input["file_path"] as? String, !fp.isEmpty {
+                                targetFile = URL(fileURLWithPath: fp).lastPathComponent
+                            }
+
+                            let detail: String
+                            if let desc = input["description"] as? String, !desc.isEmpty {
+                                detail = desc
+                            } else if let targetFile {
+                                detail = targetFile
+                            } else if let cmd = input["command"] as? String, !cmd.isEmpty {
+                                detail = String(cmd.prefix(64))
+                            } else if let pattern = input["pattern"] as? String, !pattern.isEmpty {
+                                detail = pattern
+                            } else {
+                                detail = name
+                            }
+
+                            latestTitle = name
+                            latestDetail = detail
+                            latestPhase = phase
+                            if let targetFile { latestFile = targetFile }
+
+                            events.append(
+                                AgentToolEvent(
+                                    id: "cc-\(candidate.id.prefix(6))-\(stepCounter)-\(events.count)",
+                                    stepIndex: stepCounter,
+                                    toolName: name,
+                                    phase: phase,
+                                    summary: detail,
+                                    targetFile: targetFile,
+                                    timestamp: eventTime
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            let windowSize: Double = contextTokens > 200_000 ? 1_000_000.0 : 200_000.0
+            let baseSnapshot = AgentSessionSnapshot(
+                id: key,
+                kind: .claudeCode,
+                projectName: projectName,
+                sessionTitle: sessionTitle,
+                modelName: modelDisplay,
+                phase: latestPhase,
+                isActive: false,
+                isWorkingNow: false,
+                lastUpdated: candidate.modDate,
+                stepCount: stepCounter,
+                contextTokens: contextTokens,
+                maxContextWindow: windowSize,
+                cacheReadTokens: cacheRead,
+                outputTokens: sumOutput,
+                filesModifiedCount: editCount,
+                linesAdded: linesAdded,
+                linesRemoved: linesRemoved,
+                currentFile: latestFile,
+                currentActionTitle: latestTitle,
+                currentActionDetail: latestDetail,
+                recentEvents: Array(events.suffix(12).reversed())
+            )
+            let entry = CachedSessionEntry(
+                modDate: candidate.modDate,
+                fileSize: candidate.fileSize,
+                snapshot: baseSnapshot,
+                rawPhase: latestPhase,
+                turnComplete: lastTurnComplete
+            )
+            cache[key] = entry
+            snapshots.append(resolveSnapshot(from: entry, now: now))
+        }
+        return snapshots
+    }
+
+    private nonisolated static func parseCodexSessions(
+        home: String,
+        now: Date,
+        dateParser: ISODateParser,
+        cache: inout [String: CachedSessionEntry]
+    ) -> [AgentSessionSnapshot] {
+        let sessionsRoot = URL(fileURLWithPath: home).appendingPathComponent(".codex/sessions")
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionsRoot,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var candidates: [(url: URL, id: String, modDate: Date, fileSize: Int)] = []
+        let cutoff = now.addingTimeInterval(-86_400)
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
+            if let vals = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+               let modDate = vals.contentModificationDate,
+               modDate > cutoff {
+                candidates.append((fileURL, fileURL.deletingPathExtension().lastPathComponent, modDate, vals.fileSize ?? 0))
+            }
+        }
+        candidates.sort { $0.modDate > $1.modDate }
+
+        var snapshots: [AgentSessionSnapshot] = []
+        for candidate in candidates.prefix(2) {
+            let key = "cx:\(candidate.id)"
+            if let cached = cache[key],
+               cached.modDate == candidate.modDate,
+               cached.fileSize == candidate.fileSize {
+                snapshots.append(resolveSnapshot(from: cached, now: now))
+                continue
+            }
+
+            let lines = readTailLines(from: candidate.url)
+            guard !lines.isEmpty else { continue }
+
+            var projectName = "Codex"
+            var windowSize: Double = 200_000.0
+            var contextTokens = 0
+            var cacheRead = 0
+            var sumOutput = 0
+            var stepCounter = 0
+            var editCount = 0
+            var latestTitle = "Codex Ready"
+            var latestDetail = "Session active"
+            var latestPhase: AgentWorkPhase = .waiting
+            var events: [AgentToolEvent] = []
+            var eventTime = candidate.modDate
+            var taskComplete = false
+
+            for line in lines.suffix(150) {
+                guard let lineData = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
+
+                let rowType = (obj["type"] as? String) ?? ""
+                if let d = dateParser.parse(obj["timestamp"] as? String) {
+                    eventTime = d
+                }
+
+                let payload = obj["payload"] as? [String: Any]
+                if rowType == "session_meta", let cwd = payload?["cwd"] as? String, !cwd.isEmpty {
+                    projectName = URL(fileURLWithPath: cwd).lastPathComponent
+                } else if rowType == "event_msg", let payload {
+                    let pType = (payload["type"] as? String) ?? ""
+                    if pType == "task_started" {
+                        taskComplete = false
+                        if let win = payload["model_context_window"] as? Int, win > 0 {
+                            windowSize = Double(win)
+                        }
+                        latestPhase = .thinking
+                    } else if pType == "task_complete" {
+                        taskComplete = true
+                        latestPhase = .waiting
+                    } else if pType == "token_count", let info = payload["info"] as? [String: Any] {
+                        if let last = info["last_token_usage"] as? [String: Any] {
+                            let inTok = (last["input_tokens"] as? Int) ?? 0
+                            let cached = (last["cached_input_tokens"] as? Int) ?? 0
+                            let outTok = (last["output_tokens"] as? Int) ?? 0
+                            if inTok > 0 { contextTokens = inTok; cacheRead = cached }
+                            sumOutput = max(sumOutput, outTok)
+                        }
+                        if let win = info["model_context_window"] as? Int, win > 0 {
+                            windowSize = Double(win)
+                        }
+                    }
+                } else if rowType == "response_item", let payload {
+                    let pType = (payload["type"] as? String) ?? ""
+                    if pType == "function_call" || pType == "custom_tool_call" {
+                        stepCounter += 1
+                        let name = (payload["name"] as? String) ?? "tool"
+                        let phase = AgentWorkPhase.classify(toolName: name)
+                        if phase == .editing { editCount += 1 }
+                        latestTitle = name
+                        latestDetail = projectName
+                        latestPhase = phase
+                        events.append(
+                            AgentToolEvent(
+                                id: "cx-\(candidate.id.prefix(6))-\(stepCounter)-\(events.count)",
+                                stepIndex: stepCounter,
+                                toolName: name,
+                                phase: phase,
+                                summary: name,
+                                targetFile: nil,
+                                timestamp: eventTime
                             )
                         )
                     }
                 }
             }
 
-            let activeNow = Date().timeIntervalSince(newestDate) < 45.0
-            let recentSuffix = Array(events.suffix(8).reversed())
-            let finalStep = lastStep
-            let finalContext = lastContext
-            let finalCache = lastCache
-            let finalOutput = sumOutput
-            let finalEdits = editCount
-            let finalTitle = latestTitle
-            let finalDetail = latestDetail
-            let finalConvID = String(newestConvID.prefix(8))
+            let baseSnapshot = AgentSessionSnapshot(
+                id: key,
+                kind: .codex,
+                projectName: projectName,
+                sessionTitle: "",
+                modelName: "Codex",
+                phase: latestPhase,
+                isActive: false,
+                isWorkingNow: false,
+                lastUpdated: candidate.modDate,
+                stepCount: stepCounter,
+                contextTokens: contextTokens,
+                maxContextWindow: windowSize,
+                cacheReadTokens: cacheRead,
+                outputTokens: sumOutput,
+                filesModifiedCount: editCount,
+                linesAdded: 0,
+                linesRemoved: 0,
+                currentFile: nil,
+                currentActionTitle: latestTitle,
+                currentActionDetail: latestDetail,
+                recentEvents: Array(events.suffix(12).reversed())
+            )
+            let entry = CachedSessionEntry(
+                modDate: candidate.modDate,
+                fileSize: candidate.fileSize,
+                snapshot: baseSnapshot,
+                rawPhase: latestPhase,
+                turnComplete: taskComplete
+            )
+            cache[key] = entry
+            snapshots.append(resolveSnapshot(from: entry, now: now))
+        }
+        return snapshots
+    }
+
+    private nonisolated static func formatClaudeModelName(_ raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower.contains("opus-4-6") { return "Opus 4.6" }
+        if lower.contains("sonnet-4-6") { return "Sonnet 4.6" }
+        if lower.contains("haiku-4-5") { return "Haiku 4.5" }
+        if lower.contains("sonnet") { return "Sonnet" }
+        if lower.contains("opus") { return "Opus" }
+        if lower.contains("haiku") { return "Haiku" }
+        return raw
+    }
+
+    func refresh() {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        let initialCache = sessionCache
+
+        Task.detached(priority: .utility) {
+            let home = Self.realHomeDirectory()
+            let now = Date()
+            let dateParser = ISODateParser()
+            var nextCache = initialCache
+
+            var combined: [AgentSessionSnapshot] = []
+            combined.append(contentsOf: Self.parseClaudeSessions(home: home, now: now, dateParser: dateParser, cache: &nextCache))
+            combined.append(contentsOf: Self.parseAntigravitySessions(home: home, now: now, dateParser: dateParser, cache: &nextCache))
+            combined.append(contentsOf: Self.parseCodexSessions(home: home, now: now, dateParser: dateParser, cache: &nextCache))
+
+            combined.sort { lhs, rhs in
+                if lhs.isActive != rhs.isActive { return lhs.isActive && !rhs.isActive }
+                if lhs.isWorkingNow != rhs.isWorkingNow { return lhs.isWorkingNow && !rhs.isWorkingNow }
+                return lhs.lastUpdated > rhs.lastUpdated
+            }
+
+            let trimmed = Array(combined.prefix(6))
+            let validKeys = Set(trimmed.map { $0.id })
+            nextCache = nextCache.filter { validKeys.contains($0.key) }
+
+            let activeSessions = trimmed.filter { $0.isActive }
+            let anyActive = !activeSessions.isEmpty
+            let anyWorking = activeSessions.contains { $0.isWorkingNow }
+            let updatedCache = nextCache
 
             await MainActor.run {
                 let mon = AntigravityAgentMonitor.shared
-                mon.isActive = activeNow
-                mon.conversationID = finalConvID
-                mon.stepCount = finalStep
-                mon.contextTokens = finalContext
-                mon.cacheReadTokens = finalCache
-                mon.totalOutputTokens = finalOutput
-                mon.filesModifiedCount = finalEdits
-                mon.currentActionTitle = finalTitle
-                mon.currentActionDetail = finalDetail
-                mon.recentEvents = recentSuffix
+                mon.isRefreshing = false
+                mon.sessionCache = updatedCache
+
+                if mon.sessions != trimmed { mon.sessions = trimmed }
+                if mon.isActive != anyActive { mon.isActive = anyActive }
+                if mon.isWorkingNow != anyWorking { mon.isWorkingNow = anyWorking }
+                if mon.activeAgentCount != activeSessions.count { mon.activeAgentCount = activeSessions.count }
+
+                // Auto-follow newest active session unless the user explicitly clicked a session
+                if let currentSelected = mon.selectedSessionID,
+                   !trimmed.contains(where: { $0.id == currentSelected }) {
+                    mon.selectedSessionID = nil
+                }
+                if mon.selectedSessionID == nil {
+                    mon.selectedSessionID = activeSessions.first?.id ?? trimmed.first?.id
+                }
+                mon.syncSummaryProperties()
             }
         }
     }
 }
+
+// MARK: - Closed-Notch Droppy Agent Wing Live Activity
+
+struct AgentCompactWaveform: View {
+    let isWorking: Bool
+    let color: Color
+    let secondaryColor: Color
+
+    var body: some View {
+        Group {
+            if isWorking {
+                TimelineView(.periodic(from: .now, by: 0.34)) { context in
+                    let tick = Int(context.date.timeIntervalSince1970 * 3)
+                    HStack(spacing: 2) {
+                        ForEach(0..<3, id: \.self) { index in
+                            let height: CGFloat = [6, 11, 8, 13, 7, 10][(tick + index * 2) % 6]
+                            Capsule()
+                                .fill(index == 1 ? secondaryColor : color)
+                                .frame(width: 2.2, height: height)
+                                .animation(.spring(response: 0.28, dampingFraction: 0.72), value: tick)
+                        }
+                    }
+                    .frame(height: 14, alignment: .center)
+                }
+            } else {
+                HStack(spacing: 2) {
+                    ForEach(0..<3, id: \.self) { index in
+                        Capsule()
+                            .fill((index == 1 ? secondaryColor : color).opacity(0.65))
+                            .frame(width: 2.2, height: 4)
+                    }
+                }
+                .frame(height: 14, alignment: .center)
+            }
+        }
+    }
+}
+
+struct AgentClosedNotchView: View {
+    @ObservedObject var monitor = AntigravityAgentMonitor.shared
+    let closedHeight: CGFloat
+    let centerSpacerWidth: CGFloat
+
+    private var wingHeight: CGFloat {
+        max(18, closedHeight - 8)
+    }
+
+    private var brandColor: Color {
+        monitor.activeBrandColor
+    }
+
+    private var secondaryColor: Color {
+        monitor.activeKind.secondaryAccentColor
+    }
+
+    var body: some View {
+        let session = monitor.activeSession
+        let phase = session?.phase ?? .thinking
+        let working = session?.isWorkingNow ?? monitor.isWorkingNow
+        let pct = max(0, min(100, Int(round(monitor.contextPercentage))))
+
+        HStack(spacing: 0) {
+            // Left ear: Pulsing Droppy orb + active phase/agent icon
+            HStack(spacing: 5) {
+                AgentPulsingOrb(color: brandColor, isWorking: working, size: 7)
+                Image(systemName: phase.iconName)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(working ? phase.color : .white.opacity(0.85))
+                    .contentTransition(.symbolEffect(.replace))
+                Text(monitor.activeKind.shortLabel)
+                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 7)
+            .frame(width: 74, height: wingHeight, alignment: .center)
+            .background(
+                Capsule()
+                    .fill(brandColor.opacity(0.14))
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(brandColor.opacity(0.32), lineWidth: 0.75)
+                    )
+            )
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: max(20, centerSpacerWidth))
+
+            // Right ear: Waveform + Phase/Count/Context Gauge
+            HStack(spacing: 5) {
+                AgentCompactWaveform(
+                    isWorking: working,
+                    color: brandColor,
+                    secondaryColor: secondaryColor
+                )
+
+                Text(monitor.activeAgentCount > 1 ? "\(monitor.activeAgentCount)× · \(pct)%" : "\(pct)%")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 7)
+            .frame(width: 74, height: wingHeight, alignment: .center)
+            .background(
+                Capsule()
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75)
+                    )
+            )
+        }
+        .frame(height: closedHeight, alignment: .center)
+        .help("\(monitor.activeKind.rawValue) (\(phase.rawValue)) — Click to inspect Agents")
+    }
+}
+
+struct AgentPulsingOrb: View {
+    let color: Color
+    let isWorking: Bool
+    var size: CGFloat = 8
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            if isWorking {
+                Circle()
+                    .fill(color.opacity(pulse ? 0.08 : 0.45))
+                    .frame(width: size * (pulse ? 2.1 : 1.3), height: size * (pulse ? 2.1 : 1.3))
+            }
+            Circle()
+                .fill(color)
+                .frame(width: size, height: size)
+                .shadow(color: color.opacity(isWorking ? 0.85 : 0.35), radius: isWorking ? 4 : 1)
+        }
+        .frame(width: size * 2.1, height: size * 2.1)
+        .onAppear {
+            if isWorking {
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+        }
+        .onChange(of: isWorking) { _, working in
+            if working {
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    pulse = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Expanded Notch Agent Hub (Droppy Agents Droplet)
 
 struct AgentsNotchView: View {
     @ObservedObject var monitor = AntigravityAgentMonitor.shared
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 16)
-            .stroke(Color.white.opacity(0.12), style: StrokeStyle(lineWidth: 1.5))
-            .overlay {
-                HStack(spacing: 12) {
-                    // Left column: Live Agent Status & Quota/Context Gauge
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(monitor.isActive ? Color.green : Color.cyan)
-                                .frame(width: 8, height: 8)
-                            Text("Antigravity Agent")
-                                .font(.system(size: 12, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
-                            Spacer()
-                            Text("Step #\(monitor.stepCount)")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Color.accentColor)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.16)))
-                        }
-
-                        // Quota & Context Window Progress Bar
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("Context / Quota")
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundStyle(.gray)
-                                Spacer()
-                                Text("\(monitor.formattedContextTokens) / 1M (\(String(format: "%.1f%%", monitor.contextPercentage)))")
-                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(.white)
-                            }
-                            GeometryReader { geo in
-                                ZStack(alignment: .leading) {
-                                    Capsule()
-                                        .fill(Color.white.opacity(0.1))
-                                    Capsule()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [.cyan, .purple],
-                                                startPoint: .leading,
-                                                endPoint: .trailing
-                                            )
-                                        )
-                                        .frame(width: max(6, geo.size.width * CGFloat(monitor.contextPercentage / 100.0)))
-                                }
-                            }
-                            .frame(height: 6)
-                        }
-
-                        HStack(spacing: 8) {
-                            statBadge(label: "Cache Hit", value: String(format: "%.0f%%", monitor.cacheHitPercentage))
-                            statBadge(label: "Out Tokens", value: monitor.formattedOutputTokens)
-                            statBadge(label: "Edits", value: "\(monitor.filesModifiedCount)")
-                        }
-
-                        HStack(spacing: 5) {
-                            Image(systemName: "bolt.horizontal.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.cyan)
-                            Text("\(monitor.currentActionTitle): \(monitor.currentActionDetail)")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .lineLimit(1)
-                        }
+        Group {
+            if let session = monitor.activeSession {
+                VStack(spacing: 5) {
+                    if monitor.sessions.count > 1 {
+                        AgentSessionSwitcherBar(
+                            sessions: monitor.sessions,
+                            selectedID: session.id,
+                            activeCount: monitor.activeAgentCount,
+                            onSelect: { monitor.selectSession($0) }
+                        )
+                        .frame(height: 21)
                     }
-                    .frame(width: 255)
 
-                    Divider()
-                        .background(Color.white.opacity(0.12))
+                    HStack(spacing: 8) {
+                        AgentStatusCard(session: session)
+                            .frame(width: 262)
 
-                    // Right column: Live Tool Call Stream
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("Recent Agent Tool Calls")
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.gray)
-                            Spacer()
-                            Button {
-                                DroppyLockScreenMediaPanelManager.shared.togglePreviewOnDesktop()
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "lock.display")
-                                        .font(.system(size: 9))
-                                    Text("Lock Screen Preview")
-                                        .font(.system(size: 9, weight: .medium))
-                                }
-                                .foregroundStyle(.white.opacity(0.8))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.white.opacity(0.1)))
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: 4) {
-                                ForEach(monitor.recentEvents) { ev in
-                                    HStack(spacing: 6) {
-                                        Image(systemName: ev.iconName)
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(.cyan)
-                                            .frame(width: 14)
-                                        Text(ev.toolName)
-                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                            .foregroundStyle(.white.opacity(0.85))
-                                        Text(ev.summary)
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.gray)
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Text("#\(ev.stepIndex)")
-                                            .font(.system(size: 9, design: .monospaced))
-                                            .foregroundStyle(.gray.opacity(0.7))
-                                    }
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 3)
-                                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.05)))
-                                }
-                            }
-                        }
+                        AgentToolStreamCard(session: session)
+                            .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxHeight: .infinity, alignment: .top)
                 }
-                .padding(10)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 1)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            } else {
+                AgentsEmptyStateView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-    }
-
-    private func statBadge(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.gray)
-            Text(value)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.06)))
     }
 }
 
-// MARK: - Lock Screen Media Player Panel via SkyLightWindow (Droppy Lock Screen Feature)
+private struct AgentSessionSwitcherBar: View {
+    let sessions: [AgentSessionSnapshot]
+    let selectedID: String
+    let activeCount: Int
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    ForEach(sessions) { session in
+                        let isSelected = session.id == selectedID
+                        Button {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                                onSelect(session.id)
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(session.isActive ? session.kind.accentColor : Color.white.opacity(0.28))
+                                    .frame(width: 5, height: 5)
+                                Text(session.kind.shortLabel)
+                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                    .foregroundStyle(isSelected ? .white : .white.opacity(0.68))
+                                Text("· \(session.projectName)")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(isSelected ? .white.opacity(0.84) : .gray)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
+                            .background(
+                                Capsule()
+                                    .fill(isSelected ? session.kind.accentColor.opacity(0.20) : Color.white.opacity(0.05))
+                                    .overlay(
+                                        Capsule()
+                                            .strokeBorder(
+                                                isSelected ? session.kind.accentColor.opacity(0.45) : Color.white.opacity(0.08),
+                                                lineWidth: 0.8
+                                            )
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.trailing, activeCount > 0 ? 10 : 2)
+            }
+            .mask(
+                HStack(spacing: 0) {
+                    Rectangle().fill(Color.white)
+                    if activeCount > 0 {
+                        LinearGradient(colors: [.white, .clear], startPoint: .leading, endPoint: .trailing)
+                            .frame(width: 14)
+                    }
+                }
+            )
+
+            if activeCount > 0 {
+                Text("\(activeCount) running")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.green.opacity(0.9))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(Capsule().fill(Color.green.opacity(0.14)))
+            }
+        }
+    }
+}
+
+private struct AgentStatusCard: View {
+    let session: AgentSessionSnapshot
+
+    private var accent: Color { session.kind.accentColor }
+    private var secondary: Color { session.kind.secondaryAccentColor }
+
+    private var actionHeadline: String {
+        if let file = session.currentFile {
+            if session.currentActionDetail != file && !session.currentActionDetail.isEmpty {
+                return "\(file) · \(session.currentActionDetail)"
+            }
+            return file
+        }
+        if !session.currentActionDetail.isEmpty && session.currentActionDetail != session.currentActionTitle {
+            return "\(session.currentActionTitle) · \(session.currentActionDetail)"
+        }
+        return session.currentActionTitle
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Top Identity Row
+            HStack(spacing: 6) {
+                AgentPulsingOrb(color: session.isActive ? accent : .gray, isWorking: session.isWorkingNow, size: 6.5)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 4) {
+                        Text(session.kind.rawValue)
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        if let model = session.modelName {
+                            Text(model)
+                                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.65))
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Color.white.opacity(0.08)))
+                        }
+                    }
+                    Text(session.sessionTitle.isEmpty ? session.projectName : "\(session.projectName) · \(session.sessionTitle)")
+                        .font(.system(size: 8.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 4)
+
+                HStack(spacing: 3.5) {
+                    if session.isWorkingNow {
+                        AgentCompactWaveform(isWorking: true, color: accent, secondaryColor: secondary)
+                    }
+                    Text(session.phase.rawValue)
+                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(session.isActive ? session.phase.color : .gray)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2.5)
+                .background(
+                    Capsule()
+                        .fill(session.isActive ? session.phase.color.opacity(0.16) : Color.white.opacity(0.06))
+                )
+            }
+
+            Spacer(minLength: 3)
+
+            // Active File / Command Highlight Pill (compact single line)
+            HStack(spacing: 5) {
+                Image(systemName: session.phase.iconName)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(session.phase.color)
+                    .frame(width: 13)
+
+                Text(actionHeadline)
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3.5)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(session.isWorkingNow ? accent.opacity(0.28) : Color.white.opacity(0.07), lineWidth: 0.8)
+                    )
+            )
+
+            Spacer(minLength: 3)
+
+            // Context Window Progress Gauge
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Context")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                    Spacer()
+                    Text("\(session.formattedContextTokens) / \(session.formattedMaxContext) · \(String(format: "%.0f%%", session.contextPercentage))")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(session.contextPercentage > 80 ? Color.orange : .white.opacity(0.9))
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.10))
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: session.contextPercentage > 82
+                                        ? [.orange, .red]
+                                        : [accent, secondary],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(width: max(5, geo.size.width * CGFloat(session.contextPercentage / 100.0)))
+                    }
+                }
+                .frame(height: 4)
+            }
+
+            Spacer(minLength: 3)
+
+            // Compact 3-Metric Swiss Telemetry Footer (single-line chips)
+            HStack(spacing: 5) {
+                if session.linesAdded > 0 || session.linesRemoved > 0 {
+                    metricChip(
+                        label: "Diff",
+                        value: "+\(session.linesAdded)-\(session.linesRemoved)",
+                        valueColor: .green
+                    )
+                } else {
+                    metricChip(label: "Edits", value: "\(session.filesModifiedCount)", valueColor: .white)
+                }
+                metricChip(label: "Cache", value: String(format: "%.0f%%", session.cacheHitPercentage), valueColor: .white)
+                metricChip(label: "Out", value: session.formattedOutputTokens, valueColor: .white)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    (session.isWorkingNow ? accent : Color.white).opacity(0.24),
+                                    Color.white.opacity(0.05)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.9
+                        )
+                )
+        )
+    }
+
+    private func metricChip(label: String, value: String, valueColor: Color) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.white.opacity(0.45))
+            Text(value)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(valueColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.white.opacity(0.055))
+        )
+    }
+}
+
+private struct AgentToolStreamCard: View {
+    let session: AgentSessionSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Live Activity Feed")
+                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.6))
+                Spacer()
+                Text("Step #\(session.stepCount)")
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+
+            if session.recentEvents.isEmpty {
+                Spacer()
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.35))
+                    Text("Waiting for agent tool calls…")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+                .frame(maxWidth: .infinity)
+                Spacer()
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 3) {
+                        ForEach(Array(session.recentEvents.enumerated()), id: \.element.id) { index, ev in
+                            let isNewest = index == 0 && session.isWorkingNow
+                            HStack(spacing: 6) {
+                                Image(systemName: ev.iconName)
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .foregroundStyle(ev.tintColor)
+                                    .frame(width: 17, height: 17)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                            .fill(ev.tintColor.opacity(0.16))
+                                    )
+
+                                HStack(spacing: 4) {
+                                    Text(ev.toolName)
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(.white.opacity(0.92))
+                                        .lineLimit(1)
+                                    if let file = ev.targetFile {
+                                        Text(file)
+                                            .font(.system(size: 9, weight: .semibold))
+                                            .foregroundStyle(ev.tintColor)
+                                            .lineLimit(1)
+                                    } else if ev.summary != ev.toolName && !ev.summary.isEmpty {
+                                        Text(ev.summary)
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.white.opacity(0.55))
+                                            .lineLimit(1)
+                                    }
+                                    if ev.targetFile != nil && ev.summary != ev.targetFile && ev.summary != ev.toolName && !ev.summary.isEmpty {
+                                        Text("· \(ev.summary)")
+                                            .font(.system(size: 8.5))
+                                            .foregroundStyle(.white.opacity(0.45))
+                                            .lineLimit(1)
+                                    }
+                                }
+
+                                Spacer(minLength: 4)
+
+                                Text(relativeAgeText(ev.timestamp))
+                                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.42))
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(isNewest ? session.kind.accentColor.opacity(0.11) : Color.white.opacity(0.045))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                            .strokeBorder(
+                                                isNewest ? session.kind.accentColor.opacity(0.28) : Color.clear,
+                                                lineWidth: 0.8
+                                            )
+                                    )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 0.9)
+                )
+        )
+    }
+
+    private func relativeAgeText(_ date: Date) -> String {
+        let secs = max(0, Int(Date().timeIntervalSince(date)))
+        if secs < 60 { return "\(secs)s" }
+        let mins = secs / 60
+        if mins < 60 { return "\(mins)m" }
+        return "\(mins / 60)h"
+    }
+}
+
+private struct AgentsEmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 5) {
+            Image(systemName: "sparkles.rectangle.stack")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(.white.opacity(0.55))
+            Text("No Coding Agents Running")
+                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.9))
+            Text("Claude Code, Antigravity & Codex sessions appear here live")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.white.opacity(0.5))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Lock Screen Music Player Panel via SkyLightWindow (Droppy Lock Screen Music UI)
 
 @MainActor
-final class DroppyLockScreenMediaPanelManager {
+final class DroppyLockScreenMediaPanelManager: ObservableObject {
     static let shared = DroppyLockScreenMediaPanelManager()
 
     private var panelWindow: BoringNotchSkyLightWindow?
-    private var isPreviewVisible: Bool = false
+    @Published private(set) var isPreviewVisible: Bool = false
+
+    static func hasActiveMedia(_ music: MusicManager? = nil) -> Bool {
+        let music = music ?? MusicManager.shared
+        return !(music.songTitle == "I'm Handsome"
+          && music.bundleIdentifier == nil
+          && music.songDuration <= 0
+          && !music.isPlaying)
+    }
 
     func showOnLockScreen() {
-        guard Defaults[.showOnLockScreen] else { return }
+        isPreviewVisible = false
+        guard Defaults[.showOnLockScreen], Defaults[.lockScreenMediaPlayer] else { return }
         presentPanel(delegateToSkyLight: true)
     }
 
@@ -1385,13 +2607,18 @@ final class DroppyLockScreenMediaPanelManager {
 
     private func presentPanel(delegateToSkyLight: Bool) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let width: CGFloat = 396
-        let height: CGFloat = 236
-        let originX = screen.frame.midX - (width / 2)
-        let originY = screen.frame.origin.y + (screen.frame.height * 0.21)
-        let frame = NSRect(x: originX, y: originY, width: width, height: height)
+        let envelopeWidth: CGFloat = 436
+        let envelopeHeight: CGFloat = 390
+        let originX = screen.frame.midX - (envelopeWidth / 2)
+        // Center comfortably in the fractal area, lowered cleanly above the login avatar (~195pt) and well below the clock
+        let targetCenterY = screen.frame.origin.y + (screen.frame.height * 0.35)
+        let originY = max(screen.frame.origin.y + 60, targetCenterY - (envelopeHeight / 2))
+        let frame = NSRect(x: originX, y: originY, width: envelopeWidth, height: envelopeHeight)
 
-        if MusicManager.shared.currentLyrics.isEmpty && MusicManager.shared.syncedLyrics.isEmpty && !MusicManager.shared.isFetchingLyrics {
+        if Self.hasActiveMedia()
+            && MusicManager.shared.currentLyrics.isEmpty
+            && MusicManager.shared.syncedLyrics.isEmpty
+            && !MusicManager.shared.isFetchingLyrics {
             MusicManager.shared.refreshLyrics()
         }
 
@@ -1408,14 +2635,17 @@ final class DroppyLockScreenMediaPanelManager {
             window.isReleasedWhenClosed = false
             window.isOpaque = false
             window.backgroundColor = .clear
-            window.hasShadow = true
+            window.hasShadow = false
             panelWindow = window
         }
 
         window.setFrame(frame, display: true)
-        let host = NSHostingView(rootView: DroppyLockScreenMediaPanelView(onClosePreview: { [weak self] in
-            self?.hideFromLockScreen()
-        }))
+        let rootView = DroppyLockScreenMediaPanelView(
+            onClosePreview: delegateToSkyLight ? nil : { [weak self] in
+                self?.hideFromLockScreen()
+            }
+        )
+        let host = NSHostingView(rootView: rootView)
         host.frame = NSRect(origin: .zero, size: frame.size)
         window.contentView = host
 
@@ -1430,174 +2660,318 @@ final class DroppyLockScreenMediaPanelManager {
 
 struct DroppyLockScreenMediaPanelView: View {
     @ObservedObject var musicManager = MusicManager.shared
-    @State private var showLyricsCard: Bool = true
+    @Default(.lockScreenShowLyrics) private var lockScreenShowLyrics
+    @State private var isArtworkExpanded: Bool = false
+    @State private var showAudioDrawer: Bool = false
+    @State private var showRemainingTime: Bool = true
     var onClosePreview: (() -> Void)? = nil
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.25 : 2.0)) { context in
-            let elapsed = musicManager.estimatedPlaybackPosition(at: context.date)
-            let progress = musicManager.songDuration > 0 ? min(1, max(0, elapsed / musicManager.songDuration)) : 0
-            let lyricTriple = lyricLines(at: elapsed, duration: musicManager.songDuration)
+        TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.2 : 1.5)) { context in
+            LockScreenMediaCardContainer(
+                currentDate: context.date,
+                showLyricsCard: lockScreenShowLyrics,
+                onToggleLyrics: {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                        lockScreenShowLyrics.toggle()
+                    }
+                    if DroppyLockScreenMediaPanelManager.hasActiveMedia(musicManager)
+                        && musicManager.currentLyrics.isEmpty
+                        && musicManager.syncedLyrics.isEmpty {
+                        musicManager.refreshLyrics()
+                    }
+                },
+                isArtworkExpanded: $isArtworkExpanded,
+                showAudioDrawer: $showAudioDrawer,
+                showRemainingTime: $showRemainingTime,
+                onClosePreview: onClosePreview
+            )
+        }
+        .frame(width: 436, height: 390, alignment: .center)
+        .onAppear {
+            if DroppyLockScreenMediaPanelManager.hasActiveMedia(musicManager)
+                && musicManager.currentLyrics.isEmpty
+                && musicManager.syncedLyrics.isEmpty
+                && !musicManager.isFetchingLyrics {
+                musicManager.refreshLyrics()
+            }
+        }
+    }
+}
 
-            VStack(spacing: 10) {
+private struct LockScreenMediaCardContainer: View {
+    @ObservedObject var musicManager = MusicManager.shared
+    @Default(.lockScreenMediaAmbientGlow) private var ambientGlowEnabled
+
+    let currentDate: Date
+    let showLyricsCard: Bool
+    let onToggleLyrics: () -> Void
+    @Binding var isArtworkExpanded: Bool
+    @Binding var showAudioDrawer: Bool
+    @Binding var showRemainingTime: Bool
+    let onClosePreview: (() -> Void)?
+
+    private var hasMediaTrack: Bool {
+        DroppyLockScreenMediaPanelManager.hasActiveMedia(musicManager)
+    }
+
+    private var albumAccent: Color {
+        Color(nsColor: musicManager.avgColor).ensureMinimumBrightness(factor: 0.65)
+    }
+
+    private var cardBackground: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+
+            if ambientGlowEnabled && hasMediaTrack {
+                Circle()
+                    .fill(albumAccent.opacity(musicManager.isPlaying ? 0.30 : 0.14))
+                    .frame(width: 300, height: 180)
+                    .blur(radius: 52)
+                    .animation(.easeInOut(duration: 0.6), value: musicManager.isPlaying)
+            }
+
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    var body: some View {
+        let elapsed = musicManager.estimatedPlaybackPosition(at: currentDate)
+
+        VStack(spacing: 10) {
+            LockScreenArtworkHeader(
+                hasMediaTrack: hasMediaTrack,
+                albumAccent: albumAccent,
+                showLyricsCard: showLyricsCard,
+                onToggleLyrics: onToggleLyrics,
+                isArtworkExpanded: $isArtworkExpanded,
+                onExpandCollapseDrawer: {
+                    if $0 { showAudioDrawer = false }
+                },
+                onClosePreview: onClosePreview
+            )
+
+            if hasMediaTrack && showLyricsCard {
+                LockScreenSyncedLyricsCard(
+                    elapsed: elapsed,
+                    duration: musicManager.songDuration,
+                    albumAccent: albumAccent
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+            }
+
+            if hasMediaTrack {
+                LockScreenScrubBar(
+                    elapsed: elapsed,
+                    duration: musicManager.songDuration,
+                    accentColor: albumAccent,
+                    showRemainingTime: $showRemainingTime
+                )
+            }
+
+            LockScreenTransportControls(
+                hasMediaTrack: hasMediaTrack,
+                albumAccent: albumAccent,
+                showAudioDrawer: $showAudioDrawer,
+                onOpenAudioDrawer: {
+                    if $0 { isArtworkExpanded = false }
+                }
+            )
+
+            if showAudioDrawer {
+                LockScreenAudioDrawer(accentColor: albumAccent)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 396)
+        .background(cardBackground)
+        .shadow(
+            color: (ambientGlowEnabled && musicManager.isPlaying && hasMediaTrack)
+                ? albumAccent.opacity(0.18)
+                : .black.opacity(0.32),
+            radius: 18,
+            y: 8
+        )
+        .shadow(color: .black.opacity(0.34), radius: 12, y: 6)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .animation(.spring(response: 0.34, dampingFraction: 0.85), value: showLyricsCard)
+        .animation(.spring(response: 0.34, dampingFraction: 0.85), value: isArtworkExpanded)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: showAudioDrawer)
+    }
+}
+
+private struct LockScreenArtworkHeader: View {
+    @ObservedObject var musicManager = MusicManager.shared
+    let hasMediaTrack: Bool
+    let albumAccent: Color
+    let showLyricsCard: Bool
+    let onToggleLyrics: () -> Void
+    @Binding var isArtworkExpanded: Bool
+    var onExpandCollapseDrawer: (Bool) -> Void
+    var onClosePreview: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: isArtworkExpanded ? 10 : 0) {
+            if isArtworkExpanded && hasMediaTrack {
+                HStack(alignment: .top, spacing: 14) {
+                    artworkView(size: 86, radius: 14)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(musicManager.songTitle)
+                                .font(.system(size: 14.5, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(2)
+                            Spacer(minLength: 4)
+                            topRightUtilityCluster
+                        }
+
+                        Text(musicManager.artistName.isEmpty ? "Music" : musicManager.artistName)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.70))
+                            .lineLimit(1)
+
+                        if !musicManager.album.isEmpty {
+                            Text(musicManager.album)
+                                .font(.system(size: 10.5, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.50))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            } else {
                 HStack(spacing: 12) {
-                    Image(nsImage: musicManager.albumArt)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 50, height: 50)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
+                    if hasMediaTrack {
+                        artworkView(size: 50, radius: 10)
+                    } else {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(0.09))
+                            .frame(width: 50, height: 50)
+                            .overlay(
+                                Image(systemName: "music.note")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.55))
+                            )
+                    }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(musicManager.songTitle.isEmpty ? "Not Playing" : musicManager.songTitle)
+                        Text(hasMediaTrack ? musicManager.songTitle : "Nothing Playing")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
-                        Text(musicManager.artistName.isEmpty ? "Apple Music" : musicManager.artistName)
+                        Text(hasMediaTrack ? (musicManager.artistName.isEmpty ? "Apple Music" : musicManager.artistName) : "Press Play to start listening")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.65))
+                            .foregroundStyle(hasMediaTrack ? .white.opacity(0.65) : .white.opacity(0.48))
                             .lineLimit(1)
                     }
 
-                    Spacer()
+                    Spacer(minLength: 6)
 
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            showLyricsCard.toggle()
-                        }
-                        if musicManager.currentLyrics.isEmpty && musicManager.syncedLyrics.isEmpty {
-                            musicManager.refreshLyrics()
-                        }
-                    } label: {
-                        Image(systemName: showLyricsCard ? "quote.bubble.fill" : "quote.bubble")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(showLyricsCard ? .white : .white.opacity(0.55))
-                            .padding(6)
-                            .background(Circle().fill(Color.white.opacity(showLyricsCard ? 0.22 : 0.08)))
-                    }
-                    .buttonStyle(.plain)
-
-                    if let onClosePreview {
-                        Button(action: onClosePreview) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 15))
-                                .foregroundStyle(.white.opacity(0.5))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-
-                if showLyricsCard {
-                    VStack(spacing: 3) {
-                        if let prev = lyricTriple.previous, !prev.isEmpty {
-                            Text(prev)
-                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.35))
-                                .lineLimit(1)
-                        }
-                        Text(lyricTriple.current)
-                            .font(.system(size: 13.5, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-                            .shadow(color: .white.opacity(0.25), radius: 6)
-                            .id(lyricTriple.current)
-                            .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                        if let next = lyricTriple.next, !next.isEmpty {
-                            Text(next)
-                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.45))
-                                .lineLimit(1)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 58)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.white.opacity(0.07))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.8)
-                            )
-                    )
-                    .animation(.easeInOut(duration: 0.22), value: lyricTriple.current)
-                }
-
-                HStack(spacing: 8) {
-                    Text(formatTime(elapsed))
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .frame(width: 32, alignment: .leading)
-
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Color.white.opacity(0.2))
-                            Capsule()
-                                .fill(Color.white)
-                                .frame(width: max(4, geo.size.width * progress))
-                        }
-                    }
-                    .frame(height: 5)
-
-                    Text(formatTime(musicManager.songDuration))
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .frame(width: 32, alignment: .trailing)
-                }
-
-                HStack(spacing: 38) {
-                    Button {
-                        musicManager.previousTrack()
-                    } label: {
-                        Image(systemName: "backward.fill")
-                            .font(.system(size: 19, weight: .medium))
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        musicManager.togglePlay()
-                    } label: {
-                        Image(systemName: musicManager.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 25, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        musicManager.nextTrack()
-                    } label: {
-                        Image(systemName: "forward.fill")
-                            .font(.system(size: 19, weight: .medium))
-                            .foregroundStyle(.white)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(16)
-            .frame(width: 396, height: 236)
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .environment(\.colorScheme, .dark)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-                    )
-            )
-            .onAppear {
-                if musicManager.currentLyrics.isEmpty && musicManager.syncedLyrics.isEmpty && !musicManager.isFetchingLyrics {
-                    musicManager.refreshLyrics()
+                    topRightUtilityCluster
                 }
             }
         }
     }
 
-    private func lyricLines(at elapsed: Double, duration: Double) -> (previous: String?, current: String, next: String?) {
+    private func artworkView(size: CGFloat, radius: CGFloat) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                isArtworkExpanded.toggle()
+                onExpandCollapseDrawer(isArtworkExpanded)
+            }
+        } label: {
+            ZStack(alignment: .bottomTrailing) {
+                Image(nsImage: musicManager.albumArt)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.7)
+                    )
+                    .shadow(color: .black.opacity(0.35), radius: musicManager.isPlaying ? 6 : 3, y: 2)
+
+                if let bundleID = musicManager.bundleIdentifier, !musicManager.usingAppIconForArtwork {
+                    AppIcon(for: bundleID)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: size > 75 ? 20 : 15, height: size > 75 ? 20 : 15)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .shadow(color: .black.opacity(0.55), radius: 2.5)
+                        .offset(x: 2.5, y: 2.5)
+                }
+            }
+            .scaleEffect(musicManager.isPlaying ? 1.0 : 0.90)
+            .opacity(musicManager.isPlaying ? 1.0 : 0.82)
+            .animation(.spring(response: 0.35, dampingFraction: 0.78), value: musicManager.isPlaying)
+        }
+        .buttonStyle(.plain)
+        .help(isArtworkExpanded ? "Shrink artwork" : "Expand artwork")
+    }
+
+    private var topRightUtilityCluster: some View {
+        HStack(spacing: 6) {
+            if hasMediaTrack {
+                Rectangle()
+                    .fill(albumAccent.gradient)
+                    .frame(width: 16, height: 12)
+                    .mask {
+                        AudioSpectrumView(isPlaying: $musicManager.isPlaying)
+                            .frame(width: 14, height: 11)
+                    }
+                    .opacity(musicManager.isPlaying ? 0.9 : 0.38)
+
+                Button(action: onToggleLyrics) {
+                    Image(systemName: showLyricsCard ? "quote.bubble.fill" : "quote.bubble")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(showLyricsCard ? .white : .white.opacity(0.55))
+                        .padding(6)
+                        .background(Circle().fill(Color.white.opacity(showLyricsCard ? 0.22 : 0.08)))
+                }
+                .buttonStyle(.plain)
+                .help("Synced lyrics")
+            }
+
+            if let onClosePreview {
+                Button(action: onClosePreview) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+                .help("Close preview")
+            }
+        }
+    }
+}
+
+private struct LockScreenSyncedLyricsCard: View {
+    @ObservedObject var musicManager = MusicManager.shared
+    let elapsed: Double
+    let duration: Double
+    let albumAccent: Color
+
+    @State private var hoveredLine: Int? = nil
+
+    private struct LyricDisplayTriple: Equatable {
+        let prevText: String?
+        let prevTime: Double?
+        let currText: String
+        let nextText: String?
+        let nextTime: Double?
+    }
+
+    private func computeTriple() -> LyricDisplayTriple {
         if musicManager.isFetchingLyrics {
-            return (nil, "Synchronisation des paroles…", nil)
+            return LyricDisplayTriple(prevText: nil, prevTime: nil, currText: "Loading lyrics…", nextText: nil, nextTime: nil)
         }
         if !musicManager.syncedLyrics.isEmpty {
             let synced = musicManager.syncedLyrics
@@ -1613,24 +2987,184 @@ struct DroppyLockScreenMediaPanelView: View {
                     high = mid - 1
                 }
             }
-            let prev = idx > 0 ? synced[idx - 1].text : nil
-            let curr = synced[idx].text
-            let next = (idx + 1) < synced.count ? synced[idx + 1].text : nil
-            return (prev, curr, next)
+            let prev = idx > 0 ? synced[idx - 1] : nil
+            let curr = synced[idx]
+            let next = (idx + 1) < synced.count ? synced[idx + 1] : nil
+            return LyricDisplayTriple(
+                prevText: prev?.text,
+                prevTime: prev?.time,
+                currText: curr.text,
+                nextText: next?.text,
+                nextTime: next?.time
+            )
         }
+
         let plainLines = musicManager.currentLyrics
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !plainLines.isEmpty else {
-            return (nil, "♪ Instrumental / Aucune parole trouvée", nil)
+            return LyricDisplayTriple(prevText: nil, prevTime: nil, currText: "♪ Instrumental / No lyrics found", nextText: nil, nextTime: nil)
         }
         let ratio = duration > 0 ? min(0.999, max(0, elapsed / duration)) : 0
         let idx = min(plainLines.count - 1, max(0, Int(Double(plainLines.count) * ratio)))
         let prev = idx > 0 ? plainLines[idx - 1] : nil
         let curr = plainLines[idx]
         let next = (idx + 1) < plainLines.count ? plainLines[idx + 1] : nil
-        return (prev, curr, next)
+        return LyricDisplayTriple(prevText: prev, prevTime: nil, currText: curr, nextText: next, nextTime: nil)
+    }
+
+    var body: some View {
+        let triple = computeTriple()
+
+        VStack(spacing: 3) {
+            if let prev = triple.prevText, !prev.isEmpty {
+                lyricRow(text: prev, seekTime: triple.prevTime, slot: 0, isCurrent: false, baseOpacity: 0.35)
+            }
+            lyricRow(text: triple.currText, seekTime: nil, slot: 1, isCurrent: true, baseOpacity: 1.0)
+                .id(triple.currText)
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            if let next = triple.nextText, !next.isEmpty {
+                lyricRow(text: next, seekTime: triple.nextTime, slot: 2, isCurrent: false, baseOpacity: 0.45)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 58)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.07))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.8)
+                )
+        )
+        .animation(.easeInOut(duration: 0.22), value: triple.currText)
+    }
+
+    @ViewBuilder
+    private func lyricRow(text: String, seekTime: Double?, slot: Int, isCurrent: Bool, baseOpacity: Double) -> some View {
+        let isRTL = text.unicodeScalars.contains { $0.value >= 0x0600 && $0.value <= 0x06FF }
+        let hovered = hoveredLine == slot && seekTime != nil
+        let font = isRTL
+            ? Font.custom("Vazirmatn-Regular", size: isCurrent ? 13.5 : 11)
+            : Font.system(size: isCurrent ? 13.5 : 11, weight: isCurrent ? .bold : .medium, design: .rounded)
+
+        Text(text)
+            .font(font)
+            .foregroundStyle(isCurrent ? Color.white : (hovered ? albumAccent : Color.white.opacity(baseOpacity)))
+            .multilineTextAlignment(.center)
+            .lineLimit(isCurrent ? 2 : 1)
+            .shadow(color: isCurrent ? .white.opacity(0.25) : .clear, radius: 6)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if seekTime != nil {
+                    hoveredLine = inside ? slot : (hoveredLine == slot ? nil : hoveredLine)
+                }
+            }
+            .onTapGesture {
+                if let seekTime {
+                    musicManager.seek(to: seekTime)
+                }
+            }
+    }
+}
+
+private struct LockScreenScrubBar: View {
+    @ObservedObject var musicManager = MusicManager.shared
+    let elapsed: Double
+    let duration: Double
+    let accentColor: Color
+    @Binding var showRemainingTime: Bool
+
+    @State private var isDragging: Bool = false
+    @State private var isHovering: Bool = false
+    @State private var dragProgress: Double = 0
+    @State private var optimisticTarget: Double? = nil
+    @State private var lastSeekDate: Date = .distantPast
+
+    private var effectiveProgress: Double {
+        guard duration > 0 else { return 0 }
+        if isDragging { return dragProgress }
+        if let optimisticTarget, Date().timeIntervalSince(lastSeekDate) < 0.75 {
+            return min(1, max(0, optimisticTarget / duration))
+        }
+        return min(1, max(0, elapsed / duration))
+    }
+
+    private var displayedElapsed: Double {
+        guard duration > 0 else { return 0 }
+        return effectiveProgress * duration
+    }
+
+    var body: some View {
+        let activeHeight: CGFloat = (isDragging || isHovering) ? 7 : 5
+
+        HStack(spacing: 8) {
+            Text(formatTime(displayedElapsed))
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(isDragging ? 0.95 : 0.65))
+                .frame(width: 34, alignment: .leading)
+                .contentTransition(.numericText())
+
+            GeometryReader { geo in
+                let width = max(1, geo.size.width)
+                let filled = max(4, width * CGFloat(effectiveProgress))
+
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(height: activeHeight)
+
+                    Capsule()
+                        .fill(Color.white)
+                        .frame(width: min(width, filled), height: activeHeight)
+                        .shadow(color: isDragging ? accentColor.opacity(0.45) : .clear, radius: 5)
+                }
+                .frame(height: 14, alignment: .center)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            isDragging = true
+                            dragProgress = min(1, max(0, Double(value.location.x / width)))
+                        }
+                        .onEnded { value in
+                            let finalRatio = min(1, max(0, Double(value.location.x / width)))
+                            let target = finalRatio * max(0, duration)
+                            optimisticTarget = target
+                            lastSeekDate = Date()
+                            isDragging = false
+                            musicManager.seek(to: target)
+                        }
+                )
+            }
+            .frame(height: 14)
+            .onHover { hovering in
+                withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
+                    isHovering = hovering
+                }
+            }
+            .animation(.spring(response: 0.22, dampingFraction: 0.8), value: isDragging)
+
+            Button {
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
+                    showRemainingTime.toggle()
+                }
+            } label: {
+                let rightText = showRemainingTime && duration > 0
+                    ? "-\(formatTime(max(0, duration - displayedElapsed)))"
+                    : formatTime(duration)
+                Text(rightText)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.65))
+                    .frame(width: 38, alignment: .trailing)
+                    .contentTransition(.numericText())
+            }
+            .buttonStyle(.plain)
+            .help("Click to toggle remaining / total time")
+        }
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -1639,4 +3173,237 @@ struct DroppyLockScreenMediaPanelView: View {
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 }
+
+private struct LockScreenTransportControls: View {
+    @ObservedObject var musicManager = MusicManager.shared
+    let hasMediaTrack: Bool
+    let albumAccent: Color
+    @Binding var showAudioDrawer: Bool
+    var onOpenAudioDrawer: (Bool) -> Void
+
+    @State private var playPressed: Bool = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Left secondary cluster: Favorite + Shuffle
+            HStack(spacing: 12) {
+                Button {
+                    musicManager.toggleFavoriteTrack()
+                } label: {
+                    Image(systemName: musicManager.isFavoriteTrack ? "heart.fill" : "heart")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(musicManager.isFavoriteTrack ? Color.pink : Color.white.opacity(musicManager.canFavoriteTrack ? 0.58 : 0.22))
+                }
+                .buttonStyle(.plain)
+                .disabled(!musicManager.canFavoriteTrack || !hasMediaTrack)
+
+                Button {
+                    musicManager.toggleShuffle()
+                } label: {
+                    Image(systemName: "shuffle")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(musicManager.isShuffled ? albumAccent : .white.opacity(hasMediaTrack ? 0.58 : 0.25))
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasMediaTrack)
+            }
+
+            Spacer(minLength: 0)
+
+            // Center classic naked luminous white transport controls
+            HStack(spacing: 32) {
+                Button {
+                    musicManager.previousTrack()
+                } label: {
+                    Image(systemName: "backward.fill")
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundStyle(.white.opacity(hasMediaTrack ? 0.95 : 0.45))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    withAnimation(.spring(response: 0.20, dampingFraction: 0.65)) {
+                        playPressed = true
+                    }
+                    musicManager.togglePlay()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                        withAnimation(.spring(response: 0.24, dampingFraction: 0.75)) {
+                            playPressed = false
+                        }
+                    }
+                } label: {
+                    Image(systemName: musicManager.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 25, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                        .scaleEffect(playPressed ? 0.88 : 1.0)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    musicManager.nextTrack()
+                } label: {
+                    Image(systemName: "forward.fill")
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundStyle(.white.opacity(hasMediaTrack ? 0.95 : 0.45))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+
+            // Right secondary cluster: Repeat + Inline Audio/Volume Drawer
+            HStack(spacing: 12) {
+                Button {
+                    musicManager.toggleRepeat()
+                } label: {
+                    Image(systemName: musicManager.repeatMode == .one ? "repeat.1" : "repeat")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(musicManager.repeatMode != .off ? albumAccent : .white.opacity(hasMediaTrack ? 0.58 : 0.25))
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasMediaTrack)
+
+                Button {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.85)) {
+                        showAudioDrawer.toggle()
+                        onOpenAudioDrawer(showAudioDrawer)
+                    }
+                } label: {
+                    Image(systemName: showAudioDrawer ? "airplayaudio.circle.fill" : "airplayaudio")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(showAudioDrawer ? albumAccent : .white.opacity(0.62))
+                }
+                .buttonStyle(.plain)
+                .help("Volume & Audio Output")
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 2)
+    }
+}
+
+private struct LockScreenAudioDrawer: View {
+    @ObservedObject var volumeManager = VolumeManager.shared
+    let accentColor: Color
+
+    @State private var devices: [AudioOutputRoutingMenu.OutputDevice] = []
+    @State private var localVolume: Float? = nil
+
+    private var effectiveVolume: Float {
+        localVolume ?? (volumeManager.isMuted ? 0 : volumeManager.rawVolume)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Inline CoreAudio System Volume Slider
+            HStack(spacing: 8) {
+                Button {
+                    volumeManager.toggleMuteAction()
+                } label: {
+                    Image(systemName: effectiveVolume <= 0.01 ? "speaker.slash.fill" : (effectiveVolume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.3.fill"))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 18)
+                }
+                .buttonStyle(.plain)
+
+                GeometryReader { geo in
+                    let w = max(1, geo.size.width)
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.16))
+                            .frame(height: 5)
+                        Capsule()
+                            .fill(Color.white.opacity(0.92))
+                            .frame(width: max(5, w * CGFloat(effectiveVolume)), height: 5)
+                    }
+                    .frame(height: 14, alignment: .center)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let ratio = Float(min(1, max(0, value.location.x / w)))
+                                localVolume = ratio
+                                volumeManager.setAbsolute(ratio)
+                            }
+                            .onEnded { value in
+                                let ratio = Float(min(1, max(0, value.location.x / w)))
+                                volumeManager.setAbsolute(ratio)
+                                localVolume = nil
+                            }
+                    )
+                }
+                .frame(height: 14)
+
+                Text("\(Int(round(effectiveVolume * 100)))%")
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(width: 30, alignment: .trailing)
+            }
+
+            // Inline CoreAudio Output Device Switcher (SkyLight-safe!)
+            if !devices.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(devices, id: \.id) { dev in
+                            Button {
+                                AudioOutputRoutingMenu.shared.setOutputDevice(dev.id)
+                                devices = AudioOutputRoutingMenu.shared.availableOutputDevices()
+                                volumeManager.refresh()
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: outputSymbol(for: dev.name))
+                                        .font(.system(size: 10, weight: .semibold))
+                                    Text(dev.name)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .lineLimit(1)
+                                }
+                                .foregroundStyle(dev.isDefault ? .white : .white.opacity(0.65))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4.5)
+                                .background(
+                                    Capsule()
+                                        .fill(dev.isDefault ? accentColor.opacity(0.28) : Color.white.opacity(0.08))
+                                        .overlay(
+                                            Capsule()
+                                                .strokeBorder(dev.isDefault ? accentColor.opacity(0.55) : Color.white.opacity(0.1), lineWidth: 0.75)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.8)
+                )
+        )
+        .onAppear {
+            devices = AudioOutputRoutingMenu.shared.availableOutputDevices()
+            volumeManager.refresh()
+        }
+    }
+
+    private func outputSymbol(for name: String) -> String {
+        let lower = name.lowercased()
+        if lower.contains("airpod") { return "airpodspro" }
+        if lower.contains("headphone") || lower.contains("beats") || lower.contains("sony") { return "headphones" }
+        return "hifispeaker.fill"
+    }
+}
+
 

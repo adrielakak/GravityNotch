@@ -595,11 +595,16 @@ struct Media: View {
     @Default(.waitInterval) var waitInterval
     @Default(.mediaController) var mediaController
     @ObservedObject var coordinator = BoringViewCoordinator.shared
+    @ObservedObject var lockScreenMediaManager = DroppyLockScreenMediaPanelManager.shared
     @Default(.hideNotchOption) var hideNotchOption
     @Default(.enableSneakPeek) private var enableSneakPeek
     @Default(.sneakPeekStyles) var sneakPeekStyles
 
     @Default(.enableLyrics) var enableLyrics
+    @Default(.showOnLockScreen) var showOnLockScreen
+    @Default(.lockScreenMediaPlayer) var lockScreenMediaPlayer
+    @Default(.lockScreenShowLyrics) var lockScreenShowLyrics
+    @Default(.lockScreenMediaAmbientGlow) var lockScreenMediaAmbientGlow
 
     var body: some View {
         Form {
@@ -689,6 +694,40 @@ struct Media: View {
                 Text("Media controls")
             }  footer: {
                 Text("Customize which controls appear in the music player. Volume expands when active.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Defaults.Toggle(key: .showOnLockScreen) {
+                    Text("Show notch on lock screen")
+                }
+                Defaults.Toggle(key: .lockScreenMediaPlayer) {
+                    Text("Show Droppy music player on lock screen")
+                }
+                .disabled(!showOnLockScreen)
+                Defaults.Toggle(key: .lockScreenShowLyrics) {
+                    Text("Show interactive lyrics on lock screen")
+                }
+                .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                Defaults.Toggle(key: .lockScreenMediaAmbientGlow) {
+                    Text("Ambient album artwork glow")
+                }
+                .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                Button {
+                    lockScreenMediaManager.togglePreviewOnDesktop()
+                } label: {
+                    Label(
+                        lockScreenMediaManager.isPreviewVisible
+                            ? "Hide Lock Screen Music Preview"
+                            : "Preview Lock Screen Music Player",
+                        systemImage: lockScreenMediaManager.isPreviewVisible ? "eye.slash" : "lock.display"
+                    )
+                }
+            } header: {
+                Text("Lock Screen Music Player")
+            } footer: {
+                Text("Customize the Liquid Glass player, tap-to-seek synced lyrics, and inline audio output controls shown on the lock screen.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1164,6 +1203,7 @@ struct Appearance: View {
     @Default(.useMusicVisualizer) var useMusicVisualizer
     @Default(.customVisualizers) var customVisualizers
     @Default(.selectedVisualizer) var selectedVisualizer
+    @Default(.enableAgentLiveActivity) var enableAgentLiveActivity
 
     let icons: [String] = ["logo2"]
     @State private var selectedIcon: String = "logo2"
@@ -1182,6 +1222,22 @@ struct Appearance: View {
 
             } header: {
                 Text("General")
+            }
+
+            Section {
+                Defaults.Toggle(key: .enableAgentLiveActivity) {
+                    Text("Show live coding agents in closed notch")
+                }
+                Defaults.Toggle(key: .prioritizeAgentsOverPausedMusic) {
+                    Text("Prioritize agents when music is paused")
+                }
+                .disabled(!enableAgentLiveActivity)
+            } header: {
+                Text("Coding Agents")
+            } footer: {
+                Text("Monitors local Claude Code, Antigravity, and Codex CLI sessions and shows live phases in the notch.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
