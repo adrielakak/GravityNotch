@@ -92,7 +92,14 @@ extension Defaults.Keys {
     static let notchHeight = Key<CGFloat>("notchHeight", default: 32)
     //static let openLastTabByDefault = Key<Bool>("openLastTabByDefault", default: false)
     static let showOnLockScreen = Key<Bool>("showOnLockScreen", default: true)
+    static let lockScreenMediaPlayer = Key<Bool>("lockScreenMediaPlayer", default: true)
+    static let lockScreenShowLyrics = Key<Bool>("lockScreenShowLyrics", default: true)
+    static let lockScreenMediaAmbientGlow = Key<Bool>("lockScreenMediaAmbientGlow", default: true)
     static let hideFromScreenRecording = Key<Bool>("hideFromScreenRecording", default: false)
+
+    // MARK: Coding Agents Live Activity
+    static let enableAgentLiveActivity = Key<Bool>("enableAgentLiveActivity", default: true)
+    static let prioritizeAgentsOverPausedMusic = Key<Bool>("prioritizeAgentsOverPausedMusic", default: true)
     
     // MARK: Appearance
     static let showEmojis = Key<Bool>("showEmojis", default: false)

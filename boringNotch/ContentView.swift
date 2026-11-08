@@ -38,6 +38,8 @@ struct ContentView: View {
     @Default(.useMusicVisualizer) var useMusicVisualizer
 
     @Default(.showNotHumanFace) var showNotHumanFace
+    @Default(.enableAgentLiveActivity) var enableAgentLiveActivity
+    @Default(.prioritizeAgentsOverPausedMusic) var prioritizeAgentsOverPausedMusic
 
     // Shared interactive spring for movement/resizing to avoid conflicting animations
     private let animationSpring = Animation.interactiveSpring(response: 0.38, dampingFraction: 0.8, blendDuration: 0)
@@ -60,6 +62,27 @@ struct ContentView: View {
         )
     }
 
+    private var shouldShowAgentLiveActivity: Bool {
+        let musicAllowsAgent = musicManager.isPlayerIdle
+            || !coordinator.musicLiveActivityEnabled
+            || (!musicManager.isPlaying && prioritizeAgentsOverPausedMusic)
+        return !coordinator.expandingView.show
+            && vm.notchState == .closed
+            && musicAllowsAgent
+            && enableAgentLiveActivity
+            && agentMonitor.isActive
+            && !vm.hideOnClosed
+    }
+
+    private var shouldShowMusicLiveActivity: Bool {
+        (!coordinator.expandingView.show || coordinator.expandingView.type == .music)
+        && vm.notchState == .closed
+        && (musicManager.isPlaying || !musicManager.isPlayerIdle)
+        && coordinator.musicLiveActivityEnabled
+        && !vm.hideOnClosed
+        && !shouldShowAgentLiveActivity
+    }
+
     private var computedChinWidth: CGFloat {
         var chinWidth: CGFloat = vm.closedNotchSize.width
 
@@ -67,9 +90,9 @@ struct ContentView: View {
             && vm.notchState == .closed && Defaults[.showPowerStatusNotifications]
         {
             chinWidth = 640
-        } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music)
-            && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle)
-            && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed
+        } else if shouldShowAgentLiveActivity {
+            chinWidth += 148
+        } else if shouldShowMusicLiveActivity
         {
             chinWidth += (2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20)
         } else if !coordinator.expandingView.show && vm.notchState == .closed
@@ -120,7 +143,7 @@ struct ContentView: View {
                     )
                 
                 mainLayout
-                    .frame(height: vm.notchState == .open ? vm.notchSize.height : nil)
+                    .frame(height: vm.notchState == .open ? vm.notchSize.height : nil, alignment: .top)
                     .conditionalModifier(true) { view in
                         let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
                         let closeAnimation = Animation.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
@@ -134,7 +157,11 @@ struct ContentView: View {
                         handleHover(hovering)
                     }
                     .onTapGesture {
-                        doOpen()
+                        if shouldShowAgentLiveActivity {
+                            openAgentsTab()
+                        } else {
+                            doOpen()
+                        }
                     }
                     .conditionalModifier(Defaults[.enableGestures]) { view in
                         view
@@ -289,24 +316,15 @@ struct ContentView: View {
                       } else if coordinator.sneakPeek.show && Defaults[.inlineHUD] && (coordinator.sneakPeek.type != .music) && (coordinator.sneakPeek.type != .battery) && vm.notchState == .closed {
                           InlineHUD(type: $coordinator.sneakPeek.type, value: $coordinator.sneakPeek.value, icon: $coordinator.sneakPeek.icon, hoverAnimation: $isHovering, gestureProgress: $gestureProgress)
                               .transition(.opacity)
-                      } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music) && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle) && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed {
+                      } else if shouldShowAgentLiveActivity {
+                          AgentClosedNotchView(
+                              closedHeight: vm.effectiveClosedNotchHeight,
+                              centerSpacerWidth: vm.closedNotchSize.width + 2
+                          )
+                          .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                      } else if shouldShowMusicLiveActivity {
                           MusicLiveActivity()
                               .frame(alignment: .center)
-                      } else if !coordinator.expandingView.show && vm.notchState == .closed && (!musicManager.isPlaying && musicManager.isPlayerIdle) && agentMonitor.isActive && !vm.hideOnClosed {
-                          HStack(spacing: 0) {
-                              Image(systemName: "sparkles")
-                                  .font(.system(size: 11, weight: .bold))
-                                  .foregroundStyle(.purple)
-                                  .frame(width: max(0, vm.effectiveClosedNotchHeight - 12), height: max(0, vm.effectiveClosedNotchHeight - 12))
-                              Rectangle()
-                                  .fill(.black)
-                                  .frame(width: vm.closedNotchSize.width - cornerRadiusInsets.closed.top)
-                              Text("\(Int(agentMonitor.contextPercentage))%")
-                                  .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                  .foregroundStyle(.cyan)
-                                  .frame(width: max(0, vm.effectiveClosedNotchHeight - 4), height: max(0, vm.effectiveClosedNotchHeight - 12))
-                          }
-                          .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
                       } else if !coordinator.expandingView.show && vm.notchState == .closed && (!musicManager.isPlaying && musicManager.isPlayerIdle) && Defaults[.showNotHumanFace] && !vm.hideOnClosed  {
                           BoringFaceAnimation()
                        } else if vm.notchState == .open {
@@ -360,6 +378,7 @@ struct ContentView: View {
               }
               .zIndex(2)
             if vm.notchState == .open {
+                let openContentMaxHeight = max(108, vm.notchSize.height - max(24, vm.effectiveClosedNotchHeight) - 22)
                 VStack {
                     switch coordinator.currentView {
                     case .home:
@@ -370,6 +389,7 @@ struct ContentView: View {
                         ClipboardNotchView()
                     case .agents:
                         AgentsNotchView()
+                            .frame(maxWidth: .infinity, maxHeight: openContentMaxHeight, alignment: .top)
                     }
                 }
                 .transition(
@@ -500,6 +520,15 @@ struct ContentView: View {
                 ),
                 alignment: .center
             )
+            .overlay(alignment: .bottomTrailing) {
+                if enableAgentLiveActivity && agentMonitor.isActive {
+                    Circle()
+                        .fill(agentMonitor.activeBrandColor)
+                        .frame(width: 5.5, height: 5.5)
+                        .shadow(color: agentMonitor.activeBrandColor.opacity(0.9), radius: 3)
+                        .offset(x: -0.5, y: -0.5)
+                }
+            }
         }
         .frame(
             height: vm.effectiveClosedNotchHeight,
@@ -525,6 +554,13 @@ struct ContentView: View {
 
     private func doOpen() {
         withAnimation(animationSpring) {
+            vm.open()
+        }
+    }
+
+    private func openAgentsTab() {
+        withAnimation(animationSpring) {
+            coordinator.currentView = .agents
             vm.open()
         }
     }
