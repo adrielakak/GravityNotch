@@ -714,6 +714,10 @@ struct Media: View {
                     Text("Ambient album artwork glow")
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                Defaults.Toggle(key: .lockScreenAnimatedArtwork) {
+                    Text("Animated artwork in full screen wallpaper mode")
+                }
+                .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Button {
                     lockScreenMediaManager.togglePreviewOnDesktop()
                 } label: {
@@ -1227,6 +1231,9 @@ struct Appearance: View {
             Section {
                 Defaults.Toggle(key: .enableAgentLiveActivity) {
                     Text("Show live coding agents in closed notch")
+                }
+                Defaults.Toggle(key: .agentSpeechBubbles) {
+                    Text("Speech bubble when an agent finishes or needs you")
                 }
                 Defaults.Toggle(key: .prioritizeAgentsOverPausedMusic) {
                     Text("Prioritize agents when music is paused")

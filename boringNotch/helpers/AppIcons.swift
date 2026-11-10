@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import AVFoundation
 import Combine
 import CoreAudio
 import Defaults
@@ -690,12 +691,23 @@ final class PlayingNextManager: ObservableObject {
     @Published var showQueueInHome: Bool = false
     @Published private(set) var tracks: [UpNextTrackItem] = []
     @Published private(set) var isLoading: Bool = false
+    /// Music does not expose its shuffled Up Next order, so the playlist order is not the real queue while shuffling.
+    @Published private(set) var isShuffleOn: Bool = false
     private var promotedIDs: [String] = []
     private var cancellable: AnyCancellable?
+    private var shuffleCancellable: AnyCancellable?
 
     private init() {
         cancellable = MusicManager.shared.$songTitle
             .removeDuplicates()
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    await self?.refreshQueue()
+                }
+            }
+        shuffleCancellable = MusicManager.shared.$isShuffled
+            .removeDuplicates()
+            .dropFirst()
             .sink { [weak self] _ in
                 Task { @MainActor in
                     await self?.refreshQueue()
@@ -739,9 +751,20 @@ final class PlayingNextManager: ObservableObject {
 
     func playTrack(_ item: UpNextTrackItem) {
         let targetIndex = item.playlistIndex
+        // Negative index: catalog queue, reached by skipping forward (only reliable without shuffle)
+        if targetIndex < 0 && isShuffleOn { return }
         promotedIDs.removeAll { $0 == item.id }
         Task.detached(priority: .userInitiated) {
-            let script = """
+            let script = targetIndex < 0 ? """
+            tell application "Music"
+                if it is running then
+                    repeat \(-targetIndex) times
+                        next track
+                        delay 0.15
+                    end repeat
+                end if
+            end tell
+            """ : """
             tell application "Music"
                 if it is running then
                     play track \(targetIndex) of current playlist
@@ -760,18 +783,37 @@ final class PlayingNextManager: ObservableObject {
         }
     }
 
+    func turnOffShuffle() {
+        Task.detached(priority: .userInitiated) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            proc.arguments = ["-e", "tell application \"Music\" to if it is running then set shuffle enabled to false"]
+            try? proc.run()
+            proc.waitUntilExit()
+            await MainActor.run {
+                MusicManager.shared.forceUpdate()
+                Task { await PlayingNextManager.shared.refreshQueue() }
+            }
+        }
+    }
+
     func refreshQueue() async {
         isLoading = true
         defer { isLoading = false }
 
-        let fetched: [UpNextTrackItem] = await Task.detached(priority: .utility) {
+        let (fetched, shuffleOn): ([UpNextTrackItem], Bool) = await Task.detached(priority: .utility) {
             let script = """
             tell application "Music"
                 if it is running and player state is not stopped then
+                    set outList to "SHUFFLE|" & (shuffle enabled as text) & "\\n"
+                    try
+                        set pl to current playlist
+                        set totalCnt to count of tracks of pl
+                    on error
+                        set t to current track
+                        return outList & "CATALOG|" & (name of t) & "|" & (artist of t) & "|" & (album of t) & "\\n"
+                    end try
                     set curIdx to index of current track
-                    set pl to current playlist
-                    set totalCnt to count of tracks of pl
-                    set outList to ""
                     repeat with i from (curIdx + 1) to (curIdx + 10)
                         if i <= totalCnt then
                             set t to track i of pl
@@ -800,10 +842,27 @@ final class PlayingNextManager: ObservableObject {
                 try proc.run()
                 proc.waitUntilExit()
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                guard let output = String(data: data, encoding: .utf8) else { return [] }
+                guard let output = String(data: data, encoding: .utf8) else { return ([], false) }
+                let shuffleOn = output.contains("SHUFFLE|true")
                 var items: [UpNextTrackItem] = []
                 for line in output.components(separatedBy: .newlines) {
                     let parts = line.components(separatedBy: "|")
+                    if parts.first == "CATALOG", parts.count >= 4 {
+                        // Streaming from the Apple Music catalog: Music exposes no playlist, read the album page instead
+                        let upcoming = await AppleMusicWebCatalog.shared.upcomingTracks(
+                            title: parts[1], artist: parts[2], album: parts[3...].joined(separator: "|")
+                        )
+                        for (offset, track) in upcoming.enumerated() {
+                            items.append(UpNextTrackItem(
+                                id: "catalog-\(offset)-\(track.title)",
+                                playlistIndex: -(offset + 1),
+                                title: track.title,
+                                artist: track.artist,
+                                duration: track.duration
+                            ))
+                        }
+                        return (items, shuffleOn)
+                    }
                     guard parts.count >= 4, let idx = Int(parts[0].trimmingCharacters(in: .whitespaces)) else { continue }
                     let title = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
                     let artist = parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -811,12 +870,13 @@ final class PlayingNextManager: ObservableObject {
                     let dur = Double(durStr) ?? 0
                     items.append(UpNextTrackItem(id: "\(idx)-\(title)", playlistIndex: idx, title: title, artist: artist, duration: dur))
                 }
-                return items
+                return (items, shuffleOn)
             } catch {
-                return []
+                return ([], false)
             }
         }.value
 
+        self.isShuffleOn = shuffleOn
         self.tracks = fetched
         applyPromotedOrder()
     }
@@ -831,7 +891,7 @@ struct PlayingNextView: View {
                 Image(systemName: "music.note.list")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
-                Text("Playing Next")
+                Text(manager.isShuffleOn ? "In This Playlist" : "Playing Next")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
                 Spacer()
@@ -862,6 +922,38 @@ struct PlayingNextView: View {
                 .buttonStyle(.plain)
             }
 
+            if manager.isShuffleOn {
+                HStack(spacing: 5) {
+                    Image(systemName: "shuffle")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Text("Shuffle is on: Music hides its real order")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 2)
+                    Button {
+                        manager.turnOffShuffle()
+                    } label: {
+                        Text("Turn off")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.white.opacity(0.14)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Turn off shuffle to see the real upcoming tracks")
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                )
+            }
+
             if manager.tracks.isEmpty {
                 Spacer()
                 VStack(spacing: 4) {
@@ -879,7 +971,7 @@ struct PlayingNextView: View {
                     VStack(spacing: 4) {
                         ForEach(Array(manager.tracks.enumerated()), id: \.element.id) { index, track in
                             HStack(spacing: 6) {
-                                Text("\(index + 1)")
+                                Text(manager.isShuffleOn ? "·" : "\(index + 1)")
                                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                                     .foregroundStyle(track.isPromoted ? Color.accentColor : .gray)
                                     .frame(width: 14, alignment: .leading)
@@ -897,7 +989,7 @@ struct PlayingNextView: View {
 
                                 Spacer(minLength: 2)
 
-                                if index > 0 {
+                                if index > 0 && !manager.isShuffleOn {
                                     Button {
                                         withAnimation(.smooth) {
                                             manager.promoteToTop(track)
@@ -1957,6 +2049,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 mon.isRefreshing = false
                 mon.sessionCache = updatedCache
 
+                AgentSpeechBubbleController.shared.announceTransitions(from: mon.sessions, to: trimmed)
                 if mon.sessions != trimmed { mon.sessions = trimmed }
                 if mon.isActive != anyActive { mon.isActive = anyActive }
                 if mon.isWorkingNow != anyWorking { mon.isWorkingNow = anyWorking }
@@ -2039,11 +2132,12 @@ struct AgentClosedNotchView: View {
         HStack(spacing: 0) {
             // Left ear: Pulsing Droppy orb + active phase/agent icon
             HStack(spacing: 5) {
-                AgentPulsingOrb(color: brandColor, isWorking: working, size: 7)
-                Image(systemName: phase.iconName)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(working ? phase.color : .white.opacity(0.85))
-                    .contentTransition(.symbolEffect(.replace))
+                AgentPixelMascot(
+                    kind: monitor.activeKind,
+                    isWorking: working,
+                    isActive: session?.isActive ?? monitor.isActive,
+                    pixel: 1.5
+                )
                 Text(monitor.activeKind.shortLabel)
                     .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.92))
@@ -2266,7 +2360,12 @@ private struct AgentStatusCard: View {
         VStack(alignment: .leading, spacing: 0) {
             // Top Identity Row
             HStack(spacing: 6) {
-                AgentPulsingOrb(color: session.isActive ? accent : .gray, isWorking: session.isWorkingNow, size: 6.5)
+                AgentPixelMascot(
+                    kind: session.kind,
+                    isWorking: session.isWorkingNow,
+                    isActive: session.isActive,
+                    pixel: 2
+                )
 
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 4) {
@@ -2320,20 +2419,41 @@ private struct AgentStatusCard: View {
                     .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                    .truncationMode(.middle)
 
                 Spacer(minLength: 0)
+
+                if session.linesAdded > 0 || session.linesRemoved > 0 {
+                    HStack(spacing: 4) {
+                        Text("+\(session.linesAdded)")
+                            .foregroundStyle(Color(red: 0.36, green: 0.86, blue: 0.56))
+                        Text("-\(session.linesRemoved)")
+                            .foregroundStyle(Color(red: 0.98, green: 0.45, blue: 0.42))
+                    }
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .contentTransition(.numericText())
+                    .fixedSize()
+                }
             }
             .padding(.horizontal, 7)
             .padding(.vertical, 3.5)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(Color.white.opacity(0.06))
+                    .overlay(alignment: .bottom) {
+                        if session.isWorkingNow {
+                            AgentActivityBar(color: accent)
+                                .frame(height: 2)
+                                .transition(.opacity)
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .strokeBorder(session.isWorkingNow ? accent.opacity(0.28) : Color.white.opacity(0.07), lineWidth: 0.8)
                     )
             )
+            .animation(.easeInOut(duration: 0.25), value: session.isWorkingNow)
 
             Spacer(minLength: 3)
 
@@ -2435,7 +2555,10 @@ private struct AgentToolStreamCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Live Activity Feed")
+                Image(systemName: "checklist")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+                Text("Progress")
                     .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer()
@@ -2462,14 +2585,8 @@ private struct AgentToolStreamCard: View {
                         ForEach(Array(session.recentEvents.enumerated()), id: \.element.id) { index, ev in
                             let isNewest = index == 0 && session.isWorkingNow
                             HStack(spacing: 6) {
-                                Image(systemName: ev.iconName)
-                                    .font(.system(size: 8.5, weight: .bold))
-                                    .foregroundStyle(ev.tintColor)
+                                AgentStepMarker(isCurrent: isNewest, color: session.kind.accentColor)
                                     .frame(width: 17, height: 17)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                            .fill(ev.tintColor.opacity(0.16))
-                                    )
 
                                 HStack(spacing: 4) {
                                     Text(ev.toolName)
@@ -2514,8 +2631,10 @@ private struct AgentToolStreamCard: View {
                                             )
                                     )
                             )
+                            .transition(.move(edge: .top).combined(with: .opacity))
                         }
                     }
+                    .animation(.spring(response: 0.32, dampingFraction: 0.84), value: session.recentEvents.first?.id)
                 }
             }
         }
@@ -2573,7 +2692,54 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
     static let shared = DroppyLockScreenMediaPanelManager()
 
     private var panelWindow: BoringNotchSkyLightWindow?
+    private var panelScreen: NSScreen?
+    private var wallpaperTransitionID: Int = 0
     @Published private(set) var isPreviewVisible: Bool = false
+    /// Artwork (animated when available) fills the whole screen behind the player.
+    @Published private(set) var isWallpaperMode: Bool = false
+    /// The panel window currently covers the whole screen (stays true while the wallpaper fades out).
+    @Published private(set) var isWindowExpanded: Bool = false
+    @Published private(set) var cardBottomInset: CGFloat = 0
+
+    private func compactFrame(on screen: NSScreen) -> NSRect {
+        let envelopeWidth: CGFloat = 436
+        let envelopeHeight: CGFloat = 390
+        let originX = screen.frame.midX - (envelopeWidth / 2)
+        // Center comfortably in the fractal area, lowered cleanly above the login avatar (~195pt) and well below the clock
+        let targetCenterY = screen.frame.origin.y + (screen.frame.height * 0.35)
+        let originY = max(screen.frame.origin.y + 60, targetCenterY - (envelopeHeight / 2))
+        return NSRect(x: originX, y: originY, width: envelopeWidth, height: envelopeHeight)
+    }
+
+    func toggleWallpaperMode() {
+        guard let window = panelWindow, let screen = panelScreen else { return }
+        wallpaperTransitionID += 1
+        let transitionID = wallpaperTransitionID
+        if !isPreviewVisible { Defaults[.lockScreenArtworkWallpaper] = !isWallpaperMode }
+        if !isWallpaperMode {
+            cardBottomInset = compactFrame(on: screen).minY - screen.frame.minY
+            isWindowExpanded = true
+            window.setFrame(screen.frame, display: true)
+            withAnimation(.easeInOut(duration: 0.45)) {
+                isWallpaperMode = true
+            }
+        } else {
+            withAnimation(.easeInOut(duration: 0.35)) {
+                isWallpaperMode = false
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self, self.wallpaperTransitionID == transitionID, !self.isWallpaperMode else { return }
+                self.isWindowExpanded = false
+                window.setFrame(self.compactFrame(on: screen), display: true)
+            }
+        }
+    }
+
+    private func resetWallpaperMode() {
+        wallpaperTransitionID += 1
+        isWallpaperMode = false
+        isWindowExpanded = false
+    }
 
     static func hasActiveMedia(_ music: MusicManager? = nil) -> Bool {
         let music = music ?? MusicManager.shared
@@ -2591,9 +2757,12 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
 
     func hideFromLockScreen() {
         isPreviewVisible = false
+        resetWallpaperMode()
         guard let window = panelWindow else { return }
         window.disableSkyLight()
         window.orderOut(nil)
+        // Drop the SwiftUI tree so a looping artwork video stops playing while hidden
+        window.contentView = nil
     }
 
     func togglePreviewOnDesktop() {
@@ -2607,13 +2776,9 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
 
     private func presentPanel(delegateToSkyLight: Bool) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let envelopeWidth: CGFloat = 436
-        let envelopeHeight: CGFloat = 390
-        let originX = screen.frame.midX - (envelopeWidth / 2)
-        // Center comfortably in the fractal area, lowered cleanly above the login avatar (~195pt) and well below the clock
-        let targetCenterY = screen.frame.origin.y + (screen.frame.height * 0.35)
-        let originY = max(screen.frame.origin.y + 60, targetCenterY - (envelopeHeight / 2))
-        let frame = NSRect(x: originX, y: originY, width: envelopeWidth, height: envelopeHeight)
+        resetWallpaperMode()
+        panelScreen = screen
+        let frame = compactFrame(on: screen)
 
         if Self.hasActiveMedia()
             && MusicManager.shared.currentLyrics.isEmpty
@@ -2640,14 +2805,23 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
         }
 
         window.setFrame(frame, display: true)
-        let rootView = DroppyLockScreenMediaPanelView(
+        let rootView = LockScreenPanelRootView(
             onClosePreview: delegateToSkyLight ? nil : { [weak self] in
                 self?.hideFromLockScreen()
             }
         )
         let host = NSHostingView(rootView: rootView)
         host.frame = NSRect(origin: .zero, size: frame.size)
+        host.autoresizingMask = [.width, .height]
         window.contentView = host
+
+        // Wallpaper mode is a lasting choice: restore it on every lock until the user turns it off
+        if delegateToSkyLight && Defaults[.lockScreenArtworkWallpaper] && Self.hasActiveMedia() {
+            cardBottomInset = frame.minY - screen.frame.minY
+            isWindowExpanded = true
+            isWallpaperMode = true
+            window.setFrame(screen.frame, display: true)
+        }
 
         if delegateToSkyLight {
             window.enableSkyLight()
@@ -2701,6 +2875,7 @@ struct DroppyLockScreenMediaPanelView: View {
 
 private struct LockScreenMediaCardContainer: View {
     @ObservedObject var musicManager = MusicManager.shared
+    @ObservedObject private var panelManager = DroppyLockScreenMediaPanelManager.shared
     @Default(.lockScreenMediaAmbientGlow) private var ambientGlowEnabled
 
     let currentDate: Date
@@ -2737,6 +2912,7 @@ private struct LockScreenMediaCardContainer: View {
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .opacity(panelManager.isWallpaperMode ? 0 : 1)
     }
 
     var body: some View {
@@ -2792,13 +2968,15 @@ private struct LockScreenMediaCardContainer: View {
         .frame(width: 396)
         .background(cardBackground)
         .shadow(
-            color: (ambientGlowEnabled && musicManager.isPlaying && hasMediaTrack)
-                ? albumAccent.opacity(0.18)
-                : .black.opacity(0.32),
+            color: panelManager.isWallpaperMode
+                ? .clear
+                : ((ambientGlowEnabled && musicManager.isPlaying && hasMediaTrack)
+                    ? albumAccent.opacity(0.18)
+                    : .black.opacity(0.32)),
             radius: 18,
             y: 8
         )
-        .shadow(color: .black.opacity(0.34), radius: 12, y: 6)
+        .shadow(color: panelManager.isWallpaperMode ? .clear : .black.opacity(0.34), radius: 12, y: 6)
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
         .animation(.spring(response: 0.34, dampingFraction: 0.85), value: showLyricsCard)
@@ -2882,10 +3060,7 @@ private struct LockScreenArtworkHeader: View {
 
     private func artworkView(size: CGFloat, radius: CGFloat) -> some View {
         Button {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                isArtworkExpanded.toggle()
-                onExpandCollapseDrawer(isArtworkExpanded)
-            }
+            DroppyLockScreenMediaPanelManager.shared.toggleWallpaperMode()
         } label: {
             ZStack(alignment: .bottomTrailing) {
                 Image(nsImage: musicManager.albumArt)
@@ -2914,7 +3089,7 @@ private struct LockScreenArtworkHeader: View {
             .animation(.spring(response: 0.35, dampingFraction: 0.78), value: musicManager.isPlaying)
         }
         .buttonStyle(.plain)
-        .help(isArtworkExpanded ? "Shrink artwork" : "Expand artwork")
+        .help("Toggle full screen artwork")
     }
 
     private var topRightUtilityCluster: some View {
@@ -3407,3 +3582,1072 @@ private struct LockScreenAudioDrawer: View {
 }
 
 
+
+// MARK: - Lock Screen Full Screen Artwork Wallpaper (animated Apple Music covers)
+
+struct LockScreenPanelRootView: View {
+    @ObservedObject private var manager = DroppyLockScreenMediaPanelManager.shared
+    var onClosePreview: (() -> Void)? = nil
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            if manager.isWallpaperMode {
+                LockScreenArtworkWallpaperView(onDismiss: { manager.toggleWallpaperMode() })
+                    .transition(.opacity)
+            }
+
+            DroppyLockScreenMediaPanelView(onClosePreview: onClosePreview)
+                .padding(.bottom, manager.isWindowExpanded ? manager.cardBottomInset : 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+}
+
+struct LockScreenArtworkWallpaperView: View {
+    @ObservedObject private var musicManager = MusicManager.shared
+    @ObservedObject private var artworkService = AnimatedArtworkService.shared
+    @Default(.lockScreenAnimatedArtwork) private var animatedArtworkEnabled
+    let onDismiss: () -> Void
+
+    private var trackKey: String {
+        "\(musicManager.songTitle)|\(musicManager.artistName)|\(musicManager.album)"
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let videoURL = animatedArtworkEnabled ? artworkService.videoURL(for: trackKey) : nil
+            let highResCover = artworkService.stillImage(for: trackKey)
+
+            ZStack {
+                Color.black
+
+                Image(nsImage: musicManager.albumArt)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+
+                if let highResCover {
+                    Image(nsImage: highResCover)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .transition(.opacity)
+                }
+
+                if let videoURL {
+                    LoopingArtworkVideoView(url: videoURL)
+                        .id(videoURL)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .allowsHitTesting(false)
+                }
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.35), location: 0.0),
+                        .init(color: .clear, location: 0.18),
+                        .init(color: .clear, location: 0.40),
+                        .init(color: .black.opacity(0.62), location: 0.72),
+                        .init(color: .black.opacity(0.88), location: 1.0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                VStack {
+                    TimelineView(.periodic(from: .now, by: 5)) { context in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(context.date, format: .dateTime.hour().minute())
+                                .font(.system(size: 22, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                            Text(context.date, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.62))
+                        }
+                        .shadow(color: .black.opacity(0.45), radius: 6, y: 1)
+                    }
+                    .padding(.top, 58)
+                    Spacer()
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onDismiss)
+        .task(id: trackKey) {
+            guard DroppyLockScreenMediaPanelManager.hasActiveMedia(musicManager) else { return }
+            await artworkService.load(
+                title: musicManager.songTitle,
+                artist: musicManager.artistName,
+                album: musicManager.album,
+                key: trackKey,
+                wantsVideo: animatedArtworkEnabled,
+                fallbackCover: musicManager.albumArt,
+                isAppleMusic: musicManager.bundleIdentifier == "com.apple.Music"
+            )
+        }
+    }
+}
+
+/// Finds the looping "motion artwork" video Apple Music publishes for some albums, plus a high resolution cover.
+/// Lookup is done only when the full screen wallpaper is shown: iTunes Search API to find the album page,
+/// then the HLS playlist is read from the public album page and the best variant (a single MP4) is cached on disk,
+/// because streaming the playlist directly stalls and never starts.
+@MainActor
+final class AnimatedArtworkService: ObservableObject {
+    static let shared = AnimatedArtworkService()
+
+    @Published private var videoURLs: [String: URL] = [:]
+    @Published private var stillImages: [String: NSImage] = [:]
+    private var attemptedKeys: Set<String> = []
+
+    private struct Candidate {
+        let pageURL: URL
+        let artworkURL: URL?
+        let albumMatches: Bool
+    }
+
+    func videoURL(for key: String) -> URL? {
+        videoURLs[key]
+    }
+
+    func stillImage(for key: String) -> NSImage? {
+        stillImages[key]
+    }
+
+    func load(
+        title: String,
+        artist: String,
+        album: String,
+        key: String,
+        wantsVideo: Bool,
+        fallbackCover: NSImage,
+        isAppleMusic: Bool
+    ) async {
+        guard !title.isEmpty, !attemptedKeys.contains(key) else { return }
+        attemptedKeys.insert(key)
+
+        var candidates = await Self.searchCandidates(title: title, artist: artist, album: album)
+        if !candidates.contains(where: { $0.albumMatches }),
+           let webAlbum = await AppleMusicWebCatalog.shared.album(title: title, album: album) {
+            candidates.insert(Candidate(pageURL: webAlbum.pageURL, artworkURL: webAlbum.artworkURL, albumMatches: true), at: 0)
+        }
+
+        var cover: NSImage?
+        if let artworkURL = candidates.first(where: { $0.albumMatches })?.artworkURL {
+            cover = await Self.fetchImage(artworkURL)
+        }
+        if cover == nil {
+            // Album not in the public catalog: upscale the best local cover instead of stretching it raw
+            let fallbackData = fallbackCover.tiffRepresentation
+            cover = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+                let musicData = isAppleMusic ? Self.currentMusicArtworkData() : nil
+                return Self.upscaledCover(from: musicData) ?? Self.upscaledCover(from: fallbackData)
+            }.value
+        }
+        if let cover {
+            withAnimation(.easeInOut(duration: 0.4)) {
+                // Keep a single decoded cover in memory
+                stillImages = [key: cover]
+            }
+        }
+
+        guard wantsVideo else { return }
+        for candidate in candidates.prefix(3) {
+            guard let playlistURL = await Self.motionPlaylistURL(pageURL: candidate.pageURL) else { continue }
+            if let fileURL = await Self.cachedVideoFile(masterPlaylistURL: playlistURL) {
+                withAnimation(.easeInOut(duration: 0.4)) {
+                    videoURLs[key] = fileURL
+                }
+            }
+            break
+        }
+    }
+
+    nonisolated private static func searchCandidates(title: String, artist: String, album: String) async -> [Candidate] {
+        var components = URLComponents(string: "https://itunes.apple.com/search")
+        components?.queryItems = [
+            URLQueryItem(name: "term", value: "\(title) \(artist)"),
+            URLQueryItem(name: "entity", value: "song"),
+            URLQueryItem(name: "limit", value: "10"),
+            URLQueryItem(name: "country", value: Locale.current.region?.identifier.lowercased() ?? "us")
+        ]
+        guard
+            let searchURL = components?.url,
+            let (data, _) = try? await URLSession.shared.data(from: searchURL),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let results = json["results"] as? [[String: Any]]
+        else { return [] }
+
+        let wantedTitle = simplified(title)
+        let wantedAlbum = simplified(album)
+        var seenCollections: Set<Int> = []
+        var matching: [Candidate] = []
+        var others: [Candidate] = []
+
+        for result in results {
+            let trackTitle = simplified(result["trackName"] as? String ?? "")
+            guard !trackTitle.isEmpty, trackTitle.hasPrefix(wantedTitle) || wantedTitle.hasPrefix(trackTitle) else { continue }
+            guard
+                let collectionID = result["collectionId"] as? Int,
+                seenCollections.insert(collectionID).inserted,
+                let pageString = result["collectionViewUrl"] as? String,
+                let pageURL = URL(string: pageString)
+            else { continue }
+
+            let collection = simplified(result["collectionName"] as? String ?? "")
+            let albumMatches = wantedAlbum.isEmpty || collection == wantedAlbum
+                || collection.hasPrefix(wantedAlbum) || wantedAlbum.hasPrefix(collection)
+            let artworkURL = (result["artworkUrl100"] as? String)
+                .map { $0.replacingOccurrences(of: "100x100bb", with: "2000x2000bb") }
+                .flatMap { URL(string: $0) }
+            let candidate = Candidate(pageURL: pageURL, artworkURL: artworkURL, albumMatches: albumMatches)
+            if albumMatches { matching.append(candidate) } else { others.append(candidate) }
+        }
+        return matching + others
+    }
+
+    nonisolated private static func motionPlaylistURL(pageURL: URL) async -> URL? {
+        var request = URLRequest(url: pageURL)
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        guard
+            let (data, _) = try? await URLSession.shared.data(for: request),
+            let html = String(data: data, encoding: .utf8)
+        else { return nil }
+
+        for marker in ["\"motionDetailSquare\"", "\"motionDetailTall\""] {
+            guard let markerRange = html.range(of: marker) else { continue }
+            let tail = html[markerRange.upperBound...]
+            if let match = tail.range(of: #"https://[^"\\]+?\.m3u8"#, options: .regularExpression) {
+                return URL(string: String(tail[match]))
+            }
+        }
+        return nil
+    }
+
+    /// Picks the sharpest SDR variant (up to 2160p, around 9 Mbps) and downloads its MP4 into the caches folder.
+    nonisolated private static func cachedVideoFile(masterPlaylistURL: URL) async -> URL? {
+        guard
+            let (masterData, _) = try? await URLSession.shared.data(from: masterPlaylistURL),
+            let master = String(data: masterData, encoding: .utf8)
+        else { return nil }
+
+        var variants: [(height: Int, bandwidth: Int, url: URL)] = []
+        let lines = master.components(separatedBy: .newlines)
+        for (index, line) in lines.enumerated() where line.hasPrefix("#EXT-X-STREAM-INF:") {
+            guard
+                !line.contains("VIDEO-RANGE=PQ"), !line.contains("VIDEO-RANGE=HLG"),
+                index + 1 < lines.count,
+                let url = URL(string: lines[index + 1].trimmingCharacters(in: .whitespaces), relativeTo: masterPlaylistURL),
+                let height = firstInt(in: line, pattern: #"RESOLUTION=\d+x(\d+)"#),
+                let bandwidth = firstInt(in: line, pattern: #"AVERAGE-BANDWIDTH=(\d+)"#)
+            else { continue }
+            variants.append((height, bandwidth, url))
+        }
+        let usable = variants.filter { $0.height <= 2160 }
+        guard let bestHeight = usable.map(\.height).max() else { return nil }
+        let targetBandwidth = 9_000_000
+        guard let variant = usable
+            .filter({ $0.height == bestHeight })
+            .min(by: { abs($0.bandwidth - targetBandwidth) < abs($1.bandwidth - targetBandwidth) })
+        else { return nil }
+
+        let fileManager = FileManager.default
+        guard let cachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let folder = cachesURL.appendingPathComponent("GravityNotch/MotionArtwork", isDirectory: true)
+        try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let assetID = masterPlaylistURL.deletingLastPathComponent().lastPathComponent
+        let destination = folder.appendingPathComponent("\(assetID)-\(masterPlaylistURL.deletingPathExtension().lastPathComponent)-\(bestHeight).mp4")
+        if fileManager.fileExists(atPath: destination.path) {
+            try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: destination.path)
+            return destination
+        }
+
+        guard
+            let (variantData, _) = try? await URLSession.shared.data(from: variant.url),
+            let playlist = String(data: variantData, encoding: .utf8),
+            let mapRange = playlist.range(of: #"#EXT-X-MAP:URI="([^"]+)""#, options: .regularExpression)
+        else { return nil }
+        let mapLine = String(playlist[mapRange])
+        let fileName = mapLine
+            .replacingOccurrences(of: "#EXT-X-MAP:URI=\"", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+        // The whole loop must live in that single file, otherwise a plain download would be incomplete
+        let segmentFiles = Set(
+            playlist.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        )
+        guard segmentFiles == [fileName], let fileURL = URL(string: fileName, relativeTo: variant.url) else { return nil }
+
+        guard
+            let (temporaryURL, response) = try? await URLSession.shared.download(from: fileURL),
+            (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        do {
+            try fileManager.moveItem(at: temporaryURL, to: destination)
+        } catch {
+            return nil
+        }
+        pruneCache(in: folder, keeping: 10)
+        return destination
+    }
+
+    nonisolated private static func pruneCache(in folder: URL, keeping limit: Int) {
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+        let sorted = files.sorted {
+            let first = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let second = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return first > second
+        }
+        for file in sorted.dropFirst(limit) {
+            try? fileManager.removeItem(at: file)
+        }
+    }
+
+    /// Original artwork file of the track playing in Music (usually sharper than what MediaRemote reports).
+    nonisolated private static func currentMusicArtworkData() -> Data? {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gravitynotch-artwork-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        let script = """
+        tell application "Music"
+            if it is running then
+                set artData to raw data of artwork 1 of current track
+                set fileRef to open for access POSIX file "\(fileURL.path)" with write permission
+                set eof fileRef to 0
+                write artData to fileRef
+                close access fileRef
+            end if
+        end tell
+        """
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return nil
+        }
+        return try? Data(contentsOf: fileURL)
+    }
+
+    /// Lanczos upscale to about 2400 px with a light sharpen, so a small cover stays clean when it fills the screen.
+    nonisolated private static func upscaledCover(from data: Data?) -> NSImage? {
+        guard let data, let input = CIImage(data: data), input.extent.width > 0 else { return nil }
+        let targetWidth: CGFloat = 2400
+        var output = input
+        if input.extent.width < targetWidth {
+            output = output.applyingFilter(
+                "CILanczosScaleTransform",
+                parameters: [kCIInputScaleKey: targetWidth / input.extent.width, kCIInputAspectRatioKey: 1.0]
+            )
+            output = output.applyingFilter("CISharpenLuminance", parameters: [kCIInputSharpnessKey: 0.35])
+        }
+        let context = CIContext()
+        guard let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    nonisolated private static func fetchImage(_ url: URL) async -> NSImage? {
+        guard let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+        return NSImage(data: data)
+    }
+
+    nonisolated private static func firstInt(in text: String, pattern: String) -> Int? {
+        guard
+            let regex = try? NSRegularExpression(pattern: pattern),
+            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+            let range = Range(match.range(at: 1), in: text)
+        else { return nil }
+        return Int(text[range])
+    }
+
+    /// Lowercased name without "(feat. X)", "[From Y]" or " - Single" style suffixes.
+    nonisolated private static func simplified(_ value: String) -> String {
+        var text = value.lowercased()
+        for separator in [" (", " [", " - "] {
+            if let range = text.range(of: separator) {
+                text = String(text[..<range.lowerBound])
+            }
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+struct LoopingArtworkVideoView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> LoopingArtworkVideoNSView {
+        LoopingArtworkVideoNSView(url: url)
+    }
+
+    func updateNSView(_ nsView: LoopingArtworkVideoNSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: LoopingArtworkVideoNSView, coordinator: ()) {
+        nsView.stop()
+    }
+}
+
+final class LoopingArtworkVideoNSView: NSView {
+    private let player = AVQueuePlayer()
+    private var looper: AVPlayerLooper?
+    private let playerLayer = AVPlayerLayer()
+    private var readyObservation: NSKeyValueObservation?
+
+    init(url: URL) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer = CALayer()
+
+        player.isMuted = true
+        player.preventsDisplaySleepDuringVideoPlayback = false
+        player.allowsExternalPlayback = false
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+
+        playerLayer.player = player
+        playerLayer.videoGravity = .resizeAspectFill
+        // Stay invisible until the first frame is decoded so the static cover shows through meanwhile
+        playerLayer.opacity = 0
+        layer?.addSublayer(playerLayer)
+
+        readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { layer, _ in
+            guard layer.isReadyForDisplay else { return }
+            DispatchQueue.main.async {
+                CATransaction.begin()
+                CATransaction.setAnimationDuration(0.6)
+                layer.opacity = 1
+                CATransaction.commit()
+            }
+        }
+
+        player.play()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    func stop() {
+        readyObservation = nil
+        player.pause()
+        looper?.disableLooping()
+        player.removeAllItems()
+    }
+}
+
+// MARK: - Agent Pixel Mascots & Progress Animations
+
+/// Small animated pixel character shown next to an agent: walks while the agent works,
+/// waves when the agent is done and waiting, sleeps when the session is inactive.
+struct AgentPixelMascot: View {
+    let kind: AgentKind
+    let isWorking: Bool
+    let isActive: Bool
+    var pixel: CGFloat = 2
+
+    private static let columns = 11
+    private static let rows = 8
+
+    private struct Sprite {
+        let base: [String]
+        let step: [String]
+        let wave: [String]
+    }
+
+    // '#' body, '+' highlight, 'o' eye, '.' empty
+    private static let critter = Sprite(
+        base: [
+            "...#####...",
+            "..#######..",
+            "..#o###o#..",
+            "###########",
+            "###########",
+            "..#######..",
+            "..#.#.#.#..",
+            "..#.#.#.#.."
+        ],
+        step: [
+            "...#####...",
+            "..#######..",
+            "..#o###o#..",
+            "###########",
+            "###########",
+            "..#######..",
+            "..#.#.#.#..",
+            "..........."
+        ],
+        wave: [
+            "...#####..#",
+            "..#######.#",
+            "..#o###o###",
+            "#########..",
+            "#########..",
+            "..#######..",
+            "..#.#.#.#..",
+            "..#.#.#.#.."
+        ]
+    )
+
+    private static let cloud = Sprite(
+        base: [
+            "....###....",
+            "..#######..",
+            ".#########.",
+            "##o#####o##",
+            "###########",
+            ".#########.",
+            "....+...+..",
+            "..+...+...."
+        ],
+        step: [
+            "....###....",
+            "..#######..",
+            ".#########.",
+            "##o#####o##",
+            "###########",
+            ".#########.",
+            "..+...+....",
+            "....+...+.."
+        ],
+        wave: [
+            "....###...+",
+            "..#######.+",
+            ".#########+",
+            "##o#####o##",
+            "###########",
+            ".#########.",
+            "...........",
+            "..........."
+        ]
+    )
+
+    private static let robot = Sprite(
+        base: [
+            ".....+.....",
+            ".....#.....",
+            ".#########.",
+            ".#o#####o#.",
+            ".#########.",
+            ".##+++++##.",
+            ".#########.",
+            "..##...##.."
+        ],
+        step: [
+            "...........",
+            ".....#.....",
+            ".#########.",
+            ".#o#####o#.",
+            ".#########.",
+            ".###+++###.",
+            ".#########.",
+            "..##...##.."
+        ],
+        wave: [
+            ".....+....+",
+            ".....#....+",
+            ".#########+",
+            ".#o#####o#.",
+            ".#########.",
+            ".##+++++##.",
+            ".#########.",
+            "..##...##.."
+        ]
+    )
+
+    private var sprite: Sprite {
+        switch kind {
+        case .claudeCode: return Self.critter
+        case .antigravity: return Self.cloud
+        case .codex: return Self.robot
+        }
+    }
+
+    private var frameInterval: Double {
+        isWorking ? 0.22 : 0.48
+    }
+
+    var body: some View {
+        Group {
+            if isActive {
+                TimelineView(.periodic(from: .now, by: frameInterval)) { context in
+                    canvas(tick: Int(context.date.timeIntervalSinceReferenceDate / frameInterval))
+                }
+            } else {
+                canvas(tick: nil)
+            }
+        }
+        .frame(width: CGFloat(Self.columns) * pixel, height: CGFloat(Self.rows + 1) * pixel)
+        .opacity(isActive ? 1 : 0.5)
+        .accessibilityHidden(true)
+    }
+
+    private func canvas(tick: Int?) -> some View {
+        let bodyColor = isActive ? kind.accentColor : Color.gray
+        let highlight = isActive ? kind.secondaryAccentColor : Color.gray.opacity(0.7)
+        let odd = (tick ?? 0) % 2 == 1
+
+        let grid: [String]
+        if tick == nil {
+            grid = sprite.base
+        } else if isWorking {
+            grid = odd ? sprite.step : sprite.base
+        } else {
+            // Done and waiting for the user: wave hello
+            grid = odd ? sprite.wave : sprite.base
+        }
+        let eyesClosed = tick == nil || ((tick ?? 0) % 14 == 0)
+        let bob: CGFloat = (isWorking && odd) ? 0 : 1
+
+        return Canvas { context, _ in
+            for (rowIndex, row) in grid.enumerated() {
+                for (columnIndex, cell) in row.enumerated() {
+                    let color: Color
+                    switch cell {
+                    case "#": color = bodyColor
+                    case "+": color = highlight
+                    case "o": color = eyesClosed ? bodyColor : Color.black
+                    default: continue
+                    }
+                    let rect = CGRect(
+                        x: CGFloat(columnIndex) * pixel,
+                        y: (CGFloat(rowIndex) + bob) * pixel,
+                        width: pixel + 0.3,
+                        height: pixel + 0.3
+                    )
+                    context.fill(Path(rect), with: .color(color))
+                }
+            }
+        }
+    }
+}
+
+/// Checklist marker: pulsing play arrow for the step in progress, checkmark for finished steps.
+struct AgentStepMarker: View {
+    let isCurrent: Bool
+    let color: Color
+    @State private var pulse = false
+
+    var body: some View {
+        Group {
+            if isCurrent {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(color)
+                    .scaleEffect(pulse ? 1.18 : 0.86)
+                    .opacity(pulse ? 1 : 0.6)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                            pulse = true
+                        }
+                    }
+            } else {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 8.5, weight: .heavy))
+                    .foregroundStyle(color.opacity(0.75))
+            }
+        }
+        .transition(.scale.combined(with: .opacity))
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isCurrent)
+    }
+}
+
+/// Indeterminate progress bar sliding along the bottom of the active file pill.
+struct AgentActivityBar: View {
+    let color: Color
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let progress = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6) / 1.6
+            GeometryReader { geo in
+                let segment = geo.size.width * 0.35
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(color.opacity(0.14))
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [color.opacity(0), color, color.opacity(0)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: segment)
+                        .offset(x: -segment + (geo.size.width + segment) * CGFloat(progress))
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Agent Speech Bubble (pops under the notch when an agent finishes or needs the user)
+
+struct AgentSpeechBubble: Identifiable, Equatable {
+    enum Reason {
+        case finished
+        case question
+        case approval
+    }
+
+    let id = UUID()
+    let kind: AgentKind
+    let reason: Reason
+    let message: String
+    let detail: String
+}
+
+@MainActor
+final class AgentSpeechBubbleController: ObservableObject {
+    static let shared = AgentSpeechBubbleController()
+
+    @Published private(set) var bubble: AgentSpeechBubble?
+    private var window: BoringNotchSkyLightWindow?
+    private var dismissTask: Task<Void, Never>?
+
+    private static let windowSize = NSSize(width: 300, height: 84)
+    private static let visibleDuration: Double = 7
+
+    /// Compares two refreshes of the agent monitor and announces sessions that just stopped working.
+    func announceTransitions(from previous: [AgentSessionSnapshot], to current: [AgentSessionSnapshot]) {
+        guard Defaults[.agentSpeechBubbles], !previous.isEmpty else { return }
+        let previousByID = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+
+        for session in current {
+            guard
+                let before = previousByID[session.id],
+                before.isWorkingNow, !session.isWorkingNow, session.isActive
+            else { continue }
+
+            let reason: AgentSpeechBubble.Reason
+            if session.phase == .waiting || session.kind == .antigravity {
+                reason = .finished
+            } else {
+                // Still mid-turn but silent: the agent is blocked on the user
+                let pendingTool = session.recentEvents.first?.toolName.lowercased() ?? ""
+                if pendingTool.contains("askuser") || pendingTool.contains("question") || pendingTool.contains("exitplan") {
+                    reason = .question
+                } else if session.phase == .editing {
+                    reason = .approval
+                } else {
+                    continue
+                }
+            }
+            show(kind: session.kind, reason: reason, detail: session.projectName)
+            return
+        }
+    }
+
+    func show(kind: AgentKind, reason: AgentSpeechBubble.Reason, detail: String) {
+        let message: String
+        switch reason {
+        case .finished:
+            message = ["J'ai fini !", "C'est prêt !", "Terminé, à toi !", "Et voilà !"].randomElement() ?? "J'ai fini !"
+        case .question:
+            message = "J'ai une question…"
+        case .approval:
+            message = "J'ai besoin de ton accord"
+        }
+
+        guard let screen = NSScreen.screen(withUUID: BoringViewCoordinator.shared.selectedScreenUUID)
+            ?? NSScreen.main ?? NSScreen.screens.first else { return }
+        let notchHeight = max(screen.safeAreaInsets.top, screen.frame.maxY - screen.visibleFrame.maxY, 24)
+        let size = Self.windowSize
+        let frame = NSRect(
+            x: screen.frame.midX - size.width / 2,
+            y: screen.frame.maxY - notchHeight - size.height - 2,
+            width: size.width,
+            height: size.height
+        )
+
+        let panel: BoringNotchSkyLightWindow
+        if let existing = window {
+            panel = existing
+        } else {
+            panel = BoringNotchSkyLightWindow(
+                contentRect: frame,
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.contentView = NSHostingView(rootView: AgentSpeechBubbleHost())
+            window = panel
+        }
+        panel.setFrame(frame, display: true)
+        panel.orderFrontRegardless()
+
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
+            bubble = AgentSpeechBubble(kind: kind, reason: reason, message: message, detail: detail)
+        }
+
+        dismissTask?.cancel()
+        dismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.visibleDuration * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.dismiss()
+        }
+    }
+
+    func dismiss() {
+        dismissTask?.cancel()
+        guard let dismissedID = bubble?.id else { return }
+        withAnimation(.easeIn(duration: 0.22)) {
+            bubble = nil
+        }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self, self.bubble == nil || self.bubble?.id == dismissedID else { return }
+            if self.bubble == nil {
+                self.window?.orderOut(nil)
+            }
+        }
+    }
+}
+
+private struct AgentSpeechBubbleHost: View {
+    @ObservedObject private var controller = AgentSpeechBubbleController.shared
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let bubble = controller.bubble {
+                AgentSpeechBubbleView(bubble: bubble)
+                    .id(bubble.id)
+                    .transition(.scale(scale: 0.4, anchor: .top).combined(with: .opacity))
+                    .onTapGesture {
+                        controller.dismiss()
+                    }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct AgentSpeechBubbleView: View {
+    let bubble: AgentSpeechBubble
+    @State private var bounce = false
+
+    private var accent: Color {
+        bubble.reason == .finished ? bubble.kind.accentColor : Color(red: 0.98, green: 0.72, blue: 0.28)
+    }
+
+    var body: some View {
+        VStack(spacing: -1) {
+            // Tail pointing up at the notch
+            BubbleTail()
+                .fill(Color.black)
+                .frame(width: 16, height: 8)
+
+            HStack(spacing: 10) {
+                AgentPixelMascot(kind: bubble.kind, isWorking: false, isActive: true, pixel: 2.4)
+                    .offset(y: bounce ? -1.5 : 1.5)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(bubble.message)
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text("\(bubble.kind.shortLabel) · \(bubble.detail)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                }
+
+                if bubble.reason != .finished {
+                    Image(systemName: bubble.reason == .question ? "questionmark.bubble.fill" : "hand.raised.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(accent)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(
+                Capsule()
+                    .fill(Color.black)
+                    .overlay(Capsule().strokeBorder(accent.opacity(0.55), lineWidth: 1))
+            )
+            .shadow(color: accent.opacity(0.35), radius: 10, y: 3)
+        }
+        .padding(.bottom, 14)
+        .contentShape(Rectangle())
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) {
+                bounce = true
+            }
+        }
+    }
+}
+
+private struct BubbleTail: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+// MARK: - Apple Music web catalog
+
+/// Reads public Apple Music album pages. Used when Music streams from the catalog (no scriptable playlist)
+/// and for albums the iTunes Search API does not list.
+actor AppleMusicWebCatalog {
+    static let shared = AppleMusicWebCatalog()
+
+    struct Track: Sendable {
+        let title: String
+        let artist: String
+        let duration: Double
+        let isPlayable: Bool
+    }
+
+    struct Album: Sendable {
+        let pageURL: URL
+        let name: String
+        let artworkURL: URL?
+        let tracks: [Track]
+    }
+
+    private var cache: [String: Album] = [:]
+    private var missed: Set<String> = []
+
+    func album(title: String, album: String) async -> Album? {
+        let wantedAlbum = Self.simplified(album)
+        let wantedTitle = Self.simplified(title)
+        guard !wantedAlbum.isEmpty, !wantedTitle.isEmpty else { return nil }
+        if let cached = cache[wantedAlbum], Self.index(of: wantedTitle, in: cached) != nil { return cached }
+        let missKey = wantedAlbum + "|" + wantedTitle
+        guard !missed.contains(missKey) else { return nil }
+
+        let storefront = Locale.current.region?.identifier.lowercased() ?? "us"
+        var components = URLComponents(string: "https://music.apple.com/\(storefront)/search")
+        components?.queryItems = [URLQueryItem(name: "term", value: "\(title) \(album)")]
+        guard let searchURL = components?.url, let searchHTML = await Self.fetchHTML(searchURL) else { return nil }
+
+        var albumIDs: [String] = []
+        if let regex = try? NSRegularExpression(pattern: #"music\.apple\.com/[a-z]{2}/album/[^"\\?/]+/(\d+)"#) {
+            let range = NSRange(searchHTML.startIndex..., in: searchHTML)
+            for match in regex.matches(in: searchHTML, range: range) {
+                guard let idRange = Range(match.range(at: 1), in: searchHTML) else { continue }
+                let id = String(searchHTML[idRange])
+                if !albumIDs.contains(id) { albumIDs.append(id) }
+            }
+        }
+
+        for id in albumIDs.prefix(6) {
+            guard
+                let pageURL = URL(string: "https://music.apple.com/\(storefront)/album/\(id)"),
+                let html = await Self.fetchHTML(pageURL),
+                let parsed = Self.parseAlbum(html: html, pageURL: pageURL)
+            else { continue }
+            let name = Self.simplified(parsed.name)
+            guard name == wantedAlbum || name.hasPrefix(wantedAlbum) || wantedAlbum.hasPrefix(name) else { continue }
+            guard Self.index(of: wantedTitle, in: parsed) != nil else { continue }
+            cache[wantedAlbum] = parsed
+            return parsed
+        }
+        missed.insert(missKey)
+        return nil
+    }
+
+    /// Playable tracks that follow the given title in album order.
+    func upcomingTracks(title: String, artist: String, album: String, limit: Int = 10) async -> [Track] {
+        guard let found = await self.album(title: title, album: album) else { return [] }
+        let wantedTitle = Self.simplified(title)
+        let wantedArtist = Self.simplified(artist)
+        let exact = found.tracks.firstIndex {
+            Self.simplified($0.title) == wantedTitle && Self.simplified($0.artist) == wantedArtist
+        }
+        guard let current = exact ?? Self.index(of: wantedTitle, in: found) else { return [] }
+        return Array(found.tracks[(current + 1)...].filter(\.isPlayable).prefix(limit))
+    }
+
+    private static func index(of simplifiedTitle: String, in album: Album) -> Int? {
+        album.tracks.firstIndex { simplified($0.title) == simplifiedTitle }
+    }
+
+    private static func simplified(_ text: String) -> String {
+        text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .joined()
+    }
+
+    private static func fetchHTML(_ url: URL) async -> String? {
+        var request = URLRequest(url: url)
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            forHTTPHeaderField: "User-Agent"
+        )
+        guard
+            let (data, response) = try? await URLSession.shared.data(for: request),
+            (response as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func scriptJSON(in html: String, pattern: String) -> Any? {
+        guard
+            let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+            let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+            let range = Range(match.range(at: 1), in: html),
+            let data = String(html[range]).data(using: .utf8)
+        else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func parseAlbum(html: String, pageURL: URL) -> Album? {
+        guard
+            let meta = scriptJSON(in: html, pattern: #"<script[^>]*application/ld\+json[^>]*>(.*?)</script>"#) as? [String: Any],
+            let name = meta["name"] as? String,
+            let server = scriptJSON(in: html, pattern: #"<script[^>]*serialized-server-data[^>]*>(.*?)</script>"#)
+        else { return nil }
+
+        var tracks: [Track] = []
+        func walk(_ node: Any) {
+            if let dict = node as? [String: Any] {
+                if dict["trackNumber"] is Int, let title = dict["title"] as? String {
+                    let milliseconds = (dict["duration"] as? Double) ?? 0
+                    tracks.append(Track(
+                        title: title,
+                        artist: dict["artistName"] as? String ?? "",
+                        duration: milliseconds / 1000,
+                        isPlayable: !((dict["isDisabled"] as? Bool) ?? false)
+                    ))
+                    return
+                }
+                for value in dict.values { walk(value) }
+            } else if let array = node as? [Any] {
+                for value in array { walk(value) }
+            }
+        }
+        walk(server)
+        guard !tracks.isEmpty else { return nil }
+
+        let artworkURL = (meta["image"] as? String)
+            .map { $0.replacingOccurrences(of: #"/\d+x\d+[a-z]*\.(jpg|png)$"#, with: "/2000x2000bb.jpg", options: .regularExpression) }
+            .flatMap { URL(string: $0) }
+        return Album(pageURL: pageURL, name: name, artworkURL: artworkURL, tracks: tracks)
+    }
+}

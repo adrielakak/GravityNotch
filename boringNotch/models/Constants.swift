@@ -95,10 +95,13 @@ extension Defaults.Keys {
     static let lockScreenMediaPlayer = Key<Bool>("lockScreenMediaPlayer", default: true)
     static let lockScreenShowLyrics = Key<Bool>("lockScreenShowLyrics", default: true)
     static let lockScreenMediaAmbientGlow = Key<Bool>("lockScreenMediaAmbientGlow", default: true)
+    static let lockScreenAnimatedArtwork = Key<Bool>("lockScreenAnimatedArtwork", default: true)
+    static let lockScreenArtworkWallpaper = Key<Bool>("lockScreenArtworkWallpaper", default: false)
     static let hideFromScreenRecording = Key<Bool>("hideFromScreenRecording", default: false)
 
     // MARK: Coding Agents Live Activity
     static let enableAgentLiveActivity = Key<Bool>("enableAgentLiveActivity", default: true)
+    static let agentSpeechBubbles = Key<Bool>("agentSpeechBubbles", default: true)
     static let prioritizeAgentsOverPausedMusic = Key<Bool>("prioritizeAgentsOverPausedMusic", default: true)
     
     // MARK: Appearance
