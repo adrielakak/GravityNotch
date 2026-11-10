@@ -1321,6 +1321,8 @@ final class AntigravityAgentMonitor: ObservableObject {
     private var maxContextWindow: Double = 1_000_000.0
     private var sessionCache: [String: CachedSessionEntry] = [:]
     private var isRefreshing: Bool = false
+    /// A session picked by hand stays selected for a while, then the notch follows the live agent again
+    private var selectionPinnedUntil: Date = .distantPast
 
     var activeSession: AgentSessionSnapshot? {
         if let selectedSessionID, let match = sessions.first(where: { $0.id == selectedSessionID }) {
@@ -1370,6 +1372,7 @@ final class AntigravityAgentMonitor: ObservableObject {
 
     func selectSession(_ id: String) {
         selectedSessionID = id
+        selectionPinnedUntil = Date().addingTimeInterval(120)
         syncSummaryProperties()
     }
 
@@ -1426,12 +1429,13 @@ final class AntigravityAgentMonitor: ObservableObject {
     private nonisolated static func resolveSnapshot(from entry: CachedSessionEntry, now: Date) -> AgentSessionSnapshot {
         let s = entry.snapshot
         let age = now.timeIntervalSince(entry.modDate)
-        let isActive = age < 45.0
+        let isActive: Bool
         let isWorkingNow: Bool
         let effectivePhase: AgentWorkPhase
 
         switch s.kind {
         case .antigravity:
+            isActive = age < 45.0
             isWorkingNow = age < 18.0
             if isWorkingNow && entry.rawPhase == .waiting {
                 effectivePhase = .thinking
@@ -1441,7 +1445,15 @@ final class AntigravityAgentMonitor: ObservableObject {
                 effectivePhase = entry.rawPhase
             }
         case .claudeCode, .codex:
-            isWorkingNow = age < 22.0 && !entry.turnComplete
+            // Mid-turn the transcript stays silent while a command, a search or a long thought runs,
+            // so silence alone does not mean the agent stopped. Edits and questions are the exception:
+            // there, silence means the agent is blocked on the user.
+            let midTurn = !entry.turnComplete
+            let pendingTool = s.recentEvents.first?.toolName.lowercased() ?? ""
+            let blockedOnUser = entry.rawPhase == .editing
+                || pendingTool.contains("askuser") || pendingTool.contains("question") || pendingTool.contains("exitplan")
+            isActive = age < (midTurn ? 600.0 : 45.0)
+            isWorkingNow = midTurn && age < (blockedOnUser ? 22.0 : 600.0)
             effectivePhase = (entry.turnComplete || !isActive) ? .waiting : entry.rawPhase
         }
 
@@ -1738,6 +1750,14 @@ final class AntigravityAgentMonitor: ObservableObject {
 
                 guard rowType == "assistant", let message = obj["message"] as? [String: Any] else {
                     if rowType == "user" && ((obj["isMeta"] as? Bool) != true) {
+                        let userMessage = obj["message"] as? [String: Any]
+                        let userText = (userMessage?["content"] as? String)
+                            ?? ((userMessage?["content"] as? [[String: Any]])?.first?["text"] as? String)
+                            ?? ""
+                        if userText.hasPrefix("[Request interrupted by user") {
+                            lastTurnComplete = true
+                            continue
+                        }
                         lastTurnComplete = false
                         latestPhase = .thinking
                         latestTitle = "Thinking"
@@ -2059,6 +2079,13 @@ final class AntigravityAgentMonitor: ObservableObject {
                 if let currentSelected = mon.selectedSessionID,
                    !trimmed.contains(where: { $0.id == currentSelected }) {
                     mon.selectedSessionID = nil
+                }
+                if let currentSelected = mon.selectedSessionID,
+                   mon.selectionPinnedUntil < Date(),
+                   let live = activeSessions.first,
+                   !activeSessions.contains(where: { $0.id == currentSelected }) {
+                    // The selected session went quiet while another agent is live: follow the live one
+                    mon.selectedSessionID = live.id
                 }
                 if mon.selectedSessionID == nil {
                     mon.selectedSessionID = activeSessions.first?.id ?? trimmed.first?.id
@@ -2695,8 +2722,13 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
     private var panelScreen: NSScreen?
     private var wallpaperTransitionID: Int = 0
     @Published private(set) var isPreviewVisible: Bool = false
-    /// Artwork (animated when available) fills the whole screen behind the player.
+    /// The animated artwork fills the whole screen behind the player. Only ever true for tracks that have one.
     @Published private(set) var isWallpaperMode: Bool = false
+    /// Motion artwork of the current track, nil when it only has a still cover.
+    @Published private(set) var animatedArtworkURL: URL?
+    /// Video shown by the wallpaper (kept briefly across track changes so the wallpaper does not flash).
+    @Published private(set) var wallpaperVideoURL: URL?
+    private var wallpaperWanted: Bool = false
     /// The panel window currently covers the whole screen (stays true while the wallpaper fades out).
     @Published private(set) var isWindowExpanded: Bool = false
     @Published private(set) var cardBottomInset: CGFloat = 0
@@ -2712,26 +2744,54 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
     }
 
     func toggleWallpaperMode() {
-        guard let window = panelWindow, let screen = panelScreen else { return }
+        guard isWallpaperMode || animatedArtworkURL != nil else { return }
+        wallpaperWanted = !isWallpaperMode
+        if wallpaperWanted {
+            enterWallpaperMode()
+        } else {
+            exitWallpaperMode()
+        }
+    }
+
+    /// Called whenever the current track gains or loses an animated artwork.
+    func setAnimatedArtwork(_ url: URL?) {
+        animatedArtworkURL = url
         wallpaperTransitionID += 1
         let transitionID = wallpaperTransitionID
-        if !isPreviewVisible { Defaults[.lockScreenArtworkWallpaper] = !isWallpaperMode }
-        if !isWallpaperMode {
-            cardBottomInset = compactFrame(on: screen).minY - screen.frame.minY
-            isWindowExpanded = true
-            window.setFrame(screen.frame, display: true)
-            withAnimation(.easeInOut(duration: 0.45)) {
-                isWallpaperMode = true
+        if let url {
+            wallpaperVideoURL = url
+            if wallpaperWanted { enterWallpaperMode() }
+        } else if isWallpaperMode {
+            // Short grace period: the next track may share the same animated cover
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self, self.wallpaperTransitionID == transitionID, self.animatedArtworkURL == nil else { return }
+                self.exitWallpaperMode()
             }
-        } else {
-            withAnimation(.easeInOut(duration: 0.35)) {
-                isWallpaperMode = false
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                guard let self, self.wallpaperTransitionID == transitionID, !self.isWallpaperMode else { return }
-                self.isWindowExpanded = false
-                window.setFrame(self.compactFrame(on: screen), display: true)
-            }
+        }
+    }
+
+    private func enterWallpaperMode() {
+        guard !isWallpaperMode, let window = panelWindow, let screen = panelScreen else { return }
+        wallpaperTransitionID += 1
+        cardBottomInset = compactFrame(on: screen).minY - screen.frame.minY
+        isWindowExpanded = true
+        window.setFrame(screen.frame, display: true)
+        withAnimation(.easeInOut(duration: 0.45)) {
+            isWallpaperMode = true
+        }
+    }
+
+    private func exitWallpaperMode() {
+        guard isWallpaperMode, let window = panelWindow, let screen = panelScreen else { return }
+        wallpaperTransitionID += 1
+        let transitionID = wallpaperTransitionID
+        withAnimation(.easeInOut(duration: 0.35)) {
+            isWallpaperMode = false
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, self.wallpaperTransitionID == transitionID, !self.isWallpaperMode else { return }
+            self.isWindowExpanded = false
+            window.setFrame(self.compactFrame(on: screen), display: true)
         }
     }
 
@@ -2739,6 +2799,8 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
         wallpaperTransitionID += 1
         isWallpaperMode = false
         isWindowExpanded = false
+        animatedArtworkURL = nil
+        wallpaperVideoURL = nil
     }
 
     static func hasActiveMedia(_ music: MusicManager? = nil) -> Bool {
@@ -2777,6 +2839,9 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
     private func presentPanel(delegateToSkyLight: Bool) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         resetWallpaperMode()
+        // On every lock the wallpaper comes back by itself as soon as a track has an animated artwork;
+        // tapping it away only lasts until the next lock
+        wallpaperWanted = delegateToSkyLight
         panelScreen = screen
         let frame = compactFrame(on: screen)
 
@@ -2814,14 +2879,6 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
         host.frame = NSRect(origin: .zero, size: frame.size)
         host.autoresizingMask = [.width, .height]
         window.contentView = host
-
-        // Wallpaper mode is a lasting choice: restore it on every lock until the user turns it off
-        if delegateToSkyLight && Defaults[.lockScreenArtworkWallpaper] && Self.hasActiveMedia() {
-            cardBottomInset = frame.minY - screen.frame.minY
-            isWindowExpanded = true
-            isWallpaperMode = true
-            window.setFrame(screen.frame, display: true)
-        }
 
         if delegateToSkyLight {
             window.enableSkyLight()
@@ -3060,7 +3117,14 @@ private struct LockScreenArtworkHeader: View {
 
     private func artworkView(size: CGFloat, radius: CGFloat) -> some View {
         Button {
-            DroppyLockScreenMediaPanelManager.shared.toggleWallpaperMode()
+            let manager = DroppyLockScreenMediaPanelManager.shared
+            if manager.isWallpaperMode || manager.animatedArtworkURL != nil {
+                manager.toggleWallpaperMode()
+            } else {
+                // Still cover: it would look poor stretched full screen, so enlarge it inside the player instead
+                isArtworkExpanded.toggle()
+                onExpandCollapseDrawer(isArtworkExpanded)
+            }
         } label: {
             ZStack(alignment: .bottomTrailing) {
                 Image(nsImage: musicManager.albumArt)
@@ -3089,7 +3153,7 @@ private struct LockScreenArtworkHeader: View {
             .animation(.spring(response: 0.35, dampingFraction: 0.78), value: musicManager.isPlaying)
         }
         .buttonStyle(.plain)
-        .help("Toggle full screen artwork")
+        .help("Toggle large artwork")
     }
 
     private var topRightUtilityCluster: some View {
@@ -3587,37 +3651,69 @@ private struct LockScreenAudioDrawer: View {
 
 struct LockScreenPanelRootView: View {
     @ObservedObject private var manager = DroppyLockScreenMediaPanelManager.shared
+    @ObservedObject private var musicManager = MusicManager.shared
+    @ObservedObject private var artworkService = AnimatedArtworkService.shared
+    @Default(.lockScreenAnimatedArtwork) private var animatedArtworkEnabled
     var onClosePreview: (() -> Void)? = nil
+
+    private var trackKey: String {
+        "\(musicManager.songTitle)|\(musicManager.artistName)|\(musicManager.album)"
+    }
+
+    private var albumKey: String? {
+        musicManager.album.isEmpty ? nil : "\(musicManager.artistName)|\(musicManager.album)"
+    }
+
+    private var hasActiveMedia: Bool {
+        DroppyLockScreenMediaPanelManager.hasActiveMedia(musicManager)
+    }
+
+    private var animatedArtworkURL: URL? {
+        guard animatedArtworkEnabled, hasActiveMedia else { return nil }
+        return artworkService.videoURL(for: trackKey, albumKey: albumKey)
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             if manager.isWallpaperMode {
-                LockScreenArtworkWallpaperView(onDismiss: { manager.toggleWallpaperMode() })
-                    .transition(.opacity)
+                LockScreenArtworkWallpaperView(
+                    videoURL: manager.wallpaperVideoURL,
+                    highResCover: artworkService.stillImage(for: trackKey),
+                    onDismiss: { manager.toggleWallpaperMode() }
+                )
+                .transition(.opacity)
             }
 
             DroppyLockScreenMediaPanelView(onClosePreview: onClosePreview)
                 .padding(.bottom, manager.isWindowExpanded ? manager.cardBottomInset : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .onChange(of: animatedArtworkURL, initial: true) { _, url in
+            manager.setAnimatedArtwork(url)
+        }
+        .task(id: "\(trackKey)|\(animatedArtworkEnabled)") {
+            guard animatedArtworkEnabled, hasActiveMedia else { return }
+            await artworkService.load(
+                title: musicManager.songTitle,
+                artist: musicManager.artistName,
+                album: musicManager.album,
+                key: trackKey,
+                albumKey: albumKey,
+                fallbackCover: musicManager.albumArt,
+                isAppleMusic: musicManager.bundleIdentifier == "com.apple.Music"
+            )
+        }
     }
 }
 
 struct LockScreenArtworkWallpaperView: View {
     @ObservedObject private var musicManager = MusicManager.shared
-    @ObservedObject private var artworkService = AnimatedArtworkService.shared
-    @Default(.lockScreenAnimatedArtwork) private var animatedArtworkEnabled
+    let videoURL: URL?
+    let highResCover: NSImage?
     let onDismiss: () -> Void
-
-    private var trackKey: String {
-        "\(musicManager.songTitle)|\(musicManager.artistName)|\(musicManager.album)"
-    }
 
     var body: some View {
         GeometryReader { geo in
-            let videoURL = animatedArtworkEnabled ? artworkService.videoURL(for: trackKey) : nil
-            let highResCover = artworkService.stillImage(for: trackKey)
-
             ZStack {
                 Color.black
 
@@ -3677,23 +3773,11 @@ struct LockScreenArtworkWallpaperView: View {
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture(perform: onDismiss)
-        .task(id: trackKey) {
-            guard DroppyLockScreenMediaPanelManager.hasActiveMedia(musicManager) else { return }
-            await artworkService.load(
-                title: musicManager.songTitle,
-                artist: musicManager.artistName,
-                album: musicManager.album,
-                key: trackKey,
-                wantsVideo: animatedArtworkEnabled,
-                fallbackCover: musicManager.albumArt,
-                isAppleMusic: musicManager.bundleIdentifier == "com.apple.Music"
-            )
-        }
     }
 }
 
 /// Finds the looping "motion artwork" video Apple Music publishes for some albums, plus a high resolution cover.
-/// Lookup is done only when the full screen wallpaper is shown: iTunes Search API to find the album page,
+/// Lookup runs for every track shown on the lock screen player: iTunes Search API to find the album page,
 /// then the HLS playlist is read from the public album page and the best variant (a single MP4) is cached on disk,
 /// because streaming the playlist directly stalls and never starts.
 @MainActor
@@ -3701,6 +3785,8 @@ final class AnimatedArtworkService: ObservableObject {
     static let shared = AnimatedArtworkService()
 
     @Published private var videoURLs: [String: URL] = [:]
+    /// Tracks of one album share its animated cover, so the next track gets it without waiting for a lookup
+    private var albumVideoURLs: [String: URL] = [:]
     @Published private var stillImages: [String: NSImage] = [:]
     private var attemptedKeys: Set<String> = []
 
@@ -3710,8 +3796,8 @@ final class AnimatedArtworkService: ObservableObject {
         let albumMatches: Bool
     }
 
-    func videoURL(for key: String) -> URL? {
-        videoURLs[key]
+    func videoURL(for key: String, albumKey: String?) -> URL? {
+        videoURLs[key] ?? albumKey.flatMap { albumVideoURLs[$0] }
     }
 
     func stillImage(for key: String) -> NSImage? {
@@ -3723,7 +3809,7 @@ final class AnimatedArtworkService: ObservableObject {
         artist: String,
         album: String,
         key: String,
-        wantsVideo: Bool,
+        albumKey: String?,
         fallbackCover: NSImage,
         isAppleMusic: Bool
     ) async {
@@ -3736,12 +3822,23 @@ final class AnimatedArtworkService: ObservableObject {
             candidates.insert(Candidate(pageURL: webAlbum.pageURL, artworkURL: webAlbum.artworkURL, albumMatches: true), at: 0)
         }
 
+        var videoFile: URL?
+        for candidate in candidates.prefix(3) {
+            guard let playlistURL = await Self.motionPlaylistURL(pageURL: candidate.pageURL) else { continue }
+            videoFile = await Self.cachedVideoFile(masterPlaylistURL: playlistURL)
+            break
+        }
+        // No animated artwork: the cover stays in the player, nothing else to prepare
+        guard let videoFile else { return }
+        if let albumKey { albumVideoURLs[albumKey] = videoFile }
+        videoURLs[key] = videoFile
+
+        // High resolution still shown under the video until its first frame is ready
         var cover: NSImage?
         if let artworkURL = candidates.first(where: { $0.albumMatches })?.artworkURL {
             cover = await Self.fetchImage(artworkURL)
         }
         if cover == nil {
-            // Album not in the public catalog: upscale the best local cover instead of stretching it raw
             let fallbackData = fallbackCover.tiffRepresentation
             cover = await Task.detached(priority: .userInitiated) { () -> NSImage? in
                 let musicData = isAppleMusic ? Self.currentMusicArtworkData() : nil
@@ -3753,17 +3850,6 @@ final class AnimatedArtworkService: ObservableObject {
                 // Keep a single decoded cover in memory
                 stillImages = [key: cover]
             }
-        }
-
-        guard wantsVideo else { return }
-        for candidate in candidates.prefix(3) {
-            guard let playlistURL = await Self.motionPlaylistURL(pageURL: candidate.pageURL) else { continue }
-            if let fileURL = await Self.cachedVideoFile(masterPlaylistURL: playlistURL) {
-                withAnimation(.easeInOut(duration: 0.4)) {
-                    videoURLs[key] = fileURL
-                }
-            }
-            break
         }
     }
 

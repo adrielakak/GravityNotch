@@ -715,7 +715,7 @@ struct Media: View {
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Defaults.Toggle(key: .lockScreenAnimatedArtwork) {
-                    Text("Animated artwork in full screen wallpaper mode")
+                    Text("Use animated artwork as lock screen wallpaper")
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Button {
