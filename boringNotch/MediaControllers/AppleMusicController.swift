@@ -255,32 +255,28 @@ class AppleMusicController: MediaControllerProtocol {
     }
 
     // Streamed tracks are announced before Music has downloaded their cover, and nothing is sent once
-    // it arrives. Ask again for a while until the artwork shows up.
+    // it arrives. Ask again for a while until the artwork shows up. For some catalog tracks AppleScript
+    // never exposes any artwork at all, while MediaRemote does have it, so ask both.
     private func scheduleArtworkRetry() {
         artworkRetryTask?.cancel()
         let title = playbackState.title
         let artist = playbackState.artist
 
         artworkRetryTask = Task { [weak self] in
-            for delay in [0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0] {
+            for delay in [0.3, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0] {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled, let self else { return }
-                guard self.playbackState.title == title, self.playbackState.artist == artist else { return }
-                guard self.isActive(),
-                      let descriptor = try? await AppleScriptHelper.execute("""
-                        tell application "Music"
-                            try
-                                return {name of current track, data of artwork 1 of current track}
-                            on error
-                                return {"", ""}
-                            end try
-                        end tell
-                        """),
-                      descriptor.numberOfItems >= 2,
-                      descriptor.atIndex(1)?.stringValue == title,
-                      let artwork = descriptor.atIndex(2)?.data, !artwork.isEmpty
-                else { continue }
-                guard !Task.isCancelled, self.playbackState.title == title else { return }
+                guard self.playbackState.title == title, self.playbackState.artist == artist,
+                      self.playbackState.artwork == nil else { return }
+                guard self.isActive() else { continue }
+
+                var artwork = await self.fetchArtworkFromMusic(title: title)
+                if artwork == nil {
+                    artwork = await Self.fetchArtworkFromMediaRemote(title: title)
+                }
+                guard let artwork else { continue }
+                guard !Task.isCancelled, self.playbackState.title == title,
+                      self.playbackState.artwork == nil else { return }
 
                 var updated = self.playbackState
                 updated.artwork = artwork
@@ -290,6 +286,34 @@ class AppleMusicController: MediaControllerProtocol {
             }
             if !Task.isCancelled { self?.artworkRetryTask = nil }
         }
+    }
+
+    private func fetchArtworkFromMusic(title: String) async -> Data? {
+        guard let descriptor = try? await AppleScriptHelper.execute("""
+                tell application "Music"
+                    try
+                        return {name of current track, data of artwork 1 of current track}
+                    on error
+                        return {"", ""}
+                    end try
+                end tell
+                """),
+              descriptor.numberOfItems >= 2,
+              descriptor.atIndex(1)?.stringValue == title,
+              let artwork = descriptor.atIndex(2)?.data, !artwork.isEmpty
+        else { return nil }
+        return artwork
+    }
+
+    private static func fetchArtworkFromMediaRemote(title: String) async -> Data? {
+        guard let payload = await NowPlayingController.fetchCurrentPayload(),
+              payload.title == title,
+              (payload.parentApplicationBundleIdentifier ?? payload.bundleIdentifier) == "com.apple.Music",
+              let artworkString = payload.artworkData,
+              let artwork = Data(base64Encoded: artworkString.trimmingCharacters(in: .whitespacesAndNewlines)),
+              !artwork.isEmpty
+        else { return nil }
+        return artwork
     }
 
     // Music announces a track as playing while it is still buffering, and sends nothing when the
