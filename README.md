@@ -6,6 +6,25 @@
 
 ---
 
+## ⬇️ Télécharger pour Mac
+
+**[Télécharger GravityNotch.dmg](https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg)** (macOS 14 Sonoma ou plus récent, Apple Silicon et Intel)
+
+1. Ouvrez `GravityNotch.dmg` et glissez **GravityNotch** dans le dossier **Applications**.
+2. Lancez l'app. macOS affiche un avertissement au premier lancement, car l'app n'est pas signée avec un certificat développeur Apple payant : cliquez sur **Terminé**.
+3. Ouvrez **Réglages Système > Confidentialité et sécurité**, descendez jusqu'à la section **Sécurité** et cliquez sur **Ouvrir quand même**, puis confirmez.
+4. Accordez la permission **Accessibilité** quand l'app la demande (nécessaire pour remplacer les HUD de volume et de luminosité).
+
+Si le bouton **Ouvrir quand même** n'apparaît pas, lancez cette commande dans le Terminal puis rouvrez l'app :
+
+```bash
+xattr -cr /Applications/GravityNotch.app
+```
+
+Toutes les versions sont listées sur la page [Releases](https://github.com/adrielakak/GravityNotch/releases).
+
+---
+
 ## ✨ Nouvelles fonctionnalités ajoutées dans cette édition
 
 ### 1. 🔒 Lock Screen Media Widget + Live Karaoke Lyrics (`SkyLightWindow`)
