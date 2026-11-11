@@ -68,6 +68,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     private var process: Process?
     private var pipeHandler: JSONLinesPipeHandler?
     private var streamTask: Task<Void, Never>?
+    private var positionResyncTask: Task<Void, Never>?
 
     // MARK: - Initialization
     init?() {
@@ -101,6 +102,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
 
     deinit {
         streamTask?.cancel()
+        positionResyncTask?.cancel()
         
         if let pipeHandler = self.pipeHandler {
             Task { await pipeHandler.close()
@@ -225,6 +227,44 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         }
     }
 
+    // MediaRemote reports "playing" as soon as a track is requested, so while the player is still
+    // buffering the estimated position runs ahead of the audio. The player's own position is the
+    // ground truth: poll it for a few seconds after a track change and realign when it drifts.
+    private func schedulePositionResync() {
+        positionResyncTask?.cancel()
+
+        let appName: String
+        switch playbackState.bundleIdentifier {
+        case "com.apple.Music": appName = "Music"
+        case "com.spotify.client": appName = "Spotify"
+        default: return
+        }
+        let title = playbackState.title
+
+        positionResyncTask = Task { [weak self] in
+            for delay in [0.6, 0.8, 1.0, 1.5, 2.0, 3.0, 4.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self, self.playbackState.title == title else { return }
+                guard self.playbackState.isPlaying,
+                      let descriptor = try? await AppleScriptHelper.execute(
+                        "tell application \"\(appName)\" to get player position")
+                else { continue }
+                guard !Task.isCancelled, self.playbackState.title == title else { return }
+
+                let actual = descriptor.doubleValue
+                let state = self.playbackState
+                let expected = state.currentTime
+                    + state.playbackRate * Date().timeIntervalSince(state.lastUpdated)
+                if abs(expected - actual) > 0.3 {
+                    var corrected = state
+                    corrected.currentTime = actual
+                    corrected.lastUpdated = Date()
+                    self.playbackState = corrected
+                }
+            }
+        }
+    }
+
     // MARK: - Update Methods
     private func handleAdapterUpdate(_ update: NowPlayingUpdate) async {
         let payload = update.payload
@@ -293,7 +333,15 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         
         newPlaybackState.volume = payload.volume ?? (diff ? self.playbackState.volume : 0.5)
         
+        let needsPositionResync = newPlaybackState.title != self.playbackState.title
+            || newPlaybackState.artist != self.playbackState.artist
+            || (newPlaybackState.isPlaying && !self.playbackState.isPlaying)
+
         self.playbackState = newPlaybackState
+
+        if needsPositionResync {
+            schedulePositionResync()
+        }
         
         // Fetch favorite state for supported apps asynchronously
         // await fetchFavoriteStateIfSupported()

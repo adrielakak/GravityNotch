@@ -29,10 +29,13 @@ class AppleMusicController: MediaControllerProtocol {
     }
 
     private var notificationTask: Task<Void, Never>?
+    private var positionResyncTask: Task<Void, Never>?
+    private var periodicSyncTask: Task<Void, Never>?
     
     // MARK: - Initialization
     init() {
         setupPlaybackStateChangeObserver()
+        setupPeriodicSync()
         Task {
             if isActive() {
                 await updatePlaybackInfo()
@@ -54,6 +57,76 @@ class AppleMusicController: MediaControllerProtocol {
     
     deinit {
         notificationTask?.cancel()
+        positionResyncTask?.cancel()
+        periodicSyncTask?.cancel()
+    }
+
+    // Music stays silent on seeks, restarts and some track changes (notably from the lock screen), so the
+    // displayed position would keep running as if nothing happened. A light poll keeps it honest.
+    private func setupPeriodicSync() {
+        periodicSyncTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                guard self.isActive() else { continue }
+                await self.syncWithPlayer()
+            }
+        }
+    }
+
+    // Compiling an AppleScript is far more expensive than running it, so the poll keeps one compiled
+    // script and always runs it on the same serial queue.
+    private let syncQueue = DispatchQueue(label: "gravitynotch.applemusic.sync", qos: .utility)
+    private var compiledSyncScript: NSAppleScript?
+
+    private func runSyncScript() async -> NSAppleEventDescriptor? {
+        await withCheckedContinuation { continuation in
+            syncQueue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                if self.compiledSyncScript == nil {
+                    let script = NSAppleScript(source: """
+                    tell application "Music"
+                        try
+                            return {player position, name of current track, (player state is playing)}
+                        on error
+                            return {0, "", false}
+                        end try
+                    end tell
+                    """)
+                    var compileError: NSDictionary?
+                    if script?.compileAndReturnError(&compileError) == true {
+                        self.compiledSyncScript = script
+                    }
+                }
+                var error: NSDictionary?
+                continuation.resume(returning: self.compiledSyncScript?.executeAndReturnError(&error))
+            }
+        }
+    }
+
+    private func syncWithPlayer() async {
+        guard let descriptor = await runSyncScript(),
+              descriptor.numberOfItems >= 3 else { return }
+        let actual = descriptor.atIndex(1)?.doubleValue ?? 0
+        let title = descriptor.atIndex(2)?.stringValue ?? ""
+        let isPlaying = descriptor.atIndex(3)?.booleanValue ?? false
+
+        let state = self.playbackState
+        if (!title.isEmpty && title != state.title) || isPlaying != state.isPlaying {
+            await updatePlaybackInfo()
+            return
+        }
+        guard isPlaying else { return }
+        let expected = state.currentTime + state.playbackRate * Date().timeIntervalSince(state.lastUpdated)
+        if abs(expected - actual) > 0.5 {
+            var corrected = state
+            corrected.currentTime = actual
+            corrected.lastUpdated = Date()
+            self.playbackState = corrected
+        }
     }
     
     // MARK: - Protocol Implementation
@@ -71,10 +144,16 @@ class AppleMusicController: MediaControllerProtocol {
     
     func nextTrack() async {
         await executeCommand("next track")
+        try? await Task.sleep(for: .milliseconds(200))
+        await updatePlaybackInfo()
     }
     
     func previousTrack() async {
-        await executeCommand("previous track")
+        // "back track" restarts the current song, or goes to the previous one when already at its start.
+        // "previous track" does nothing on the first track of a playlist.
+        await executeCommand("back track")
+        try? await Task.sleep(for: .milliseconds(200))
+        await updatePlaybackInfo()
     }
     
     func seek(to time: Double) async {
@@ -148,7 +227,44 @@ class AppleMusicController: MediaControllerProtocol {
         let lovedState = descriptor.atIndex(11)?.booleanValue ?? false
         updatedState.isFavorite = lovedState
         updatedState.lastUpdated = Date()
+        let needsPositionResync = updatedState.title != self.playbackState.title
+            || updatedState.artist != self.playbackState.artist
+            || (updatedState.isPlaying && !self.playbackState.isPlaying)
         self.playbackState = updatedState
+
+        if needsPositionResync {
+            schedulePositionResync()
+        }
+    }
+
+    // Music announces a track as playing while it is still buffering, and sends nothing when the
+    // audio really starts. Poll the player position for a few seconds and realign when it drifts.
+    private func schedulePositionResync() {
+        positionResyncTask?.cancel()
+        let title = playbackState.title
+
+        positionResyncTask = Task { [weak self] in
+            for delay in [0.6, 0.8, 1.0, 1.5, 2.0, 3.0, 4.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self, self.playbackState.title == title else { return }
+                guard self.playbackState.isPlaying, self.isActive(),
+                      let descriptor = try? await AppleScriptHelper.execute(
+                        "tell application \"Music\" to get player position")
+                else { continue }
+                guard !Task.isCancelled, self.playbackState.title == title else { return }
+
+                let actual = descriptor.doubleValue
+                let state = self.playbackState
+                let expected = state.currentTime
+                    + state.playbackRate * Date().timeIntervalSince(state.lastUpdated)
+                if abs(expected - actual) > 0.3 {
+                    var corrected = state
+                    corrected.currentTime = actual
+                    corrected.lastUpdated = Date()
+                    self.playbackState = corrected
+                }
+            }
+        }
     }
     
     // MARK: - Private Methods
