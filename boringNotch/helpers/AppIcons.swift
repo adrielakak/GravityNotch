@@ -2738,7 +2738,7 @@ final class DroppyLockScreenMediaPanelManager: ObservableObject {
         let envelopeHeight: CGFloat = 390
         let originX = screen.frame.midX - (envelopeWidth / 2)
         // Center comfortably in the fractal area, lowered cleanly above the login avatar (~195pt) and well below the clock
-        let targetCenterY = screen.frame.origin.y + (screen.frame.height * 0.35)
+        let targetCenterY = screen.frame.origin.y + (screen.frame.height * 0.31)
         let originY = max(screen.frame.origin.y + 60, targetCenterY - (envelopeHeight / 2))
         return NSRect(x: originX, y: originY, width: envelopeWidth, height: envelopeHeight)
     }
