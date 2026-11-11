@@ -3256,19 +3256,22 @@ private struct LockScreenSyncedLyricsCard: View {
     var body: some View {
         let triple = computeTriple()
 
+        // A long current line wraps on two lines: drop the previous line so the card keeps its fixed size.
         VStack(spacing: 3) {
-            if let prev = triple.prevText, !prev.isEmpty {
+            if triple.currText.count <= 34, let prev = triple.prevText, !prev.isEmpty {
                 lyricRow(text: prev, seekTime: triple.prevTime, slot: 0, isCurrent: false, baseOpacity: 0.35)
             }
             lyricRow(text: triple.currText, seekTime: nil, slot: 1, isCurrent: true, baseOpacity: 1.0)
                 .id(triple.currText)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                .layoutPriority(1)
             if let next = triple.nextText, !next.isEmpty {
                 lyricRow(text: next, seekTime: triple.nextTime, slot: 2, isCurrent: false, baseOpacity: 0.45)
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 58)
+        .clipped()
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(
@@ -3295,6 +3298,9 @@ private struct LockScreenSyncedLyricsCard: View {
             .foregroundStyle(isCurrent ? Color.white : (hovered ? albumAccent : Color.white.opacity(baseOpacity)))
             .multilineTextAlignment(.center)
             .lineLimit(isCurrent ? 2 : 1)
+            .minimumScaleFactor(isCurrent ? 0.75 : 0.85)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity)
             .shadow(color: isCurrent ? .white.opacity(0.25) : .clear, radius: 6)
             .contentShape(Rectangle())
             .onHover { inside in
@@ -3788,7 +3794,9 @@ final class AnimatedArtworkService: ObservableObject {
     /// Tracks of one album share its animated cover, so the next track gets it without waiting for a lookup
     private var albumVideoURLs: [String: URL] = [:]
     @Published private var stillImages: [String: NSImage] = [:]
-    private var attemptedKeys: Set<String> = []
+    /// Last lookup per track. A failed lookup (network hiccup, slow catalog) is retried later instead of
+    /// leaving the track without its animated cover until the app restarts.
+    private var lastAttempts: [String: Date] = [:]
 
     private struct Candidate {
         let pageURL: URL
@@ -3813,13 +3821,16 @@ final class AnimatedArtworkService: ObservableObject {
         fallbackCover: NSImage,
         isAppleMusic: Bool
     ) async {
-        guard !title.isEmpty, !attemptedKeys.contains(key) else { return }
-        attemptedKeys.insert(key)
+        guard !title.isEmpty, videoURLs[key] == nil else { return }
+        if let last = lastAttempts[key], Date().timeIntervalSince(last) < 45 { return }
+        lastAttempts[key] = Date()
 
         var candidates = await Self.searchCandidates(title: title, artist: artist, album: album)
+        var usedWebAlbum = false
         if !candidates.contains(where: { $0.albumMatches }),
            let webAlbum = await AppleMusicWebCatalog.shared.album(title: title, album: album) {
             candidates.insert(Candidate(pageURL: webAlbum.pageURL, artworkURL: webAlbum.artworkURL, albumMatches: true), at: 0)
+            usedWebAlbum = true
         }
 
         var videoFile: URL?
@@ -3827,6 +3838,13 @@ final class AnimatedArtworkService: ObservableObject {
             guard let playlistURL = await Self.motionPlaylistURL(pageURL: candidate.pageURL) else { continue }
             videoFile = await Self.cachedVideoFile(masterPlaylistURL: playlistURL)
             break
+        }
+        // The iTunes search can return another edition of the album (clean instead of explicit) that has
+        // no motion artwork, so give the edition listed by the Apple Music web catalog a chance too.
+        if videoFile == nil, !usedWebAlbum,
+           let webAlbum = await AppleMusicWebCatalog.shared.album(title: title, album: album),
+           let playlistURL = await Self.motionPlaylistURL(pageURL: webAlbum.pageURL) {
+            videoFile = await Self.cachedVideoFile(masterPlaylistURL: playlistURL)
         }
         // No animated artwork: the cover stays in the player, nothing else to prepare
         guard let videoFile else { return }
@@ -4642,19 +4660,22 @@ actor AppleMusicWebCatalog {
             }
         }
 
+        var hadFetchFailure = albumIDs.isEmpty
         for id in albumIDs.prefix(6) {
-            guard
-                let pageURL = URL(string: "https://music.apple.com/\(storefront)/album/\(id)"),
-                let html = await Self.fetchHTML(pageURL),
-                let parsed = Self.parseAlbum(html: html, pageURL: pageURL)
-            else { continue }
+            guard let pageURL = URL(string: "https://music.apple.com/\(storefront)/album/\(id)") else { continue }
+            guard let html = await Self.fetchHTML(pageURL) else {
+                hadFetchFailure = true
+                continue
+            }
+            guard let parsed = Self.parseAlbum(html: html, pageURL: pageURL) else { continue }
             let name = Self.simplified(parsed.name)
             guard name == wantedAlbum || name.hasPrefix(wantedAlbum) || wantedAlbum.hasPrefix(name) else { continue }
             guard Self.index(of: wantedTitle, in: parsed) != nil else { continue }
             cache[wantedAlbum] = parsed
             return parsed
         }
-        missed.insert(missKey)
+        // Only remember a miss when the catalog really answered, so a network failure can be retried
+        if !hadFetchFailure { missed.insert(missKey) }
         return nil
     }
 
