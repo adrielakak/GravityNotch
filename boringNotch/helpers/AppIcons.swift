@@ -4661,6 +4661,9 @@ actor AppleMusicWebCatalog {
         }
 
         var hadFetchFailure = albumIDs.isEmpty
+        // "NI (Extension)" also starts with "NI": an edition whose name only shares a prefix is kept
+        // as a fallback, the album with the exact name wins.
+        var looseMatch: Album?
         for id in albumIDs.prefix(6) {
             guard let pageURL = URL(string: "https://music.apple.com/\(storefront)/album/\(id)") else { continue }
             guard let html = await Self.fetchHTML(pageURL) else {
@@ -4671,8 +4674,16 @@ actor AppleMusicWebCatalog {
             let name = Self.simplified(parsed.name)
             guard name == wantedAlbum || name.hasPrefix(wantedAlbum) || wantedAlbum.hasPrefix(name) else { continue }
             guard Self.index(of: wantedTitle, in: parsed) != nil else { continue }
+            guard name == wantedAlbum else {
+                if looseMatch == nil { looseMatch = parsed }
+                continue
+            }
             cache[wantedAlbum] = parsed
             return parsed
+        }
+        if let looseMatch {
+            cache[wantedAlbum] = looseMatch
+            return looseMatch
         }
         // Only remember a miss when the catalog really answered, so a network failure can be retried
         if !hadFetchFailure { missed.insert(missKey) }
