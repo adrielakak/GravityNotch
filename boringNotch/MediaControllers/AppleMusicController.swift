@@ -31,6 +31,7 @@ class AppleMusicController: MediaControllerProtocol {
     private var notificationTask: Task<Void, Never>?
     private var positionResyncTask: Task<Void, Never>?
     private var periodicSyncTask: Task<Void, Never>?
+    private var artworkRetryTask: Task<Void, Never>?
     
     // MARK: - Initialization
     init() {
@@ -59,6 +60,7 @@ class AppleMusicController: MediaControllerProtocol {
         notificationTask?.cancel()
         positionResyncTask?.cancel()
         periodicSyncTask?.cancel()
+        artworkRetryTask?.cancel()
     }
 
     // Music stays silent on seeks, restarts and some track changes (notably from the lock screen), so the
@@ -223,7 +225,14 @@ class AppleMusicController: MediaControllerProtocol {
         updatedState.repeatMode = RepeatMode(rawValue: Int(repeatModeValue)) ?? .off
         let volumePercentage = descriptor.atIndex(9)?.int32Value ?? 50
         updatedState.volume = Double(volumePercentage) / 100.0
-        updatedState.artwork = descriptor.atIndex(10)?.data as Data?
+        let sameTrack = updatedState.title == self.playbackState.title
+            && updatedState.artist == self.playbackState.artist
+            && updatedState.album == self.playbackState.album
+        if let artwork = descriptor.atIndex(10)?.data, !artwork.isEmpty {
+            updatedState.artwork = artwork
+        } else if !sameTrack {
+            updatedState.artwork = nil
+        }
         let lovedState = descriptor.atIndex(11)?.booleanValue ?? false
         updatedState.isFavorite = lovedState
         updatedState.lastUpdated = Date()
@@ -234,6 +243,52 @@ class AppleMusicController: MediaControllerProtocol {
 
         if needsPositionResync {
             schedulePositionResync()
+        }
+        if updatedState.artwork == nil {
+            if !sameTrack || artworkRetryTask == nil {
+                scheduleArtworkRetry()
+            }
+        } else {
+            artworkRetryTask?.cancel()
+            artworkRetryTask = nil
+        }
+    }
+
+    // Streamed tracks are announced before Music has downloaded their cover, and nothing is sent once
+    // it arrives. Ask again for a while until the artwork shows up.
+    private func scheduleArtworkRetry() {
+        artworkRetryTask?.cancel()
+        let title = playbackState.title
+        let artist = playbackState.artist
+
+        artworkRetryTask = Task { [weak self] in
+            for delay in [0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                guard self.playbackState.title == title, self.playbackState.artist == artist else { return }
+                guard self.isActive(),
+                      let descriptor = try? await AppleScriptHelper.execute("""
+                        tell application "Music"
+                            try
+                                return {name of current track, data of artwork 1 of current track}
+                            on error
+                                return {"", ""}
+                            end try
+                        end tell
+                        """),
+                      descriptor.numberOfItems >= 2,
+                      descriptor.atIndex(1)?.stringValue == title,
+                      let artwork = descriptor.atIndex(2)?.data, !artwork.isEmpty
+                else { continue }
+                guard !Task.isCancelled, self.playbackState.title == title else { return }
+
+                var updated = self.playbackState
+                updated.artwork = artwork
+                self.playbackState = updated
+                self.artworkRetryTask = nil
+                return
+            }
+            if !Task.isCancelled { self?.artworkRetryTask = nil }
         }
     }
 
