@@ -69,6 +69,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     private var pipeHandler: JSONLinesPipeHandler?
     private var streamTask: Task<Void, Never>?
     private var positionResyncTask: Task<Void, Never>?
+    private var artworkRetryTask: Task<Void, Never>?
 
     // MARK: - Initialization
     init?() {
@@ -103,6 +104,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     deinit {
         streamTask?.cancel()
         positionResyncTask?.cancel()
+        artworkRetryTask?.cancel()
         
         if let pipeHandler = self.pipeHandler {
             Task { await pipeHandler.close()
@@ -265,6 +267,68 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         }
     }
 
+    // For streamed tracks, the player announces the track before its cover is downloaded, and the
+    // adapter stream does not always push the cover once it arrives. MediaRemote does have it when
+    // asked for the current state, so ask again for a while until it shows up.
+    private func scheduleArtworkRetry() {
+        artworkRetryTask?.cancel()
+        let title = playbackState.title
+        let artist = playbackState.artist
+
+        artworkRetryTask = Task { [weak self] in
+            for delay in [0.3, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                guard self.playbackState.title == title, self.playbackState.artist == artist,
+                      self.playbackState.artwork == nil else { return }
+                guard let payload = await Self.fetchCurrentPayload(),
+                      payload.title == title,
+                      let artworkString = payload.artworkData,
+                      let artwork = Data(
+                        base64Encoded: artworkString.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      !artwork.isEmpty
+                else { continue }
+                guard !Task.isCancelled, self.playbackState.title == title,
+                      self.playbackState.artwork == nil else { return }
+
+                var updated = self.playbackState
+                updated.artwork = artwork
+                self.playbackState = updated
+                self.artworkRetryTask = nil
+                return
+            }
+            if !Task.isCancelled { self?.artworkRetryTask = nil }
+        }
+    }
+
+    // One-shot read of the current now playing state through the adapter ("get" instead of "stream").
+    static func fetchCurrentPayload() async -> NowPlayingPayload? {
+        guard
+            let scriptURL = Bundle.main.url(forResource: "mediaremote-adapter", withExtension: "pl"),
+            let frameworkPath = Bundle.main.privateFrameworksPath?.appending("/MediaRemoteAdapter.framework")
+        else { return nil }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let process = Process()
+                let pipe = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+                process.arguments = [scriptURL.path, frameworkPath, "get"]
+                process.standardOutput = pipe
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                } catch {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                continuation.resume(returning: try? JSONDecoder().decode(NowPlayingPayload.self, from: data))
+            }
+        }
+    }
+
     // MARK: - Update Methods
     private func handleAdapterUpdate(_ update: NowPlayingUpdate) async {
         let payload = update.payload
@@ -313,6 +377,15 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         } else if !diff {
             newPlaybackState.artwork = nil
         }
+        if newPlaybackState.artwork?.isEmpty == true {
+            newPlaybackState.artwork = nil
+        }
+        let sameTrack = newPlaybackState.title == self.playbackState.title
+            && newPlaybackState.artist == self.playbackState.artist
+            && newPlaybackState.album == self.playbackState.album
+        if newPlaybackState.artwork == nil && sameTrack {
+            newPlaybackState.artwork = self.playbackState.artwork
+        }
 
         if let dateString = payload.timestamp,
            let date = ISO8601DateFormatter().date(from: dateString) {
@@ -341,6 +414,13 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
 
         if needsPositionResync {
             schedulePositionResync()
+        }
+
+        if newPlaybackState.artwork != nil {
+            artworkRetryTask?.cancel()
+            artworkRetryTask = nil
+        } else if !newPlaybackState.title.isEmpty, !sameTrack || artworkRetryTask == nil {
+            scheduleArtworkRetry()
         }
         
         // Fetch favorite state for supported apps asynchronously
