@@ -1,0 +1,22 @@
+@media (max-width: 640px) {
+  .hero {
+    min-height: 100vh;
+    min-height: 100lvh;
+    padding-bottom: calc(44px + 100lvh - 100svh);
+  }
+}
+
+.safari-top-tint {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: max(2px, env(safe-area-inset-top, 0px));
+  background: var(--deep);
+  pointer-events: none;
+  z-index: 1;
+}
+.safari-top-tint[hidden] { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  .safari-top-tint { display: none; }
+}
