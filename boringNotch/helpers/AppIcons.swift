@@ -1294,6 +1294,7 @@ final class AntigravityAgentMonitor: ObservableObject {
     private struct CachedSessionEntry: Sendable {
         let modDate: Date
         let fileSize: Int
+        let lastEventDate: Date
         let snapshot: AgentSessionSnapshot
         let rawPhase: AgentWorkPhase
         let turnComplete: Bool
@@ -1322,6 +1323,8 @@ final class AntigravityAgentMonitor: ObservableObject {
     private var maxContextWindow: Double = 1_000_000.0
     private var sessionCache: [String: CachedSessionEntry] = [:]
     private var isRefreshing: Bool = false
+    private var lastProcessCheckDate: Date = .distantPast
+    private var cachedRunningProcesses: (claude: Bool, codex: Bool) = (true, true)
     /// A session picked by hand stays selected for a while, then the notch follows the live agent again
     private var selectionPinnedUntil: Date = .distantPast
 
@@ -1437,9 +1440,73 @@ final class AntigravityAgentMonitor: ObservableObject {
             || lower.contains("confirm")
     }
 
-    private nonisolated static func resolveSnapshot(from entry: CachedSessionEntry, now: Date) -> AgentSessionSnapshot {
+    private nonisolated static func detectRunningAgentProcesses() -> (claude: Bool, codex: Bool) {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(getuid())]
+        var size: Int = 0
+        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else {
+            return (true, true)
+        }
+        let count = size / MemoryLayout<kinfo_proc>.stride
+        var procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
+        guard sysctl(&mib, 4, &procs, &size, nil, 0) == 0 else {
+            return (true, true)
+        }
+        let actual = size / MemoryLayout<kinfo_proc>.stride
+        var claudeRunning = false
+        var codexRunning = false
+        var pathBuf = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+
+        for i in 0..<actual {
+            if claudeRunning && codexRunning { break }
+            let pid = procs[i].kp_proc.p_pid
+            guard pid > 0 else { continue }
+
+            let comm = withUnsafePointer(to: procs[i].kp_proc.p_comm) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN) + 1) {
+                    String(cString: $0).lowercased()
+                }
+            }
+            if comm == "claude" { claudeRunning = true }
+            if comm == "codex" { codexRunning = true }
+
+            let len = proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count))
+            guard len > 0 else { continue }
+            let path = String(cString: pathBuf).lowercased()
+            if path.contains("/claude/") || path.hasSuffix("/claude") {
+                claudeRunning = true
+            }
+            if path.contains("/codex/") || path.hasSuffix("/codex") || path.contains("codex.app") {
+                codexRunning = true
+            }
+            if (!claudeRunning || !codexRunning) && (path.hasSuffix("/node") || path.hasSuffix("/bun")) {
+                var argsMib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+                var argsSize: Int = 0
+                if sysctl(&argsMib, 3, nil, &argsSize, nil, 0) == 0, argsSize > 4, argsSize < 65_536 {
+                    var argsBuf = [UInt8](repeating: 0, count: argsSize)
+                    if sysctl(&argsMib, 3, &argsBuf, &argsSize, nil, 0) == 0 {
+                        let args = argsBuf.dropFirst(4).split(separator: 0).prefix(6).compactMap {
+                            String(bytes: $0, encoding: .utf8)?.lowercased()
+                        }
+                        if args.contains(where: { $0.hasSuffix("/claude") || $0.contains("/claude/") || $0 == "claude" }) {
+                            claudeRunning = true
+                        }
+                        if args.contains(where: { $0.hasSuffix("/codex") || $0.contains("/codex/") || $0 == "codex" }) {
+                            codexRunning = true
+                        }
+                    }
+                }
+            }
+        }
+        return (claudeRunning, codexRunning)
+    }
+
+    private nonisolated static func resolveSnapshot(
+        from entry: CachedSessionEntry,
+        now: Date,
+        processRunning: Bool = true
+    ) -> AgentSessionSnapshot {
         let s = entry.snapshot
-        let age = now.timeIntervalSince(entry.modDate)
+        let age = max(0, now.timeIntervalSince(entry.lastEventDate))
 
         // Mid-turn the transcript stays silent while a command, a search or a long thought runs,
         // so silence alone does not mean the agent stopped. Edits and questions are the exception:
@@ -1447,10 +1514,10 @@ final class AntigravityAgentMonitor: ObservableObject {
         let midTurn = !entry.turnComplete
         let pendingTool = entry.hasPendingTool ? (s.recentEvents.first?.toolName ?? "") : ""
         let blockedOnUser = entry.hasPendingTool && (entry.rawPhase == .editing || isUserPromptTool(pendingTool))
-        let isActive = age < (midTurn ? 600.0 : 45.0)
-        let isWorkingNow = midTurn && age < (blockedOnUser ? 22.0 : 600.0)
+        let isActive = age < (midTurn && processRunning ? 600.0 : 45.0)
+        let isWorkingNow = processRunning && midTurn && age < (blockedOnUser ? 22.0 : 600.0)
         let workingPhase: AgentWorkPhase = entry.rawPhase == .waiting ? .thinking : entry.rawPhase
-        let effectivePhase: AgentWorkPhase = (entry.turnComplete || !isActive) ? .waiting : workingPhase
+        let effectivePhase: AgentWorkPhase = (entry.turnComplete || !isActive || !processRunning) ? .waiting : workingPhase
 
         return AgentSessionSnapshot(
             id: s.id,
@@ -1674,6 +1741,7 @@ final class AntigravityAgentMonitor: ObservableObject {
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
                 fileSize: candidate.fileSize,
+                lastEventDate: max(lastStepDate, candidate.modDate),
                 snapshot: baseSnapshot,
                 rawPhase: latestPhase,
                 turnComplete: lastTurnComplete,
@@ -1689,6 +1757,7 @@ final class AntigravityAgentMonitor: ObservableObject {
         home: String,
         now: Date,
         dateParser: ISODateParser,
+        processRunning: Bool,
         cache: inout [String: CachedSessionEntry]
     ) -> [AgentSessionSnapshot] {
         let projectsDir = URL(fileURLWithPath: home).appendingPathComponent(".claude/projects")
@@ -1718,12 +1787,12 @@ final class AntigravityAgentMonitor: ObservableObject {
         candidates.sort { $0.modDate > $1.modDate }
 
         var snapshots: [AgentSessionSnapshot] = []
-        for candidate in candidates.prefix(4) {
+        for candidate in candidates.prefix(6) {
             let key = "cc:\(candidate.id)"
             if let cached = cache[key],
                cached.modDate == candidate.modDate,
                cached.fileSize == candidate.fileSize {
-                snapshots.append(resolveSnapshot(from: cached, now: now))
+                snapshots.append(resolveSnapshot(from: cached, now: now, processRunning: processRunning))
                 continue
             }
 
@@ -1745,17 +1814,17 @@ final class AntigravityAgentMonitor: ObservableObject {
             var latestPhase: AgentWorkPhase = .waiting
             var latestFile: String? = nil
             var events: [AgentToolEvent] = []
-            var eventTime = candidate.modDate
+            var lastEventDate: Date = .distantPast
             var lastTurnComplete = false
+            var justSawCompactBoundary = false
+            var hasPendingTool = false
 
             for line in lines.suffix(180) {
                 guard let lineData = line.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
 
                 let rowType = (obj["type"] as? String) ?? ""
-                if let d = dateParser.parse(obj["timestamp"] as? String) {
-                    eventTime = d
-                }
+                let parsedTimestamp = dateParser.parse(obj["timestamp"] as? String)
                 if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
                     projectName = URL(fileURLWithPath: cwd).lastPathComponent
                 }
@@ -1771,31 +1840,66 @@ final class AntigravityAgentMonitor: ObservableObject {
                 }
                 if rowType == "system" {
                     let subtype = (obj["subtype"] as? String) ?? ""
-                    if subtype == "turn_duration" || subtype == "stop_hook_summary" {
+                    if subtype == "compact_boundary" {
+                        justSawCompactBoundary = true
                         lastTurnComplete = true
+                        hasPendingTool = false
+                    } else if subtype == "turn_duration" || subtype == "stop_hook_summary" {
+                        justSawCompactBoundary = false
+                        lastTurnComplete = true
+                        hasPendingTool = false
+                        if let d = parsedTimestamp, d > lastEventDate {
+                            lastEventDate = d
+                        }
                     }
+                    continue
+                }
+
+                if rowType == "user" {
+                    let isMeta = (obj["isMeta"] as? Bool) == true
+                    let isCompactSummary = (obj["isCompactSummary"] as? Bool) == true
+                    let isVisibleInTranscriptOnly = (obj["isVisibleInTranscriptOnly"] as? Bool) == true
+                    let followsCompact = justSawCompactBoundary
+                    justSawCompactBoundary = false
+
+                    if isMeta || isCompactSummary || isVisibleInTranscriptOnly || followsCompact {
+                        continue
+                    }
+
+                    let userMessage = obj["message"] as? [String: Any]
+                    let userText = (userMessage?["content"] as? String)
+                        ?? ((userMessage?["content"] as? [[String: Any]])?.first?["text"] as? String)
+                        ?? ""
+                    if userText.hasPrefix("<command-name>/compact") || userText.hasPrefix("<local-command-") {
+                        continue
+                    }
+
+                    if let d = parsedTimestamp, d > lastEventDate {
+                        lastEventDate = d
+                    }
+                    hasPendingTool = false
+                    if userText.hasPrefix("[Request interrupted by user") {
+                        lastTurnComplete = true
+                        continue
+                    }
+                    lastTurnComplete = false
+                    latestPhase = .thinking
+                    latestTitle = "Thinking"
+                    latestDetail = sessionTitle.isEmpty ? "Analyzing context…" : sessionTitle
                     continue
                 }
 
                 guard rowType == "assistant", let message = obj["message"] as? [String: Any] else {
-                    if rowType == "user" && ((obj["isMeta"] as? Bool) != true) {
-                        let userMessage = obj["message"] as? [String: Any]
-                        let userText = (userMessage?["content"] as? String)
-                            ?? ((userMessage?["content"] as? [[String: Any]])?.first?["text"] as? String)
-                            ?? ""
-                        if userText.hasPrefix("[Request interrupted by user") {
-                            lastTurnComplete = true
-                            continue
-                        }
-                        lastTurnComplete = false
-                        latestPhase = .thinking
-                        latestTitle = "Thinking"
-                        latestDetail = sessionTitle.isEmpty ? "Analyzing context…" : sessionTitle
-                    }
                     continue
                 }
 
+                justSawCompactBoundary = false
+                if let d = parsedTimestamp, d > lastEventDate {
+                    lastEventDate = d
+                }
+                let eventTime = parsedTimestamp ?? (lastEventDate == .distantPast ? candidate.modDate : lastEventDate)
                 lastTurnComplete = false
+                hasPendingTool = false
                 stepCounter += 1
 
                 if let model = message["model"] as? String, !model.isEmpty {
@@ -1823,6 +1927,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                             latestTitle = "Thinking"
                             latestDetail = sessionTitle.isEmpty ? "Reasoning…" : sessionTitle
                         } else if cType == "tool_use" {
+                            hasPendingTool = true
                             let name = (item["name"] as? String) ?? "Tool"
                             let input = (item["input"] as? [String: Any]) ?? [:]
                             let phase = AgentWorkPhase.classify(toolName: name)
@@ -1877,7 +1982,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 phase: latestPhase,
                 isActive: false,
                 isWorkingNow: false,
-                lastUpdated: candidate.modDate,
+                lastUpdated: lastEventDate,
                 stepCount: stepCounter,
                 contextTokens: contextTokens,
                 maxContextWindow: windowSize,
@@ -1894,12 +1999,14 @@ final class AntigravityAgentMonitor: ObservableObject {
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
                 fileSize: candidate.fileSize,
+                lastEventDate: lastEventDate,
                 snapshot: baseSnapshot,
                 rawPhase: latestPhase,
-                turnComplete: lastTurnComplete
+                turnComplete: lastTurnComplete,
+                hasPendingTool: hasPendingTool
             )
             cache[key] = entry
-            snapshots.append(resolveSnapshot(from: entry, now: now))
+            snapshots.append(resolveSnapshot(from: entry, now: now, processRunning: processRunning))
         }
         return snapshots
     }
@@ -1908,6 +2015,7 @@ final class AntigravityAgentMonitor: ObservableObject {
         home: String,
         now: Date,
         dateParser: ISODateParser,
+        processRunning: Bool,
         cache: inout [String: CachedSessionEntry]
     ) -> [AgentSessionSnapshot] {
         let sessionsRoot = URL(fileURLWithPath: home).appendingPathComponent(".codex/sessions")
@@ -1934,7 +2042,7 @@ final class AntigravityAgentMonitor: ObservableObject {
             if let cached = cache[key],
                cached.modDate == candidate.modDate,
                cached.fileSize == candidate.fileSize {
-                snapshots.append(resolveSnapshot(from: cached, now: now))
+                snapshots.append(resolveSnapshot(from: cached, now: now, processRunning: processRunning))
                 continue
             }
 
@@ -1952,17 +2060,16 @@ final class AntigravityAgentMonitor: ObservableObject {
             var latestDetail = "Session active"
             var latestPhase: AgentWorkPhase = .waiting
             var events: [AgentToolEvent] = []
-            var eventTime = candidate.modDate
+            var lastEventDate: Date = .distantPast
             var taskComplete = false
+            var hasPendingTool = false
 
             for line in lines.suffix(150) {
                 guard let lineData = line.data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
 
                 let rowType = (obj["type"] as? String) ?? ""
-                if let d = dateParser.parse(obj["timestamp"] as? String) {
-                    eventTime = d
-                }
+                let parsedTimestamp = dateParser.parse(obj["timestamp"] as? String)
 
                 let payload = obj["payload"] as? [String: Any]
                 if rowType == "session_meta", let cwd = payload?["cwd"] as? String, !cwd.isEmpty {
@@ -1970,14 +2077,20 @@ final class AntigravityAgentMonitor: ObservableObject {
                 } else if rowType == "event_msg", let payload {
                     let pType = (payload["type"] as? String) ?? ""
                     if pType == "task_started" {
+                        if let d = parsedTimestamp, d > lastEventDate { lastEventDate = d }
                         taskComplete = false
+                        hasPendingTool = false
                         if let win = payload["model_context_window"] as? Int, win > 0 {
                             windowSize = Double(win)
                         }
                         latestPhase = .thinking
                     } else if pType == "task_complete" {
+                        if let d = parsedTimestamp, d > lastEventDate { lastEventDate = d }
                         taskComplete = true
+                        hasPendingTool = false
                         latestPhase = .waiting
+                    } else if pType == "item_completed" {
+                        if let d = parsedTimestamp, d > lastEventDate { lastEventDate = d }
                     } else if pType == "token_count", let info = payload["info"] as? [String: Any] {
                         if let last = info["last_token_usage"] as? [String: Any] {
                             let inTok = (last["input_tokens"] as? Int) ?? 0
@@ -1992,7 +2105,22 @@ final class AntigravityAgentMonitor: ObservableObject {
                     }
                 } else if rowType == "response_item", let payload {
                     let pType = (payload["type"] as? String) ?? ""
+                    let role = (payload["role"] as? String) ?? ""
+                    let isModelOrUserEvent = pType == "function_call"
+                        || pType == "custom_tool_call"
+                        || pType == "function_call_output"
+                        || pType == "custom_tool_call_output"
+                        || pType == "tool_search_call"
+                        || pType == "tool_search_output"
+                        || pType == "web_search_call"
+                        || pType == "agent_message"
+                        || pType == "reasoning"
+                        || (pType == "message" && (role == "user" || role == "assistant"))
+                    if isModelOrUserEvent, let d = parsedTimestamp, d > lastEventDate {
+                        lastEventDate = d
+                    }
                     if pType == "function_call" || pType == "custom_tool_call" {
+                        hasPendingTool = true
                         stepCounter += 1
                         let name = (payload["name"] as? String) ?? "tool"
                         let phase = AgentWorkPhase.classify(toolName: name)
@@ -2000,6 +2128,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                         latestTitle = name
                         latestDetail = projectName
                         latestPhase = phase
+                        let eventTime = parsedTimestamp ?? (lastEventDate == .distantPast ? candidate.modDate : lastEventDate)
                         events.append(
                             AgentToolEvent(
                                 id: "cx-\(candidate.id.prefix(6))-\(stepCounter)-\(events.count)",
@@ -2011,6 +2140,11 @@ final class AntigravityAgentMonitor: ObservableObject {
                                 timestamp: eventTime
                             )
                         )
+                    } else if pType == "function_call_output" || pType == "custom_tool_call_output" {
+                        hasPendingTool = false
+                        if latestPhase == .editing || latestPhase == .waiting {
+                            latestPhase = .thinking
+                        }
                     }
                 }
             }
@@ -2024,7 +2158,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 phase: latestPhase,
                 isActive: false,
                 isWorkingNow: false,
-                lastUpdated: candidate.modDate,
+                lastUpdated: lastEventDate,
                 stepCount: stepCounter,
                 contextTokens: contextTokens,
                 maxContextWindow: windowSize,
@@ -2041,12 +2175,14 @@ final class AntigravityAgentMonitor: ObservableObject {
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
                 fileSize: candidate.fileSize,
+                lastEventDate: lastEventDate,
                 snapshot: baseSnapshot,
                 rawPhase: latestPhase,
-                turnComplete: taskComplete
+                turnComplete: taskComplete,
+                hasPendingTool: hasPendingTool
             )
             cache[key] = entry
-            snapshots.append(resolveSnapshot(from: entry, now: now))
+            snapshots.append(resolveSnapshot(from: entry, now: now, processRunning: processRunning))
         }
         return snapshots
     }
@@ -2066,6 +2202,8 @@ final class AntigravityAgentMonitor: ObservableObject {
         guard !isRefreshing else { return }
         isRefreshing = true
         let initialCache = sessionCache
+        let prevProcessCheckDate = lastProcessCheckDate
+        let prevRunningProcesses = cachedRunningProcesses
 
         Task.detached(priority: .utility) {
             let home = Self.realHomeDirectory()
@@ -2073,10 +2211,20 @@ final class AntigravityAgentMonitor: ObservableObject {
             let dateParser = ISODateParser()
             var nextCache = initialCache
 
+            let runningProcesses: (claude: Bool, codex: Bool)
+            let processCheckDate: Date
+            if now.timeIntervalSince(prevProcessCheckDate) >= 4.0 {
+                runningProcesses = Self.detectRunningAgentProcesses()
+                processCheckDate = now
+            } else {
+                runningProcesses = prevRunningProcesses
+                processCheckDate = prevProcessCheckDate
+            }
+
             var combined: [AgentSessionSnapshot] = []
-            combined.append(contentsOf: Self.parseClaudeSessions(home: home, now: now, dateParser: dateParser, cache: &nextCache))
+            combined.append(contentsOf: Self.parseClaudeSessions(home: home, now: now, dateParser: dateParser, processRunning: runningProcesses.claude, cache: &nextCache))
             combined.append(contentsOf: Self.parseAntigravitySessions(home: home, now: now, dateParser: dateParser, cache: &nextCache))
-            combined.append(contentsOf: Self.parseCodexSessions(home: home, now: now, dateParser: dateParser, cache: &nextCache))
+            combined.append(contentsOf: Self.parseCodexSessions(home: home, now: now, dateParser: dateParser, processRunning: runningProcesses.codex, cache: &nextCache))
 
             combined.sort { lhs, rhs in
                 if lhs.isActive != rhs.isActive { return lhs.isActive && !rhs.isActive }
@@ -2097,6 +2245,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                 let mon = AntigravityAgentMonitor.shared
                 mon.isRefreshing = false
                 mon.sessionCache = updatedCache
+                mon.lastProcessCheckDate = processCheckDate
+                mon.cachedRunningProcesses = runningProcesses
 
                 AgentSpeechBubbleController.shared.announceTransitions(from: mon.sessions, to: trimmed)
                 if mon.sessions != trimmed { mon.sessions = trimmed }
