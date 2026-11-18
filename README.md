@@ -32,8 +32,6 @@ Toutes les versions sont listées sur la page [Releases](https://github.com/adri
 ## ✨ Nouvelles fonctionnalités ajoutées dans cette édition
 
 ### 1. 🔒 Lecteur média sur l'écran verrouillé + paroles karaoké (`SkyLightWindow`)
-<p align="center"><img src="docs/assets/readme/lock_screen.gif" alt="Lecteur média et paroles sur l'écran verrouillé, avec la pochette animée en fond" width="560"></p>
-
 - **Panneau en verre dépoli sur l'écran verrouillé macOS**, affiché par-dessus l'écran de verrouillage grâce au framework privé `SkyLight`.
 - **Contrôles complets** : barre de progression interactive (scrub), précédent (redémarre le titre comme Apple Music), lecture/pause, suivant, et sélecteur de sortie audio `CoreAudio`.
 - **Paroles synchronisées en direct** : ligne précédente estompée, ligne chantée en blanc lumineux et ligne suivante, via LRCLIB (avec nettoyage automatique des suffixes `(Slowed)` / `(Remix)`) ou les paroles intégrées d'Apple Music. Un tap sur une ligne saute à ce moment du morceau.
@@ -41,22 +39,16 @@ Toutes les versions sont listées sur la page [Releases](https://github.com/adri
 - Halo d'ambiance optionnel et réglages dédiés (lecteur, halo, paroles) dans les préférences.
 
 ### 2. 🎵 Playing Next (File d'attente Apple Music interactive)
-<p align="center"><img src="docs/assets/readme/musique.gif" alt="Lecteur musical et file Playing Next dans l'encoche" width="640"></p>
-
 - Bouton **`music.note.list`** intégré directement aux contrôles du lecteur musical.
 - Bascule fluide dans l'onglet **Home** entre le **Calendrier Apple** et la liste **Playing Next**.
 - Clic direct sur n'importe quel titre à venir pour le jouer immédiatement, ou bouton **`arrow.up.to.line`** pour le remonter en tête de file.
 - Fonctionne aussi quand Music lit depuis le catalogue Apple Music (lecture de la page de l'album) et signale quand la lecture aléatoire masque l'ordre réel.
 
 ### 3. 🔆 System HUDs macOS Tahoe (Interception matérielle Triple-Couche `< 1 µs`)
-<p align="center"><img src="docs/assets/readme/musique_and_brightness.gif" alt="HUD de volume et de luminosité dans l'encoche" width="640"></p>
-
 - Remplacement complet des bulles système macOS (Volume, Luminosité écran, Rétroéclairage clavier et **Caps Lock HUD**) par une animation fluide directement dans l'encoche (*Dynamic Island*).
 - Compatible **macOS 26 Tahoe** : interception simultanée sur `.cghidEventTap`, `.cgSessionEventTap` et `.cgAnnotatedSessionEventTap` sur une file `.userInteractive` dédiée avec lecture directe des champs `CGEvent` (`99` et `149`) sans latence ni double HUD.
 
 ### 4. 🔍 Text Capture (Screen OCR) & Element Capture
-<p align="center"><img src="docs/assets/readme/ocr.gif" alt="Capture de texte OCR depuis l'encoche" width="640"></p>
-
 - Bouton **`text.viewfinder`** dans l'en-tête de l'encoche :
   - **Clic gauche** : sélectionne une zone de l'écran et extrait instantanément le texte via Apple Vision (`VNRecognizeTextRequest`) directement dans le presse-papiers.
   - **Clic droit** : capture une zone ou une fenêtre/élément détouré directement vers le **Shelf**.
@@ -66,8 +58,6 @@ Toutes les versions sont listées sur la page [Releases](https://github.com/adri
 - Recherche instantanée, épinglage (*Pin*), copie en un clic et envoi direct d'un élément vers le **Shelf**.
 
 ### 6. ✨ Onglet `Agents` (Claude Code, Codex CLI & Antigravity en direct)
-<p align="center"><img src="docs/assets/readme/ai_activity.gif" alt="Activité d'un agent IA en direct dans l'encoche" width="640"></p>
-
 - Suivi en temps réel des sessions d'agents de code IA, lues localement depuis leurs transcripts (`~/.claude/projects`, `~/.codex/sessions`, Antigravity) :
   - Jauge de **Context / Quota** (`input_tokens + cache_read_tokens`), taux de **Cache Hit %**, tokens générés (`output_tokens`) et numéro d'étape (`Step #`).
   - Checklist de **progression**, pastille des fichiers modifiés avec compteurs de diff, et flux d'outils en direct (*Live Tool Feed*).
