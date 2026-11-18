@@ -11,11 +11,24 @@ main, .footer { background: var(--page); }
   }
 }
 
-.faq details { overflow: hidden; }
-.faq summary { transition: color 200ms ease; }
+.faq details {
+  overflow: hidden;
+  transition: transform 180ms var(--ease-out), box-shadow 420ms ease;
+}
+.faq details.is-open { box-shadow: 0 14px 36px rgb(19 21 105 / 0.08); }
+.faq details:has(summary:active) { transform: scale(0.985); }
+.faq summary {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+  transition: color 200ms ease;
+}
+.faq summary:focus { outline: none; }
+.faq summary:focus-visible { outline: 2px solid var(--ultra); outline-offset: 4px; border-radius: 8px; }
 @media (hover: hover) {
   .faq summary:hover { color: var(--ultra); }
 }
-.faq summary::after { transition: transform 360ms var(--ease-out); }
+.faq summary::after { transition: transform 460ms cubic-bezier(0.34, 1.56, 0.64, 1); }
 .faq details[open]:not(.is-open) summary::after { transform: none; }
 .faq details.is-open summary::after { transform: rotate(45deg); }
