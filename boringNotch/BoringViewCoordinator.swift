@@ -127,9 +127,10 @@ class BoringViewCoordinator: ObservableObject {
             forName: Notification.Name.accessibilityAuthorizationChanged,
             object: nil,
             queue: .main
-        ) { _ in
+        ) { notification in
+            let granted = (notification.userInfo?["granted"] as? Bool) ?? AXIsProcessTrusted()
             Task { @MainActor in
-                if Defaults[.hudReplacement] {
+                if granted && Defaults[.hudReplacement] {
                     await MediaKeyInterceptor.shared.start(promptIfNeeded: false)
                 }
             }
@@ -158,7 +159,7 @@ class BoringViewCoordinator: ObservableObject {
             helloAnimationRunning = firstLaunch
 
             if Defaults[.hudReplacement] {
-                await MediaKeyInterceptor.shared.start(promptIfNeeded: true)
+                await MediaKeyInterceptor.shared.start(promptIfNeeded: false)
             }
         }
     }

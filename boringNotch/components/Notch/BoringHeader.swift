@@ -14,6 +14,7 @@ struct BoringHeader: View {
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @StateObject var tvm = ShelfStateViewModel.shared
     @ObservedObject var caffeine = CaffeineManager.shared
+    @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
     var body: some View {
         HStack(spacing: 0) {
             HStack {
@@ -43,6 +44,33 @@ struct BoringHeader: View {
                         OpenNotchHUD(type: $coordinator.sneakPeek.type, value: $coordinator.sneakPeek.value, icon: $coordinator.sneakPeek.icon)
                             .transition(.scale(scale: 0.8).combined(with: .opacity))
                     } else {
+                        if Defaults[.hudReplacement] && !mediaKeyInterceptor.isAccessibilityGranted {
+                            Button(action: {
+                                mediaKeyInterceptor.openAccessibilitySystemSettings()
+                            }) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.orange)
+                                    Text("Permission required")
+                                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.orange)
+                                        .lineLimit(1)
+                                }
+                                .padding(.horizontal, 8)
+                                .frame(height: 26)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.orange.opacity(0.16))
+                                        .overlay(
+                                            Capsule()
+                                                .strokeBorder(Color.orange.opacity(0.45), lineWidth: 0.8)
+                                        )
+                                )
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .help("Accessibility permission required - Click to open System Settings")
+                        }
                         if Defaults[.showMirror] {
                             Button(action: {
                                 vm.toggleCameraPreview()

@@ -192,6 +192,7 @@ extension Defaults.Keys {
     
     // MARK: HUD
     static let hudReplacement = Key<Bool>("hudReplacement", default: true)
+    static let hudTapSafetyTimeout = Key<Bool>("hudTapSafetyTimeout", default: false)
     static let inlineHUD = Key<Bool>("inlineHUD", default: true)
     static let enableGradient = Key<Bool>("enableGradient", default: false)
     static let systemEventIndicatorShadow = Key<Bool>("systemEventIndicatorShadow", default: false)

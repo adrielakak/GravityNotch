@@ -1609,6 +1609,70 @@
         }
       }
     },
+    "Accessibility permission required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accessibility permission required"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permission Accessibilité requise"
+          }
+        }
+      }
+    },
+    "Accessibility permission required - Click to open System Settings": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accessibility permission required - Click to open System Settings"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permission Accessibilité requise - Cliquez pour ouvrir les Réglages Système"
+          }
+        }
+      }
+    },
+    "Active": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actif"
+          }
+        }
+      }
+    },
+    "Active (%llds)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active (%llds)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actif (%lld s)"
+          }
+        }
+      }
+    },
     "Add": {
       "localizations": {
         "ar": {
@@ -2834,6 +2898,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Périphérique de sortie audio"
+          }
+        }
+      }
+    },
+    "Auto-disabled after 30s (Safety mode)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto-disabled after 30s (Safety mode)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactivé après 30 s (Mode sécurité)"
           }
         }
       }
@@ -9555,6 +9635,22 @@
         }
       }
     },
+    "Event tap status": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Event tap status"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "État du tap d’événements"
+          }
+        }
+      }
+    },
     "Expanded drag detection area": {
       "localizations": {
         "ar": {
@@ -12260,6 +12356,22 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "进行中"
+          }
+        }
+      }
+    },
+    "Inactive": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inactive"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inactif"
           }
         }
       }
@@ -17030,6 +17142,38 @@
         }
       }
     },
+    "Permission required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permission required"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permission requise"
+          }
+        }
+      }
+    },
+    "Permission required (Apple HUD active)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permission required (Apple HUD active)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Permission requise (HUD Apple actif)"
+          }
+        }
+      }
+    },
     "Pick a Color": {
       "localizations": {
         "ar": {
@@ -18018,6 +18162,22 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "退出应用"
+          }
+        }
+      }
+    },
+    "Re-arm 30s tap": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-arm 30s tap"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réarmer le tap pour 30 s"
           }
         }
       }
@@ -19396,6 +19556,38 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "运行中"
+          }
+        }
+      }
+    },
+    "Safety & Diagnostics": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Safety & Diagnostics"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sécurité et diagnostic"
+          }
+        }
+      }
+    },
+    "Safety debug mode (auto-disable tap after 30s)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Safety debug mode (auto-disable tap after 30s)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mode debug sécurité (désactiver le tap après 30 s)"
           }
         }
       }
@@ -22750,6 +22942,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Capture de texte (OCR) - Clic droit pour capturer une zone ou changer la sortie audio"
+          }
+        }
+      }
+    },
+    "The active media key tap was disabled by the 30s safety timer.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The active media key tap was disabled by the 30s safety timer."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le tap actif des touches média a été désactivé par le minuteur de sécurité de 30 s."
           }
         }
       }

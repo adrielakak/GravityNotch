@@ -495,10 +495,13 @@ struct HUD: View {
     @Default(.enableGradient) var enableGradient
     @Default(.optionKeyAction) var optionKeyAction
     @Default(.hudReplacement) var hudReplacement
+    @Default(.hudTapSafetyTimeout) var hudTapSafetyTimeout
     @ObservedObject var coordinator = BoringViewCoordinator.shared
-    @State private var accessibilityAuthorized = false
+    @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
+    @State private var accessibilityAuthorized = AXIsProcessTrusted()
     
     var body: some View {
+        let isAuthorized = mediaKeyInterceptor.isAccessibilityGranted && accessibilityAuthorized
         Form {
             Section {
                 HStack {
@@ -515,24 +518,93 @@ struct HUD: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.large)
-                    .disabled(!accessibilityAuthorized)
+                    .disabled(!isAuthorized)
                 }
                 
-                if !accessibilityAuthorized {
+                if !isAuthorized {
                     VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("Accessibility permission required")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
                         Text("Accessibility access is required to replace the system HUD.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 12) {
-                            Button("Request Accessibility") {
-                                XPCHelperClient.shared.requestAccessibilityAuthorization()
+                            Button("Open System Settings") {
+                                mediaKeyInterceptor.openAccessibilitySystemSettings()
                             }
                             .buttonStyle(.borderedProminent)
+
+                            Button("Request Accessibility") {
+                                mediaKeyInterceptor.requestAccessibilityAuthorization()
+                            }
                         }
                     }
                     .padding(.top, 6)
                 }
+            }
+
+            Section {
+                HStack {
+                    Circle()
+                        .fill(
+                            mediaKeyInterceptor.isTapActive
+                                ? Color.green
+                                : (mediaKeyInterceptor.isDisabledBySafetyTimeout || mediaKeyInterceptor.isDegradedMode
+                                    ? Color.orange
+                                    : Color.gray)
+                        )
+                        .frame(width: 8, height: 8)
+                    Text("Event tap status")
+                    Spacer()
+                    if mediaKeyInterceptor.isTapActive {
+                        if mediaKeyInterceptor.safetyRemainingSeconds > 0 {
+                            Text("Active (\(mediaKeyInterceptor.safetyRemainingSeconds)s)")
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("Active")
+                                .foregroundStyle(.green)
+                        }
+                    } else if mediaKeyInterceptor.isDisabledBySafetyTimeout {
+                        Text("Auto-disabled after 30s (Safety mode)")
+                            .foregroundStyle(.orange)
+                    } else if !isAuthorized {
+                        Text("Permission required (Apple HUD active)")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Inactive")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Toggle(
+                    "Safety debug mode (auto-disable tap after 30s)",
+                    isOn: $hudTapSafetyTimeout
+                )
+                .onChange(of: hudTapSafetyTimeout) { _, newValue in
+                    mediaKeyInterceptor.updateSafetyDebugMode(newValue)
+                }
+
+                if mediaKeyInterceptor.isDisabledBySafetyTimeout && isAuthorized && hudReplacement {
+                    HStack {
+                        Text("The active media key tap was disabled by the 30s safety timer.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Re-arm 30s tap") {
+                            mediaKeyInterceptor.rearmSafetyTap()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+            } header: {
+                Text("Safety & Diagnostics")
             }
             
             Section {

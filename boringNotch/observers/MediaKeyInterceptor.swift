@@ -9,12 +9,18 @@ import AppKit
 import ApplicationServices
 import Defaults
 import AVFoundation
+import os.log
 
 private let kSystemDefinedEventType = CGEventType(rawValue: 14)!
 
-final class MediaKeyInterceptor {
+final class MediaKeyInterceptor: ObservableObject {
     static let shared = MediaKeyInterceptor()
-    
+
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "theboringteam.boringnotch",
+        category: "MediaKeyInterceptor"
+    )
+
     private enum NXKeyType: Int {
         case soundUp = 0
         case soundDown = 1
@@ -24,30 +30,68 @@ final class MediaKeyInterceptor {
         case keyboardBrightnessUp = 21
         case keyboardBrightnessDown = 22
     }
-    
+
+    // Published state for UI (Settings & Notch header)
+    @MainActor @Published private(set) var isAccessibilityGranted: Bool = AXIsProcessTrusted()
+    @MainActor @Published private(set) var isTapActive: Bool = false
+    @MainActor @Published private(set) var isDegradedMode: Bool = false
+    @MainActor @Published private(set) var isDisabledBySafetyTimeout: Bool = false
+    @MainActor @Published private(set) var safetyRemainingSeconds: Int = 0
+
+    // Event tap resources
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var eventTapQueue: DispatchQueue?
     private var eventTapRunLoop: CFRunLoop?
+
+    // Passive fallback monitors (listen-only, never block system input)
     private var globalMonitor: Any?
     private var localMonitor: Any?
-    private var permissionPollTimer: Timer?
+
+    // Continuous permission watchdog (1.0s) and 30s safety debug timer
+    private var permissionWatchdogTimer: Timer?
+    private var safetyCountdownTimer: Timer?
+    private var safetyDeadline: Date?
+    private var lastKnownTrust: Bool = AXIsProcessTrusted()
+
+    // Lock-free flag read by the real-time tap callback
+    fileprivate var isSafetyHoldActive: Bool = false
+
     private let step: Float = 1.0 / 16.0
+    private static let safetyTimeoutDuration: TimeInterval = 30.0
     private var audioPlayer: AVAudioPlayer?
-    
-    private init() {}
-    
-    private func logStatus(_ message: String) {
-        // Diagnostic hook for HUD tap verification
+
+    private init() {
+        startPermissionWatchdog()
     }
-    
-    // MARK: - Accessibility
-    
+
+    var isSafetyDebugModeEnabled: Bool {
+        if ProcessInfo.processInfo.environment["GRAVITYNOTCH_TAP_SAFETY_TIMEOUT"] == "1" {
+            return true
+        }
+        return Defaults[.hudTapSafetyTimeout]
+    }
+
+    // MARK: - Accessibility Permissions
+
+    func checkAccessibilityPermission() -> Bool {
+        let axTrusted = AXIsProcessTrusted()
+        return axTrusted
+    }
+
     func requestAccessibilityAuthorization() {
+        Self.logger.notice("Requesting Accessibility authorization prompt")
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
     }
-    
+
+    func openAccessibilitySystemSettings() {
+        Self.logger.notice("Opening macOS System Settings -> Privacy & Security -> Accessibility")
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     func ensureAccessibilityAuthorization(promptIfNeeded: Bool = false) async -> Bool {
         if AXIsProcessTrusted() { return true }
         if promptIfNeeded {
@@ -56,79 +100,202 @@ final class MediaKeyInterceptor {
         }
         return await XPCHelperClient.shared.ensureAccessibilityAuthorization(promptIfNeeded: promptIfNeeded)
     }
-    
-    // MARK: - Event Tap (Zero-Blocking Session Tap for macOS Tahoe 26)
-    
+
+    // MARK: - Continuous Permission Watchdog (1.0s)
+
+    private func startPermissionWatchdog() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.permissionWatchdogTimer?.invalidate()
+            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.pollPermissionsAndEnforceSafety()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            self.permissionWatchdogTimer = timer
+        }
+    }
+
+    private func pollPermissionsAndEnforceSafety() {
+        let trusted = AXIsProcessTrusted()
+        let trustChanged = (trusted != lastKnownTrust)
+        lastKnownTrust = trusted
+
+        Task { @MainActor in
+            if self.isAccessibilityGranted != trusted {
+                self.isAccessibilityGranted = trusted
+            }
+            if trustChanged {
+                Self.logger.notice("Accessibility permission state changed: AXIsProcessTrusted=\(trusted, privacy: .public)")
+                NotificationCenter.default.post(
+                    name: .accessibilityAuthorizationChanged,
+                    object: nil,
+                    userInfo: ["granted": trusted]
+                )
+            }
+        }
+
+        if !trusted {
+            if eventTap != nil {
+                Self.logger.error("Accessibility permission lost while tap active! Disabling and invalidating CGEventTap immediately.")
+                tearDownActiveTap(reason: "Accessibility permission revoked", enterSafetyHold: false)
+            }
+            if Defaults[.hudReplacement] {
+                installPassiveMonitorsIfNeeded()
+                Task { @MainActor in
+                    if !self.isDegradedMode { self.isDegradedMode = true }
+                }
+            }
+            return
+        }
+
+        // Permission is granted: recreate active tap if HUD replacement is enabled and not held by safety timeout
+        if Defaults[.hudReplacement] && eventTap == nil && !isSafetyHoldActive {
+            Self.logger.notice("Accessibility permission available: installing active CGEventTap without app restart.")
+            _ = installEventTapIfAuthorized()
+        }
+    }
+
+    // MARK: - Lifecycle (Start / Stop / Safety Debug Rearm)
+
     func start(promptIfNeeded: Bool = false) async {
+        startPermissionWatchdog()
+
         guard Defaults[.hudReplacement] else {
+            Self.logger.info("HUD replacement setting is disabled; stopping MediaKeyInterceptor.")
             stop()
             return
         }
-        
-        if installEventTapIfAuthorized() {
+
+        let trusted = checkAccessibilityPermission()
+        let listenPreflight = CGPreflightListenEventAccess()
+        Self.logger.info("Starting MediaKeyInterceptor (AXIsProcessTrusted=\(trusted, privacy: .public), CGPreflightListenEventAccess=\(listenPreflight, privacy: .public))")
+
+        await MainActor.run {
+            self.isAccessibilityGranted = trusted
+        }
+
+        guard trusted else {
+            Self.logger.warning("Accessibility permission missing: refusing to create active CGEventTap. Entering degraded mode.")
+            tearDownActiveTap(reason: "Permission missing on start", enterSafetyHold: false)
+            installPassiveMonitorsIfNeeded()
+            await MainActor.run {
+                self.isDegradedMode = true
+            }
+            if promptIfNeeded {
+                requestAccessibilityAuthorization()
+            }
             return
         }
-        
-        if promptIfNeeded {
-            requestAccessibilityAuthorization()
+
+        isSafetyHoldActive = false
+        await MainActor.run {
+            self.isDisabledBySafetyTimeout = false
         }
-        
-        if permissionPollTimer == nil {
-            DispatchQueue.main.async { [weak self] in
-                self?.permissionPollTimer?.invalidate()
-                self?.permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-                    guard let self else { return }
-                    if self.installEventTapIfAuthorized() {
-                        self.permissionPollTimer?.invalidate()
-                        self.permissionPollTimer = nil
-                    }
-                }
-            }
+        _ = installEventTapIfAuthorized()
+    }
+
+    func stop() {
+        Self.logger.info("Stopping MediaKeyInterceptor and tearing down all taps/monitors.")
+        disarmSafetyTimer()
+        isSafetyHoldActive = false
+        tearDownActiveTap(reason: "Interceptor stopped", enterSafetyHold: false)
+        removePassiveMonitors()
+        Task { @MainActor in
+            self.isTapActive = false
+            self.isDegradedMode = false
+            self.isDisabledBySafetyTimeout = false
+            self.safetyRemainingSeconds = 0
         }
-        
-        if eventTap == nil && globalMonitor == nil {
-            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { [weak self] event in
-                self?.handlePassiveSystemEvent(event)
+    }
+
+    func rearmSafetyTap() {
+        Self.logger.notice("Re-arming active CGEventTap from safety debug mode.")
+        isSafetyHoldActive = false
+        Task { @MainActor in
+            self.isDisabledBySafetyTimeout = false
+        }
+        if Defaults[.hudReplacement] {
+            _ = installEventTapIfAuthorized()
+        }
+    }
+
+    func updateSafetyDebugMode(_ enabled: Bool) {
+        Self.logger.notice("Safety debug 30s auto-disable mode set to \(enabled, privacy: .public)")
+        if enabled {
+            if eventTap != nil {
+                armSafetyTimerIfNeeded()
             }
-            localMonitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { [weak self] event in
-                self?.handlePassiveSystemEvent(event)
-                return event
+        } else {
+            disarmSafetyTimer()
+            if isSafetyHoldActive {
+                rearmSafetyTap()
             }
         }
     }
-    
+
+    // MARK: - Active Event Tap Installation & Immediate Safe Teardown
+
     @discardableResult
     private func installEventTapIfAuthorized() -> Bool {
-        if eventTap != nil { return true }
         let trusted = AXIsProcessTrusted()
         guard trusted else {
-            logStatus("Waiting for Accessibility permission (AXIsProcessTrusted=false)")
+            Self.logger.warning("installEventTapIfAuthorized aborted: AXIsProcessTrusted=false")
+            if eventTap != nil {
+                tearDownActiveTap(reason: "Permission check failed", enterSafetyHold: false)
+            }
+            installPassiveMonitorsIfNeeded()
+            Task { @MainActor in
+                self.isAccessibilityGranted = false
+                self.isTapActive = false
+                self.isDegradedMode = Defaults[.hudReplacement]
+            }
             return false
         }
-        
+
+        if let existingTap = eventTap {
+            if CFMachPortIsValid(existingTap) {
+                return true
+            }
+            tearDownActiveTap(reason: "Stale invalid CFMachPort detected", enterSafetyHold: false)
+        }
+
+        // Strict mask: ONLY NSSystemDefined (type 14, media/aux keys).
+        // NEVER include mouse events or standard keyboard events in an active (.defaultTap) tap.
         let mask = CGEventMask(1 << kSystemDefinedEventType.rawValue)
+
         let callback: CGEventTapCallBack = { _, type, cgEvent, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(cgEvent) }
             let interceptor = Unmanaged<MediaKeyInterceptor>.fromOpaque(userInfo).takeUnretainedValue()
+
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                if AXIsProcessTrusted(), let t = interceptor.eventTap {
-                    CGEvent.tapEnable(tap: t, enable: true)
+                let reasonStr = (type == .tapDisabledByTimeout) ? "tapDisabledByTimeout" : "tapDisabledByUserInput"
+                let currentlyTrusted = AXIsProcessTrusted()
+                MediaKeyInterceptor.logger.warning("CGEventTap received \(reasonStr, privacy: .public) (trusted=\(currentlyTrusted, privacy: .public), safetyHold=\(interceptor.isSafetyHoldActive, privacy: .public))")
+
+                if currentlyTrusted && !interceptor.isSafetyHoldActive,
+                   let tap = interceptor.eventTap, CFMachPortIsValid(tap) {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                    MediaKeyInterceptor.logger.notice("Re-enabled CGEventTap after \(reasonStr, privacy: .public)")
+                } else {
+                    if let tap = interceptor.eventTap {
+                        CGEvent.tapEnable(tap: tap, enable: false)
+                    }
+                    DispatchQueue.main.async {
+                        interceptor.tearDownActiveTap(
+                            reason: "Disabled via \(reasonStr) while untrusted or in safety hold",
+                            enterSafetyHold: interceptor.isSafetyHoldActive
+                        )
+                    }
                 }
                 return Unmanaged.passUnretained(cgEvent)
             }
+
             return interceptor.handleEventFast(cgEvent, type: type)
         }
-        
+
         let selfPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        
-        // IMPORTANT: Use ONLY .cgSessionEventTap (not .cghidEventTap or .cgAnnotatedSessionEventTap).
-        // - .cghidEventTap causes SkyLight's post_event_vector_after_tap_id to CFRelease and NULL out
-        //   event->ioEvent ([event + 0xf0]), which strips the IOHIDEventRef (keyboard:12 64) needed by
-        //   WindowServer to synthesize the Touch ID screen-lock event (subtype 16 -> loginwindow).
-        // - .cgAnnotatedSessionEventTap intercepts system-defined events injected via
-        //   CGXPostSystemEventToConnection and breaks media transport controls on macOS Tahoe.
-        // - .cgSessionEventTap runs after WindowServer's HID Touch ID processing and before
-        //   WSSystemDefinedEventProcessor broadcasts NX_SUBTYPE_AUX_CONTROL_BUTTONS (subtype 8) to ControlCenter.
+
+        // Use ONLY .cgSessionEventTap with mask restricted to NSSystemDefined (14).
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -137,60 +304,174 @@ final class MediaKeyInterceptor {
             callback: callback,
             userInfo: selfPtr
         ) else {
-            logStatus("AXIsProcessTrusted=true but tapCreate(.cgSessionEventTap) returned nil")
+            Self.logger.error("CGEvent.tapCreate(.cgSessionEventTap) returned nil despite AXIsProcessTrusted=true. Falling back to degraded mode.")
+            installPassiveMonitorsIfNeeded()
+            Task { @MainActor in
+                self.isTapActive = false
+                self.isDegradedMode = true
+            }
             return false
         }
-        
+
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            Self.logger.error("CFMachPortCreateRunLoopSource returned nil; invalidating tap.")
+            CFMachPortInvalidate(tap)
+            return false
+        }
+
         eventTap = tap
-        logStatus("ACTIVE SESSION TAP INSTALLED")
-        
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
-        
-        let queue = DispatchQueue(label: "com.gravity.MediaKeyTap", qos: .userInteractive)
+
+        let queue = DispatchQueue(label: "com.gravitynotch.MediaKeyTap", qos: .userInteractive)
         eventTapQueue = queue
         queue.async { [weak self] in
             guard let self else { return }
             let rl = CFRunLoopGetCurrent()
             self.eventTapRunLoop = rl
-            if let source = self.runLoopSource {
-                CFRunLoopAddSource(rl, source, .commonModes)
-            }
+            CFRunLoopAddSource(rl, source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            Self.logger.notice("Active CGEventTap installed and enabled on dedicated run loop (mask=NSSystemDefined only).")
             CFRunLoopRun()
         }
-        
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-            self.globalMonitor = nil
-        }
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-            self.localMonitor = nil
+
+        removePassiveMonitors()
+        armSafetyTimerIfNeeded()
+
+        Task { @MainActor in
+            self.isAccessibilityGranted = true
+            self.isTapActive = true
+            self.isDegradedMode = false
         }
         return true
     }
-    
-    func stop() {
-        permissionPollTimer?.invalidate()
-        permissionPollTimer = nil
-        if let t = eventTap { CGEvent.tapEnable(tap: t, enable: false) }
-        if let rl = eventTapRunLoop {
-            if let s = runLoopSource { CFRunLoopRemoveSource(rl, s, .commonModes) }
-            CFRunLoopStop(rl)
+
+    /// Safely disables the active tap FIRST, removes it from the run loop, and invalidates the CFMachPort
+    /// so WindowServer can never block waiting on this process.
+    private func tearDownActiveTap(reason: String, enterSafetyHold: Bool) {
+        disarmSafetyTimer()
+        if enterSafetyHold {
+            isSafetyHoldActive = true
         }
-        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
-        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
-        globalMonitor = nil
-        localMonitor = nil
+
+        let tapToInvalidate = eventTap
+        let sourceToRemove = runLoopSource
+        let runLoopToStop = eventTapRunLoop
+
+        eventTap = nil
         runLoopSource = nil
         eventTapRunLoop = nil
         eventTapQueue = nil
-        eventTap = nil
+
+        if let tap = tapToInvalidate {
+            // 1. Disable tap FIRST
+            CGEvent.tapEnable(tap: tap, enable: false)
+            // 2. Remove source from run loop
+            if let rl = runLoopToStop, let src = sourceToRemove {
+                CFRunLoopRemoveSource(rl, src, .commonModes)
+            }
+            // 3. Invalidate the Mach port so WindowServer drops the connection immediately
+            CFMachPortInvalidate(tap)
+            // 4. Stop dedicated run loop
+            if let rl = runLoopToStop {
+                CFRunLoopStop(rl)
+            }
+            Self.logger.notice("Active CGEventTap disabled, removed from runLoop, and CFMachPort invalidated (reason: \(reason, privacy: .public))")
+        }
+
+        if Defaults[.hudReplacement] {
+            installPassiveMonitorsIfNeeded()
+        }
+
+        Task { @MainActor in
+            self.isTapActive = false
+            self.isDegradedMode = Defaults[.hudReplacement]
+            self.isDisabledBySafetyTimeout = enterSafetyHold
+            self.safetyRemainingSeconds = 0
+        }
+    }
+
+    // MARK: - 30s Safety Debug Mode Timer
+
+    private func armSafetyTimerIfNeeded() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.disarmSafetyTimer()
+            guard self.isSafetyDebugModeEnabled, self.eventTap != nil else { return }
+
+            let duration = Self.safetyTimeoutDuration
+            let deadline = Date().addingTimeInterval(duration)
+            self.safetyDeadline = deadline
+            self.safetyRemainingSeconds = Int(duration)
+            Self.logger.notice("Safety debug mode active: CGEventTap will auto-disable in \(Int(duration), privacy: .public)s.")
+
+            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] t in
+                guard let self else {
+                    t.invalidate()
+                    return
+                }
+                guard let deadline = self.safetyDeadline else {
+                    t.invalidate()
+                    return
+                }
+                let remaining = Int(ceil(deadline.timeIntervalSinceNow))
+                if remaining <= 0 {
+                    t.invalidate()
+                    self.safetyCountdownTimer = nil
+                    self.safetyDeadline = nil
+                    Self.logger.warning("Safety debug timer (30s) expired: auto-disabling active CGEventTap now.")
+                    self.tearDownActiveTap(reason: "30s safety debug timer expired", enterSafetyHold: true)
+                } else {
+                    Task { @MainActor in
+                        self.safetyRemainingSeconds = remaining
+                    }
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            self.safetyCountdownTimer = timer
+        }
+    }
+
+    private func disarmSafetyTimer() {
+        safetyCountdownTimer?.invalidate()
+        safetyCountdownTimer = nil
+        safetyDeadline = nil
+    }
+
+    // MARK: - Passive Degraded Mode Monitors (Listen-Only)
+
+    private func installPassiveMonitorsIfNeeded() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.eventTap == nil else { return }
+            if self.globalMonitor == nil {
+                self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+                    self?.handlePassiveSystemEvent(event)
+                }
+                Self.logger.info("Installed passive NSEvent global monitor for degraded HUD mode.")
+            }
+            if self.localMonitor == nil {
+                self.localMonitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+                    self?.handlePassiveSystemEvent(event)
+                    return event
+                }
+            }
+        }
+    }
+
+    private func removePassiveMonitors() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let globalMonitor = self.globalMonitor {
+                NSEvent.removeMonitor(globalMonitor)
+                self.globalMonitor = nil
+            }
+            if let localMonitor = self.localMonitor {
+                NSEvent.removeMonitor(localMonitor)
+                self.localMonitor = nil
+            }
+        }
     }
 
     private func handlePassiveSystemEvent(_ nsEvent: NSEvent) {
-        if installEventTapIfAuthorized() { return }
         guard nsEvent.type == .systemDefined, nsEvent.subtype.rawValue == 8 else { return }
         let data1 = nsEvent.data1
         let keyCode = (data1 & 0xFFFF_0000) >> 16
@@ -202,72 +483,115 @@ final class MediaKeyInterceptor {
             self.showHUD(for: keyType, command: command)
         }
     }
-    
-    // MARK: - Zero-Blocking CGEvent Field Extraction (< 1 microsecond, no NSEvent, no main.sync)
-    
+
+    // MARK: - Ultra-Fast Non-Blocking CGEvent Callback (< 2 microseconds)
+
     private func handleEventFast(_ cgEvent: CGEvent, type: CGEventType) -> Unmanaged<CGEvent>? {
+        // 1. Only inspect NSSystemDefined (type 14). Pass everything else untouched immediately.
         guard type.rawValue == 14 else {
             return Unmanaged.passUnretained(cgEvent)
         }
-        
-        // Field 99 = NSEvent.subtype (8 = NX_SUBTYPE_AUX_CONTROL_BUTTONS, 16 = NX_SUBTYPE_MENU / Touch ID)
-        // Always check subtype == 8 BEFORE reading Field 149 (SLSEventRecordGetCompoundInt asserts on non-compound subtypes)
+
+        // 2. Check subtype == 8 (NX_SUBTYPE_AUX_CONTROL_BUTTONS) before reading data1 (field 149).
         guard let subtypeField = CGEventField(rawValue: 99),
               cgEvent.getIntegerValueField(subtypeField) == 8,
               let data1Field = CGEventField(rawValue: 149) else {
             return Unmanaged.passUnretained(cgEvent)
         }
-        
+
         let data1 = Int(cgEvent.getIntegerValueField(data1Field))
         let keyCode = (data1 & 0xFFFF_0000) >> 16
-        let keyFlags = data1 & 0x0000_FFFF
-        let stateByte = (keyFlags & 0xFF00) >> 8
-        
-        // Pass through non-HUD keys (Play/Pause/Next/Prev: 16..20, etc.) immediately untouched
+
+        // 3. Only intercept volume, brightness, and keyboard backlight keys.
+        // Pass Play/Pause/Next/Prev and all other media keys untouched immediately.
         guard let keyType = NXKeyType(rawValue: keyCode) else {
             return Unmanaged.passUnretained(cgEvent)
         }
-        
+
+        // 4. Verify permission and safety hold before swallowing any event.
+        if isSafetyHoldActive || !AXIsProcessTrusted() {
+            if let tap = eventTap {
+                CGEvent.tapEnable(tap: tap, enable: false)
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.tearDownActiveTap(
+                    reason: "Permission lost or safety hold detected inside callback",
+                    enterSafetyHold: self.isSafetyHoldActive
+                )
+            }
+            return Unmanaged.passUnretained(cgEvent)
+        }
+
+        let keyFlags = data1 & 0x0000_FFFF
+        let stateByte = (keyFlags & 0xFF00) >> 8
         let keyDown = (stateByte == 0x0A || stateByte == 0x08)
         let keyUp = (stateByte == 0x0B)
         let keyRepeat = (keyFlags & 0x1) != 0
         let shouldProcess = (keyDown || keyRepeat) && !keyUp
-        
+
         guard shouldProcess else {
-            // Swallow keyUp (0x0B) for intercepted volume/brightness keys so ControlCenter never sees it
+            // Swallow keyUp (0x0B) for intercepted volume/brightness keys so ControlCenter never shows Apple HUD
             return nil
         }
-        
+
         let rawFlags = cgEvent.flags
         let option = rawFlags.contains(.maskAlternate)
         let shift = rawFlags.contains(.maskShift)
         let command = rawFlags.contains(.maskCommand)
-        
-        if option && !shift {
-            if handleOptionAction(for: keyType, command: command) {
-                return nil
-            }
+
+        // 5. Delegate ALL work (Defaults lookup, volume/brightness changes, HUD display, sound) asynchronously to main thread.
+        DispatchQueue.main.async { [weak self] in
+            self?.processInterceptedKeyOnMain(
+                keyType: keyType,
+                option: option,
+                shift: shift,
+                command: command
+            )
         }
-        
-        handleKeyPress(keyType: keyType, option: option, shift: shift, command: command)
         return nil
     }
-    
-    private func handleOptionAction(for keyType: NXKeyType, command: Bool) -> Bool {
-        let action = Defaults[.optionKeyAction]
-        
-        switch action {
-        case .openSettings:
-            openSystemSettings(for: keyType, command: command)
-            return true
-        case .showHUD:
-            showHUD(for: keyType, command: command)
-            return true
-        case .none:
-            return true
+
+    @MainActor
+    private func processInterceptedKeyOnMain(
+        keyType: NXKeyType,
+        option: Bool,
+        shift: Bool,
+        command: Bool
+    ) {
+        if option && !shift {
+            let action = Defaults[.optionKeyAction]
+            switch action {
+            case .openSettings:
+                openSystemSettings(for: keyType, command: command)
+                return
+            case .showHUD:
+                showHUD(for: keyType, command: command)
+                return
+            case .none:
+                return
+            }
+        }
+
+        let stepDivisor: Float = (option && shift) ? 4.0 : 1.0
+        switch keyType {
+        case .soundUp:
+            playFeedbackSound()
+            VolumeManager.shared.increase(stepDivisor: stepDivisor)
+        case .soundDown:
+            playFeedbackSound()
+            VolumeManager.shared.decrease(stepDivisor: stepDivisor)
+        case .mute:
+            VolumeManager.shared.toggleMuteAction()
+        case .brightnessUp, .keyboardBrightnessUp:
+            let delta = step / stepDivisor
+            adjustBrightness(delta: delta, keyboard: keyType == .keyboardBrightnessUp || command)
+        case .brightnessDown, .keyboardBrightnessDown:
+            let delta = -(step / stepDivisor)
+            adjustBrightness(delta: delta, keyboard: keyType == .keyboardBrightnessDown || command)
         }
     }
-    
+
     private func prepareAudioPlayerIfNeeded() {
         guard audioPlayer == nil else { return }
 
@@ -275,12 +599,9 @@ final class MediaKeyInterceptor {
         if FileManager.default.fileExists(atPath: defaultPath) {
             do {
                 audioPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: defaultPath))
-                print("🔊 [MediaKeyInterceptor] Loaded default Bezel audio from: \(defaultPath)")
             } catch {
-                print("⚠️ [MediaKeyInterceptor] Failed to init AVAudioPlayer with default path \(defaultPath): \(error.localizedDescription)")
+                Self.logger.error("Failed to init AVAudioPlayer: \(error.localizedDescription, privacy: .public)")
             }
-        } else {
-            print("⚠️ [MediaKeyInterceptor] Default bezel audio not found at: \(defaultPath)")
         }
 
         if let player = audioPlayer {
@@ -295,15 +616,7 @@ final class MediaKeyInterceptor {
               feedback == 1 else { return }
 
         prepareAudioPlayerIfNeeded()
-        guard let player = audioPlayer else {
-            print("⚠️ [MediaKeyInterceptor] No audio player available to play feedback sound")
-            return
-        }
-        if let url = player.url {
-            print("🔊 [MediaKeyInterceptor] Playing feedback sound from: \(url.path)")
-        } else {
-            print("🔊 [MediaKeyInterceptor] Playing feedback sound (no url available for AVAudioPlayer)")
-        }
+        guard let player = audioPlayer else { return }
         if player.isPlaying {
             player.stop()
             player.currentTime = 0
@@ -311,33 +624,6 @@ final class MediaKeyInterceptor {
         player.play()
     }
 
-    private func handleKeyPress(keyType: NXKeyType, option: Bool, shift: Bool, command: Bool) {
-        let stepDivisor: Float = (option && shift) ? 4.0 : 1.0
-        
-        switch keyType {
-        case .soundUp:
-            Task { @MainActor in
-                self.playFeedbackSound()
-                VolumeManager.shared.increase(stepDivisor: stepDivisor)
-            }
-        case .soundDown:
-            Task { @MainActor in
-                self.playFeedbackSound()
-                VolumeManager.shared.decrease(stepDivisor: stepDivisor)
-            }
-        case .mute:
-            Task { @MainActor in
-                VolumeManager.shared.toggleMuteAction()
-            }
-        case .brightnessUp, .keyboardBrightnessUp:
-            let delta = step / stepDivisor
-            adjustBrightness(delta: delta, keyboard: keyType == .keyboardBrightnessUp || command)
-        case .brightnessDown, .keyboardBrightnessDown:
-            let delta = -(step / stepDivisor)
-            adjustBrightness(delta: delta, keyboard: keyType == .keyboardBrightnessDown || command)
-        }
-    }
-    
     private func adjustBrightness(delta: Float, keyboard: Bool) {
         Task { @MainActor in
             if keyboard {
@@ -347,7 +633,7 @@ final class MediaKeyInterceptor {
             }
         }
     }
-    
+
     private func showHUD(for keyType: NXKeyType, command: Bool) {
         Task { @MainActor in
             switch keyType {
@@ -368,10 +654,9 @@ final class MediaKeyInterceptor {
             }
         }
     }
-    
+
     private func openSystemSettings(for keyType: NXKeyType, command: Bool) {
         let urlString: String
-        
         switch keyType {
         case .soundUp, .soundDown, .mute:
             urlString = "x-apple.systempreferences:com.apple.preference.sound"
@@ -384,7 +669,7 @@ final class MediaKeyInterceptor {
         case .keyboardBrightnessUp, .keyboardBrightnessDown:
             urlString = "x-apple.systempreferences:com.apple.preference.keyboard"
         }
-        
+
         guard let url = URL(string: urlString) else { return }
         NSWorkspace.shared.open(url)
     }
