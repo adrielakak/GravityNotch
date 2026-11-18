@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>GravityNotch, la Dynamic Island de votre Mac</title>
-  <meta name="description" content="GravityNotch transforme l'encoche de votre MacBook en centre de contrôle : musique, paroles en direct, HUD système, OCR, presse-papiers et suivi d'agents IA. Gratuit et open source.">
+  <meta name="description" content="GravityNotch transforme l'encoche de votre MacBook en centre de contrôle : musique, paroles sur l'écran verrouillé, HUD système, capture de texte et suivi d'agents IA. Gratuit et open source.">
   <meta name="theme-color" content="#1219ed">
   <meta property="og:title" content="GravityNotch">
   <meta property="og:description" content="La Dynamic Island de votre Mac. Gratuite et open source.">
-  <meta property="og:image" content="assets/icon.png">
+  <meta property="og:image" content="assets/video/musique.jpg">
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="stylesheet" href="styles.css">
+  <script>document.documentElement.classList.add("js");</script>
 </head>
 <body>
 
@@ -23,56 +24,52 @@
           <small>Le centre de contrôle dans votre encoche</small>
         </span>
       </a>
+
+      <div class="island-status" id="island-status" role="button" tabindex="0" aria-label="Ouvrir la navigation">
+        <span class="island-dot" aria-hidden="true"></span>
+        <span class="island-section-wrap" id="island-section-wrap">
+          <span class="island-index" id="island-index">00</span>
+          <span class="island-sep" aria-hidden="true">·</span>
+          <span class="island-section-name" id="island-section-name">Intro</span>
+        </span>
+        <span class="island-percent" id="island-percent">0%</span>
+      </div>
+
       <nav class="nav-links" aria-label="Navigation principale">
-        <a href="#features">Fonctionnalités</a>
-        <a href="#install">Installation</a>
-        <a href="#faq">FAQ</a>
+        <a href="#demo" data-section="demo">En action</a>
+        <a href="#features" data-section="features">Fonctionnalités</a>
+        <a href="#install" data-section="install">Installation</a>
+        <a href="#faq" data-section="faq">FAQ</a>
         <a href="https://github.com/adrielakak/GravityNotch" target="_blank" rel="noopener">GitHub</a>
       </nav>
       <a class="pill pill-sm pill-light nav-cta" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg">Télécharger</a>
+    </div>
+    <div class="island-progress-track" aria-hidden="true">
+      <div class="island-progress-bar" id="island-progress-bar"></div>
     </div>
   </header>
 
   <main id="top">
 
-    <!-- HERO -->
-    <section class="hero">
+    <section class="hero" id="hero">
       <div class="hero-bg" aria-hidden="true">
         <div class="stipple stipple-a"></div>
         <div class="stipple stipple-b"></div>
         <div class="horizon"></div>
-        <div class="ripples"><span></span><span></span><span></span></div>
       </div>
 
-      <div class="hero-stage" aria-hidden="true">
-        <div class="screen-edge">
-          <div class="island" id="island" data-state="music">
-            <div class="island-state s-music">
-              <div class="art"></div>
-              <div class="meta"><b>Nuit Blanche</b><span>Lumen Drive</span></div>
-              <div class="bars"><i></i><i></i><i></i><i></i></div>
-            </div>
-            <div class="island-state s-volume">
-              <svg viewBox="0 0 24 24" class="ico"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
-              <div class="meter"><span></span></div>
-            </div>
-            <div class="island-state s-agent">
-              <span class="spark"></span>
-              <div class="meta"><b>Agent en cours</b><span>Étape 14 · 3 fichiers</span></div>
-              <div class="ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="track"/><circle cx="18" cy="18" r="15" class="val"/></svg><em>42%</em></div>
-            </div>
-            <div class="island-state s-caffeine">
-              <svg viewBox="0 0 24 24" class="ico"><path d="M5 8h11v6a5 5 0 0 1-5 5H10a5 5 0 0 1-5-5z" fill="currentColor"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M8 3.5c0 1 1 1 1 2s-1 1-1 2M11.5 3.5c0 1 1 1 1 2s-1 1-1 2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>
-              <div class="meta"><b>Caffeine</b><span>Éveillé encore 28 min</span></div>
-            </div>
-          </div>
+      <div class="screen">
+        <div class="screen-display">
+          <video class="screen-video" src="assets/video/hero.mp4" poster="assets/video/hero.jpg"
+                 autoplay muted loop playsinline preload="auto"
+                 aria-label="Démonstration : la musique, le volume, la luminosité et l'activité d'un agent IA s'affichent dans l'encoche"></video>
         </div>
       </div>
 
       <div class="hero-copy">
-        <p class="eyebrow"><span class="dot"></span> Version 1.0 disponible · gratuite et open source</p>
+        <p class="eyebrow"><span class="dot"></span> Gratuit et open source</p>
         <h1 class="display"><span class="soft">La Dynamic Island</span> qui manquait à votre Mac</h1>
-        <p class="lede">Musique, paroles en direct, HUD système, capture de texte, presse-papiers et suivi d'agents IA. Tout vit dans l'encoche, rien n'encombre le Dock.</p>
+        <p class="lede">Musique, paroles en direct, HUD système, capture de texte et suivi d'agents IA. Tout vit dans l'encoche, rien n'encombre le Dock.</p>
         <div class="cta-row">
           <a class="pill pill-light pill-lg" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg">
             <svg viewBox="0 0 17 20" width="16" height="19" aria-hidden="true"><path fill="currentColor" d="M14.1 10.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.4-.9C3.6 4.8 2 5.8 1.1 7.3c-1.8 3.2-.5 7.9 1.3 10.5.9 1.3 1.9 2.7 3.2 2.6 1.3-.1 1.8-.8 3.4-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.6 1-1.5 1.4-2.9 1.4-3-.1 0-2.8-1.1-2.8-4.2zM11.5 3c.7-.9 1.2-2 1-3.1-1 0-2.2.7-2.9 1.5-.6.7-1.2 1.9-1 3 1.1.1 2.2-.6 2.9-1.4z"/></svg>
@@ -83,157 +80,103 @@
             Voir le code
           </a>
         </div>
-        <p class="fineprint">macOS 14 Sonoma ou plus récent · Apple Silicon et Intel · Licence GPL-3.0</p>
+        <p class="fineprint">macOS 14 Sonoma ou plus récent · Apple Silicon et Intel</p>
       </div>
     </section>
 
-    <!-- SHOWCASE -->
-    <section class="section showcase" id="features">
+    <section class="section showcase" id="demo">
       <div class="wrap">
-        <h2 class="headline">Une encoche, <span class="soft">tous vos outils</span></h2>
-        <p class="sub">Chaque outil apparaît au bon moment, puis se range dans l'encoche. Pas de fenêtre en plus, pas d'icône de plus dans la barre des menus.</p>
+        <h2 class="headline reveal">Une encoche, <span class="soft">tous vos outils</span></h2>
+        <p class="sub reveal">Chaque outil apparaît au bon moment, puis se range dans l'encoche. Filmé tel quel sur un MacBook.</p>
       </div>
 
-      <div class="rail" id="rail">
-        <article class="slide">
-          <div class="slide-art art-lock">
-            <div class="lock-clock">9:41</div>
-            <div class="lock-panel">
-              <div class="lp-head"><div class="lp-art"></div><div><b>Nuit Blanche</b><span>Lumen Drive</span></div></div>
-              <p class="lp-prev">On marchait sous la pluie</p>
-              <p class="lp-now">Et la ville s'allumait pour nous</p>
-              <p class="lp-next">Comme si rien ne finissait</p>
-            </div>
-          </div>
-          <p class="slide-cap"><b>Écran verrouillé.</b> Vos paroles, en direct, même Mac verrouillé.</p>
+      <div class="rail" id="rail" aria-roledescription="carrousel">
+        <article class="slide" aria-roledescription="diapositive" aria-label="1 sur 5">
+          <div class="media media-full media-lock"><video src="assets/video/lock_screen.mp4" poster="assets/video/lock_screen.jpg" muted playsinline preload="none"></video></div>
+          <p class="slide-cap"><b>Écran verrouillé.</b> La pochette, les commandes et les paroles synchronisées, même Mac verrouillé.</p>
         </article>
-
-        <article class="slide">
-          <div class="slide-art art-hud">
-            <div class="mini-island wide">
-              <svg viewBox="0 0 24 24" class="ico"><circle cx="12" cy="12" r="4" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></g></svg>
-              <div class="meter"><span style="width:68%"></span></div>
-            </div>
-          </div>
-          <p class="slide-cap"><b>HUD système.</b> Volume, luminosité et Verr. Maj, sans les bulles natives.</p>
+        <article class="slide" aria-roledescription="diapositive" aria-label="2 sur 5">
+          <div class="media media-wide"><video src="assets/video/musique.mp4" poster="assets/video/musique.jpg" muted playsinline preload="none"></video></div>
+          <p class="slide-cap"><b>Musique et Playing Next.</b> Survolez l'encoche : lecteur, paroles et file d'attente Apple Music.</p>
         </article>
-
-        <article class="slide">
-          <div class="slide-art art-ocr">
-            <div class="ocr-doc">
-              <span></span><span></span><span class="hl"></span><span></span><span class="short"></span>
-              <div class="ocr-sel"><i></i><i></i><i></i><i></i></div>
-            </div>
-            <div class="toast">Texte copié</div>
-          </div>
-          <p class="slide-cap"><b>Capture de texte.</b> Sélectionnez une zone, le texte est déjà copié.</p>
+        <article class="slide" aria-roledescription="diapositive" aria-label="3 sur 5">
+          <div class="media media-wide"><video src="assets/video/musique_and_brightness.mp4" poster="assets/video/musique_and_brightness.jpg" muted playsinline preload="none"></video></div>
+          <p class="slide-cap"><b>HUD système.</b> Volume et luminosité s'affichent dans l'encoche, sans les bulles de macOS.</p>
         </article>
-
-        <article class="slide">
-          <div class="slide-art art-agent">
-            <div class="agent-card">
-              <div class="ag-row"><span>Contexte</span><b>420k / 1M</b></div>
-              <div class="ag-bar"><span style="width:42%"></span></div>
-              <div class="ag-grid">
-                <div><b>87%</b><span>Cache hit</span></div>
-                <div><b>#14</b><span>Étape</span></div>
-                <div><b>3</b><span>Fichiers</span></div>
-              </div>
-              <ul class="ag-feed"><li>Edit · ContentView.swift</li><li>Bash · xcodebuild</li><li>Read · Constants.swift</li></ul>
-            </div>
-          </div>
-          <p class="slide-cap"><b>Agents IA.</b> Contexte, cache et outils, suivis en temps réel.</p>
+        <article class="slide" aria-roledescription="diapositive" aria-label="4 sur 5">
+          <div class="media media-full"><video src="assets/video/ocr.mp4" poster="assets/video/ocr.jpg" muted playsinline preload="none"></video></div>
+          <p class="slide-cap"><b>Capture de texte.</b> Sélectionnez une zone de l'écran, le texte est déjà dans le presse-papiers.</p>
         </article>
-
-        <article class="slide">
-          <div class="slide-art art-clips">
-            <div class="clip-list">
-              <div class="clip"><i class="swatch"></i><span>#1219ED</span><em>Couleur</em></div>
-              <div class="clip"><i class="link"></i><span>github.com/adrielakak</span><em>Lien</em></div>
-              <div class="clip pinned"><i class="txt"></i><span>Rendez-vous jeudi 14 h</span><em>Épinglé</em></div>
-              <div class="clip"><i class="file"></i><span>maquette-v3.png</span><em>Fichier</em></div>
-            </div>
-          </div>
-          <p class="slide-cap"><b>Clips.</b> Copiez une fois, retrouvez tout, toujours.</p>
+        <article class="slide" aria-roledescription="diapositive" aria-label="5 sur 5">
+          <div class="media media-wide"><video src="assets/video/ai_activity.mp4" poster="assets/video/ai_activity.jpg" muted playsinline preload="none"></video></div>
+          <p class="slide-cap"><b>Agents IA.</b> Claude Code et Antigravity suivis en direct : étape, contexte, outils.</p>
         </article>
       </div>
 
       <div class="wrap rail-controls">
-        <div class="dots" id="dots" role="tablist" aria-label="Diapositives"></div>
+        <div class="dots-wrap">
+          <button class="playpause" id="playpause" type="button" aria-label="Mettre en pause">
+            <svg class="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="3.6" height="14" rx="1.2" fill="currentColor"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2" fill="currentColor"/></svg>
+            <svg class="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="currentColor"/></svg>
+          </button>
+          <div class="dots" id="dots" role="tablist" aria-label="Choisir une diapositive"></div>
+        </div>
         <div class="arrows">
-          <button class="arrow" id="prev" aria-label="Précédent"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="arrow" id="next" aria-label="Suivant"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="arrow" id="prev" type="button" aria-label="Précédent"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="arrow" id="next" type="button" aria-label="Suivant"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
       </div>
     </section>
 
-    <!-- BENTO -->
-    <section class="section">
+    <section class="section" id="features">
       <div class="wrap">
-        <h2 class="headline">Pensé pour <span class="soft">ne jamais vous ralentir</span></h2>
-        <p class="sub">Natif, en Swift et SwiftUI. Il se fait oublier jusqu'au moment où vous en avez besoin.</p>
+        <h2 class="headline reveal">Et ce n'est <span class="soft">que le début</span></h2>
+        <p class="sub reveal">Natif, écrit en Swift et SwiftUI. Il se fait oublier jusqu'au moment où vous en avez besoin.</p>
 
-        <div class="bento">
-          <div class="tile tile-blue span-2 reveal">
-            <div class="tile-copy">
-              <h3>Playing Next</h3>
-              <p>La file d'attente Apple Music, directement dans l'encoche. Un clic pour jouer un titre, un autre pour le remonter en tête.</p>
-            </div>
-            <ol class="queue">
-              <li><i style="--h:232"></i><span><b>Marée Haute</b>Corail</span><em>3:41</em></li>
-              <li><i style="--h:262"></i><span><b>Orbite</b>Les Satellites</span><em>4:02</em></li>
-              <li><i style="--h:210"></i><span><b>Café Noir</b>Minuit Douze</span><em>2:58</em></li>
-            </ol>
+        <div class="grid">
+          <div class="tile reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 4.5h6v2.5H9z" fill="currentColor"/><path d="M9 11h6M9 14.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+            <h3>Clips</h3>
+            <p>L'historique du presse-papiers : textes, liens, fichiers et couleurs, avec recherche et épinglage.</p>
           </div>
-
-          <div class="tile tile-white reveal">
-            <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M5 8h11v6a5 5 0 0 1-5 5H10a5 5 0 0 1-5-5z" fill="currentColor"/><path d="M16 10h1.5a2.5 2.5 0 0 1 0 5H16" stroke="currentColor" stroke-width="1.8" fill="none"/></svg></div>
+          <div class="tile reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M3.5 9.5 6 5h12l2.5 4.5v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M3.5 10h5l1 2h5l1-2h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></div>
+            <h3>Shelf</h3>
+            <p>Déposez un fichier dans l'encoche, puis OCR, ZIP, conversion PNG ou suppression du fond.</p>
+          </div>
+          <div class="tile reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z" fill="currentColor"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M8.5 3.5c0 1 1 1 1 2s-1 1-1 2M12 3.5c0 1 1 1 1 2s-1 1-1 2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></div>
             <h3>Caffeine</h3>
-            <p>Gardez le Mac éveillé 15 min, 1 h, 2 h ou sans limite.</p>
-            <div class="chips"><span>15 min</span><span class="on">1 h</span><span>2 h</span><span>∞</span></div>
+            <p>Empêchez la mise en veille pour 15 min, 1 h, 2 h ou sans limite, depuis l'en-tête.</p>
           </div>
-
-          <div class="tile tile-white reveal">
-            <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg></div>
+          <div class="tile reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg></div>
             <h3>Sortie audio</h3>
-            <p>Passez des haut-parleurs aux AirPods en un geste.</p>
-            <div class="outputs"><span class="on">AirPods Pro</span><span>Haut-parleurs MacBook</span></div>
+            <p>Passez des haut-parleurs du MacBook aux AirPods ou à un écran externe en un clic.</p>
           </div>
-
-          <div class="tile tile-deep span-2 reveal">
-            <div class="tile-copy">
-              <h3>Le Shelf, version turbo</h3>
-              <p>Déposez un fichier dans l'encoche, puis transformez-le sans ouvrir une seule app.</p>
-            </div>
-            <div class="actions">
-              <span>OCR</span><span>ZIP</span><span>PNG</span><span>Retirer le fond</span><span>Partager un lien</span>
-            </div>
+          <div class="tile reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 15.5V9m0 0-3 3m3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <h3>Verr. Maj</h3>
+            <p>Un indicateur discret dans l'encoche quand le verrouillage des majuscules s'active.</p>
+          </div>
+          <div class="tile reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+            <h3>Calendrier</h3>
+            <p>Vos prochains événements dans l'onglet Home, à côté de la musique en cours.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- STATS BAND -->
-    <section class="band">
-      <div class="band-bg stipple" aria-hidden="true"></div>
-      <div class="wrap band-grid">
-        <div class="stat reveal"><b>&lt; 1 µs</b><span>pour intercepter les touches volume et luminosité</span></div>
-        <div class="stat reveal"><b>0,25 s</b><span>de précision sur la synchro des paroles</span></div>
-        <div class="stat reveal"><b>1M</b><span>tokens de contexte suivis en direct</span></div>
-        <div class="stat reveal"><b>0 €</b><span>pour toujours, sous licence GPL-3.0</span></div>
-      </div>
-    </section>
-
-    <!-- INSTALL -->
     <section class="section" id="install">
       <div class="wrap">
-        <h2 class="headline">Installé <span class="soft">en une minute</span></h2>
-        <p class="sub">L'app n'est pas signée avec un certificat Apple payant. macOS demande donc une confirmation au premier lancement.</p>
+        <h2 class="headline reveal">Installé <span class="soft">en une minute</span></h2>
+        <p class="sub reveal">L'app n'est pas signée avec un certificat Apple payant. macOS demande donc une confirmation au premier lancement.</p>
 
         <ol class="steps">
           <li class="reveal"><span class="num">1</span><h3>Glissez dans Applications</h3><p>Ouvrez <code>GravityNotch.dmg</code> et déposez l'app dans le dossier Applications.</p></li>
           <li class="reveal"><span class="num">2</span><h3>Ouvrez quand même</h3><p>Réglages Système, Confidentialité et sécurité, puis <b>Ouvrir quand même</b>.</p></li>
-          <li class="reveal"><span class="num">3</span><h3>Autorisez l'Accessibilité</h3><p>Nécessaire pour remplacer les HUD de volume et de luminosité.</p></li>
+          <li class="reveal"><span class="num">3</span><h3>Autorisez l'Accessibilité</h3><p>Nécessaire pour afficher le volume et la luminosité dans l'encoche.</p></li>
         </ol>
 
         <div class="terminal reveal">
@@ -247,18 +190,17 @@
       </div>
     </section>
 
-    <!-- FAQ -->
     <section class="section" id="faq">
       <div class="wrap narrow">
-        <h2 class="headline">Questions <span class="soft">fréquentes</span></h2>
+        <h2 class="headline reveal">Questions <span class="soft">fréquentes</span></h2>
         <div class="faq">
           <details>
             <summary>GravityNotch est-il vraiment gratuit ?</summary>
-            <p>Oui. Le code est publié sous licence GNU GPL v3.0. Vous pouvez l'utiliser, le lire, le modifier et le redistribuer selon les termes de la licence.</p>
+            <p>Oui. Le code est publié sous licence GNU GPL v3.0 : vous pouvez l'utiliser, le lire, le modifier et le redistribuer selon les termes de la licence.</p>
           </details>
           <details>
             <summary>Faut-il un MacBook avec encoche ?</summary>
-            <p>Non. Sur un écran sans encoche, GravityNotch affiche une île virtuelle en haut de l'écran, avec les mêmes fonctionnalités.</p>
+            <p>Non. Sur un écran sans encoche, GravityNotch affiche une île virtuelle en haut de l'écran.</p>
           </details>
           <details>
             <summary>Quelles versions de macOS sont prises en charge ?</summary>
@@ -266,19 +208,18 @@
           </details>
           <details>
             <summary>Pourquoi l'app demande-t-elle l'Accessibilité ?</summary>
-            <p>Pour intercepter les touches de volume, de luminosité et de rétroéclairage, et afficher leur HUD dans l'encoche à la place des bulles natives de macOS.</p>
+            <p>Pour intercepter les touches de volume, de luminosité et de rétroéclairage, et afficher leur HUD dans l'encoche à la place des bulles de macOS.</p>
           </details>
           <details>
             <summary>Quel est le lien avec Boring Notch ?</summary>
-            <p>GravityNotch est un fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a> par TheBoredTeam. L'architecture d'origine et tout son mérite reviennent à ses auteurs. GravityNotch y ajoute l'écran verrouillé, Playing Next, l'OCR, Clips, Agents et plus encore.</p>
+            <p>GravityNotch est un fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a> par TheBoredTeam, à qui revient l'architecture d'origine. GravityNotch y ajoute l'écran verrouillé, Playing Next, l'OCR, Clips, Agents et plus encore.</p>
           </details>
         </div>
       </div>
     </section>
 
-    <!-- FINAL CTA -->
     <section class="final">
-      <div class="final-card">
+      <div class="final-card reveal">
         <div class="stipple" aria-hidden="true"></div>
         <img src="assets/icon.png" alt="" width="88" height="88" class="final-icon">
         <h2 class="display-sm">Votre encoche peut faire bien plus.</h2>
