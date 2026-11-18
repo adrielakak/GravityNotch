@@ -4,6 +4,10 @@
 
 **GravityNotch** transforme l'encoche (Notch) de votre MacBook en un véritable centre de contrôle dynamique de style *Dynamic Island*, combinant la stabilité et le design natif de **Boring Notch** avec une suite complète d'outils de productivité, de capture OCR, de contrôle média avancé et de suivi d'agents IA.
 
+<p align="center"><img src="docs/assets/icon.png" alt="Icône GravityNotch" width="96"></p>
+
+🌐 **Site du projet** : [adrielakak.github.io/GravityNotch](https://adrielakak.github.io/GravityNotch/) (démos vidéo, installation et FAQ)
+
 ---
 
 ## ⬇️ Télécharger pour Mac
@@ -27,20 +31,32 @@ Toutes les versions sont listées sur la page [Releases](https://github.com/adri
 
 ## ✨ Nouvelles fonctionnalités ajoutées dans cette édition
 
-### 1. 🔒 Lock Screen Media Widget + Live Karaoke Lyrics (`SkyLightWindow`)
-- **Panneau Liquid Glass sur l'écran verrouillé macOS** (`396×236`) affiché par-dessus l'écran de verrouillage grâce au framework privé `SkyLight`.
-- **Paroles synchronisées en direct (Live Lyrics 3 lignes)** : affiche la ligne précédente estompée, la ligne chantée en blanc lumineux gras synchronisée à `0.25s` via LRCLIB (avec nettoyage automatique des suffixes `(Slowed)` / `(Remix)`) ou les paroles intégrées d'Apple Music, ainsi que la ligne suivante.
+### 1. 🔒 Lecteur média sur l'écran verrouillé + paroles karaoké (`SkyLightWindow`)
+<p align="center"><img src="docs/assets/readme/lock_screen.gif" alt="Lecteur média et paroles sur l'écran verrouillé, avec la pochette animée en fond" width="560"></p>
+
+- **Panneau en verre dépoli sur l'écran verrouillé macOS**, affiché par-dessus l'écran de verrouillage grâce au framework privé `SkyLight`.
+- **Contrôles complets** : barre de progression interactive (scrub), précédent (redémarre le titre comme Apple Music), lecture/pause, suivant, et sélecteur de sortie audio `CoreAudio`.
+- **Paroles synchronisées en direct** : ligne précédente estompée, ligne chantée en blanc lumineux et ligne suivante, via LRCLIB (avec nettoyage automatique des suffixes `(Slowed)` / `(Remix)`) ou les paroles intégrées d'Apple Music. Un tap sur une ligne saute à ce moment du morceau.
+- **Fond d'écran animé** : quand le titre possède une pochette animée Apple Music, elle s'affiche automatiquement en plein écran à chaque verrouillage (mise en cache locale, partagée sur tout l'album pour éviter les clignotements entre les titres). Une pochette fixe s'agrandit simplement dans le lecteur au tap.
+- Halo d'ambiance optionnel et réglages dédiés (lecteur, halo, paroles) dans les préférences.
 
 ### 2. 🎵 Playing Next (File d'attente Apple Music interactive)
+<p align="center"><img src="docs/assets/readme/musique.gif" alt="Lecteur musical et file Playing Next dans l'encoche" width="640"></p>
+
 - Bouton **`music.note.list`** intégré directement aux contrôles du lecteur musical.
 - Bascule fluide dans l'onglet **Home** entre le **Calendrier Apple** et la liste **Playing Next**.
 - Clic direct sur n'importe quel titre à venir pour le jouer immédiatement, ou bouton **`arrow.up.to.line`** pour le remonter en tête de file.
+- Fonctionne aussi quand Music lit depuis le catalogue Apple Music (lecture de la page de l'album) et signale quand la lecture aléatoire masque l'ordre réel.
 
 ### 3. 🔆 System HUDs macOS Tahoe (Interception matérielle Triple-Couche `< 1 µs`)
+<p align="center"><img src="docs/assets/readme/musique_and_brightness.gif" alt="HUD de volume et de luminosité dans l'encoche" width="640"></p>
+
 - Remplacement complet des bulles système macOS (Volume, Luminosité écran, Rétroéclairage clavier et **Caps Lock HUD**) par une animation fluide directement dans l'encoche (*Dynamic Island*).
 - Compatible **macOS 26 Tahoe** : interception simultanée sur `.cghidEventTap`, `.cgSessionEventTap` et `.cgAnnotatedSessionEventTap` sur une file `.userInteractive` dédiée avec lecture directe des champs `CGEvent` (`99` et `149`) sans latence ni double HUD.
 
 ### 4. 🔍 Text Capture (Screen OCR) & Element Capture
+<p align="center"><img src="docs/assets/readme/ocr.gif" alt="Capture de texte OCR depuis l'encoche" width="640"></p>
+
 - Bouton **`text.viewfinder`** dans l'en-tête de l'encoche :
   - **Clic gauche** : sélectionne une zone de l'écran et extrait instantanément le texte via Apple Vision (`VNRecognizeTextRequest`) directement dans le presse-papiers.
   - **Clic droit** : capture une zone ou une fenêtre/élément détouré directement vers le **Shelf**.
@@ -49,11 +65,15 @@ Toutes les versions sont listées sur la page [Releases](https://github.com/adri
 - Surveillance en temps réel de `NSPasteboard.general` (texte, liens, fichiers, codes couleurs hexadécimaux avec aperçu couleur).
 - Recherche instantanée, épinglage (*Pin*), copie en un clic et envoi direct d'un élément vers le **Shelf**.
 
-### 6. ✨ Onglet `Agents` (Moniteur Live Antigravity & Live Activity)
-- Suivi en temps réel des sessions d'agent IA (`transcript.jsonl`) :
-  - Jauge de **Context / Quota** sur la fenêtre de `1M` tokens (`input_tokens + cache_read_tokens`).
-  - Taux de **Cache Hit %**, tokens générés (`output_tokens`), numéro d'étape (`Step #`), nombre de fichiers modifiés et flux d'outils en direct (*Live Tool Feed*).
-- **Live Activity** sur l'encoche fermée indiquant l'activité de l'agent et le pourcentage de contexte.
+### 6. ✨ Onglet `Agents` (Claude Code, Codex CLI & Antigravity en direct)
+<p align="center"><img src="docs/assets/readme/ai_activity.gif" alt="Activité d'un agent IA en direct dans l'encoche" width="640"></p>
+
+- Suivi en temps réel des sessions d'agents de code IA, lues localement depuis leurs transcripts (`~/.claude/projects`, `~/.codex/sessions`, Antigravity) :
+  - Jauge de **Context / Quota** (`input_tokens + cache_read_tokens`), taux de **Cache Hit %**, tokens générés (`output_tokens`) et numéro d'étape (`Step #`).
+  - Checklist de **progression**, pastille des fichiers modifiés avec compteurs de diff, et flux d'outils en direct (*Live Tool Feed*).
+  - **Mascottes pixel** animées selon l'état de l'agent (au travail, en attente, endormi).
+- Une session reste considérée active pendant une longue commande ou réflexion silencieuse (jusqu'à 10 min en cours de tour) ; l'encoche revient automatiquement sur la session en direct 2 min après une sélection manuelle.
+- **Live Activity** sur l'encoche fermée, avec une bulle sous l'encoche quand un agent termine ou a besoin de vous.
 
 ### 7. ☕ Mode Caffeine, 🎧 Sortie Audio & ⚡ Actions Rapides Shelf
 - **Caffeine (`IOKit` Power Assertion)** : empêche la mise en veille du Mac (infini, 15 min, 30 min, 1 h, 2 h) depuis l'en-tête de l'encoche.
@@ -68,15 +88,28 @@ Toutes les versions sont listées sur la page [Releases](https://github.com/adri
 - macOS 14 Sonoma, macOS 15 Sequoia ou **macOS 26 Tahoe**
 - Xcode 16+
 
-### Compiler et installer dans `/Applications`
+### Compiler
 
 ```bash
-xcodebuild -project boringNotch.xcodeproj -scheme boringNotch -configuration Debug CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="" build
+xcodebuild -project boringNotch.xcodeproj -scheme boringNotch -configuration Debug \
+  CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="" build
 ```
+
+Si `xcodebuild` signale que le répertoire développeur actif est celui des Command Line Tools, préfixez la commande par `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
+
+### Installer dans `/Applications`
+
+Quittez l'app si elle tourne, puis copiez le produit de build depuis DerivedData (`Build/Products/Debug/boringNotch.app`) vers `/Applications` et lancez-le. La permission **Accessibilité** est requise pour les HUD système.
+
+---
+
+## 🌐 Site web
+
+La landing page du projet se trouve dans [`docs/`](docs/) (HTML/CSS/JS statique, servie par GitHub Pages) : [adrielakak.github.io/GravityNotch](https://adrielakak.github.io/GravityNotch/).
 
 ---
 
 ## 📄 Licence & Remerciements
 
-- Distribué sous licence **GNU General Public License v3.0** — voir le fichier [`LICENSE`](LICENSE).
+- Distribué sous licence **GNU General Public License v3.0**, voir le fichier [`LICENSE`](LICENSE).
 - Basé sur le projet open-source [TheBoredTeam/boring.notch](https://github.com/TheBoredTeam/boring.notch).
