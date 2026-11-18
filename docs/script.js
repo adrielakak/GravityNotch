@@ -313,15 +313,6 @@
     });
   }
 
-  const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (hero && "IntersectionObserver" in window) {
-    new IntersectionObserver(([entry]) => {
-      const onHero = entry.isIntersecting;
-      document.documentElement.classList.toggle("at-hero", onHero);
-      if (themeMeta) themeMeta.content = onHero ? "#0b10b8" : "#f1f0fe";
-    }, { rootMargin: "0px 0px -100% 0px" }).observe(hero);
-  }
-
   const revealEls = document.querySelectorAll(".reveal");
   if ("IntersectionObserver" in window && !reduceMotion) {
     const io = new IntersectionObserver((entries) => {
