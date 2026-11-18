@@ -140,8 +140,8 @@ final class AudioOutputRoutingMenu: NSObject {
     }
 
     func popUpAtMouseLocation() {
-        let menu = NSMenu(title: "Audio Output")
-        let header = NSMenuItem(title: "Audio Output Device", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: String(localized: "Audio Output"))
+        let header = NSMenuItem(title: String(localized: "Audio Output Device"), action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
@@ -255,6 +255,15 @@ struct ClipboardHistoryItem: Identifiable, Equatable {
         case url
         case color
         case file
+
+        var localizedBadge: String {
+            switch self {
+            case .text: return String(localized: "TEXT")
+            case .url: return String(localized: "URL")
+            case .color: return String(localized: "COLOR")
+            case .file: return String(localized: "FILE")
+            }
+        }
     }
 
     let id: UUID
@@ -555,7 +564,7 @@ struct ClipboardNotchView: View {
                         .foregroundStyle(Color.accentColor)
                 }
 
-                Text(item.kind.rawValue.uppercased())
+                Text(item.kind.localizedBadge)
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .foregroundStyle(.gray)
 
@@ -589,7 +598,7 @@ struct ClipboardNotchView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             HStack {
-                Text(isCopied ? "Copied ✓" : "Click to copy")
+                Text(isCopied ? String(localized: "Copied ✓") : String(localized: "Click to copy"))
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(isCopied ? .green : .gray)
                 Spacer()
@@ -891,7 +900,7 @@ struct PlayingNextView: View {
                 Image(systemName: "music.note.list")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.accentColor)
-                Text(manager.isShuffleOn ? "In This Playlist" : "Playing Next")
+                Text(manager.isShuffleOn ? String(localized: "In This Playlist") : String(localized: "Playing Next"))
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
                 Spacer()
@@ -957,7 +966,7 @@ struct PlayingNextView: View {
             if manager.tracks.isEmpty {
                 Spacer()
                 VStack(spacing: 4) {
-                    Text(manager.isLoading ? "Loading queue…" : "No upcoming tracks")
+                    Text(manager.isLoading ? String(localized: "Loading queue…") : String(localized: "No upcoming tracks"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.gray)
                     Text("Start a playlist or album in Music")
@@ -1084,7 +1093,7 @@ final class ScreenCaptureOCRService {
                     try? FileManager.default.removeItem(at: tempFile)
                     ImageProcessingService.shared.presentOCRResultModal(
                         text: extracted,
-                        sourceName: "Screen Capture"
+                        sourceName: String(localized: "Screen Capture")
                     )
                 } catch {
                     try? FileManager.default.removeItem(at: tempFile)
@@ -1148,6 +1157,18 @@ enum AgentWorkPhase: String, Equatable {
     case searching = "Searching"
     case waiting = "Ready"
     case idle = "Idle"
+
+    var localizedTitle: String {
+        switch self {
+        case .thinking: return String(localized: "Thinking")
+        case .editing: return String(localized: "Editing")
+        case .running: return String(localized: "Running")
+        case .reading: return String(localized: "Reading")
+        case .searching: return String(localized: "Searching")
+        case .waiting: return String(localized: "Ready")
+        case .idle: return String(localized: "Idle")
+        }
+    }
 
     var shortBadge: String {
         switch self {
@@ -1287,8 +1308,8 @@ final class AntigravityAgentMonitor: ObservableObject {
     @Published private(set) var cacheReadTokens: Int = 0
     @Published private(set) var totalOutputTokens: Int = 0
     @Published private(set) var filesModifiedCount: Int = 0
-    @Published private(set) var currentActionTitle: String = "Idle"
-    @Published private(set) var currentActionDetail: String = "Waiting for prompt…"
+    @Published private(set) var currentActionTitle: String = String(localized: "Idle")
+    @Published private(set) var currentActionDetail: String = String(localized: "Waiting for prompt…")
     @Published private(set) var recentEvents: [AgentToolEvent] = []
 
     private struct CachedSessionEntry: Sendable {
@@ -1388,8 +1409,10 @@ final class AntigravityAgentMonitor: ObservableObject {
             if cacheReadTokens != 0 { cacheReadTokens = 0 }
             if totalOutputTokens != 0 { totalOutputTokens = 0 }
             if filesModifiedCount != 0 { filesModifiedCount = 0 }
-            if currentActionTitle != "Idle" { currentActionTitle = "Idle" }
-            if currentActionDetail != "Waiting for prompt…" { currentActionDetail = "Waiting for prompt…" }
+            let idleTitle = String(localized: "Idle")
+            let waitingDetail = String(localized: "Waiting for prompt…")
+            if currentActionTitle != idleTitle { currentActionTitle = idleTitle }
+            if currentActionDetail != waitingDetail { currentActionDetail = waitingDetail }
             if !recentEvents.isEmpty { recentEvents = [] }
             maxContextWindow = 1_000_000.0
             return
@@ -1597,8 +1620,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             var lastCache = 0
             var sumOutput = 0
             var editCount = 0
-            var latestTitle = "Antigravity Ready"
-            var latestDetail = "Session active"
+            var latestTitle = String(localized: "Antigravity Ready")
+            var latestDetail = String(localized: "Session active")
             var latestPhase: AgentWorkPhase = .waiting
             var latestFile: String? = nil
             var inferredProject = "Antigravity"
@@ -1693,8 +1716,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                     lastTurnComplete = false
                     pendingToolCalls = 0
                     latestPhase = .thinking
-                    latestTitle = "Processing prompt"
-                    latestDetail = "Analyzing context…"
+                    latestTitle = String(localized: "Processing prompt")
+                    latestDetail = String(localized: "Analyzing context…")
                 } else if !recordType.isEmpty {
                     lastTurnComplete = false
                     if recordType == "SYSTEM_MESSAGE" {
@@ -1719,7 +1742,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 id: key,
                 kind: .antigravity,
                 projectName: inferredProject,
-                sessionTitle: "Step #\(lastStep)",
+                sessionTitle: String(localized: "Step #\(lastStep)"),
                 modelName: "Gemini",
                 phase: latestPhase,
                 isActive: false,
@@ -1809,8 +1832,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             var editCount = 0
             var linesAdded = 0
             var linesRemoved = 0
-            var latestTitle = "Claude Ready"
-            var latestDetail = "Session active"
+            var latestTitle = String(localized: "Claude Ready")
+            var latestDetail = String(localized: "Session active")
             var latestPhase: AgentWorkPhase = .waiting
             var latestFile: String? = nil
             var events: [AgentToolEvent] = []
@@ -1884,8 +1907,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                     }
                     lastTurnComplete = false
                     latestPhase = .thinking
-                    latestTitle = "Thinking"
-                    latestDetail = sessionTitle.isEmpty ? "Analyzing context…" : sessionTitle
+                    latestTitle = String(localized: "Thinking")
+                    latestDetail = sessionTitle.isEmpty ? String(localized: "Analyzing context…") : sessionTitle
                     continue
                 }
 
@@ -1924,8 +1947,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                         let cType = (item["type"] as? String) ?? ""
                         if cType == "thinking" {
                             latestPhase = .thinking
-                            latestTitle = "Thinking"
-                            latestDetail = sessionTitle.isEmpty ? "Reasoning…" : sessionTitle
+                            latestTitle = String(localized: "Thinking")
+                            latestDetail = sessionTitle.isEmpty ? String(localized: "Reasoning…") : sessionTitle
                         } else if cType == "tool_use" {
                             hasPendingTool = true
                             let name = (item["name"] as? String) ?? "Tool"
@@ -2056,8 +2079,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             var sumOutput = 0
             var stepCounter = 0
             var editCount = 0
-            var latestTitle = "Codex Ready"
-            var latestDetail = "Session active"
+            var latestTitle = String(localized: "Codex Ready")
+            var latestDetail = String(localized: "Session active")
             var latestPhase: AgentWorkPhase = .waiting
             var events: [AgentToolEvent] = []
             var lastEventDate: Date = .distantPast
@@ -2390,7 +2413,7 @@ struct AgentClosedNotchView: View {
             )
         }
         .frame(height: closedHeight, alignment: .center)
-        .help("\(monitor.activeKind.rawValue) (\(phase.rawValue)) — Click to inspect Agents")
+        .help(String(localized: "\(monitor.activeKind.rawValue) (\(phase.localizedTitle)) - Click to inspect Agents"))
     }
 }
 
@@ -2600,7 +2623,7 @@ private struct AgentStatusCard: View {
                     if session.isWorkingNow {
                         AgentCompactWaveform(isWorking: true, color: accent, secondaryColor: secondary)
                     }
-                    Text(session.phase.rawValue)
+                    Text(session.phase.localizedTitle)
                         .font(.system(size: 8.5, weight: .bold, design: .rounded))
                         .foregroundStyle(session.isActive ? session.phase.color : .gray)
                 }
@@ -2700,15 +2723,15 @@ private struct AgentStatusCard: View {
             HStack(spacing: 5) {
                 if session.linesAdded > 0 || session.linesRemoved > 0 {
                     metricChip(
-                        label: "Diff",
+                        label: String(localized: "Diff"),
                         value: "+\(session.linesAdded)-\(session.linesRemoved)",
                         valueColor: .green
                     )
                 } else {
-                    metricChip(label: "Edits", value: "\(session.filesModifiedCount)", valueColor: .white)
+                    metricChip(label: String(localized: "Edits"), value: "\(session.filesModifiedCount)", valueColor: .white)
                 }
-                metricChip(label: "Cache", value: String(format: "%.0f%%", session.cacheHitPercentage), valueColor: .white)
-                metricChip(label: "Out", value: session.formattedOutputTokens, valueColor: .white)
+                metricChip(label: String(localized: "Cache"), value: String(format: "%.0f%%", session.cacheHitPercentage), valueColor: .white)
+                metricChip(label: String(localized: "Out"), value: session.formattedOutputTokens, valueColor: .white)
             }
         }
         .padding(.horizontal, 9)
@@ -3247,7 +3270,7 @@ private struct LockScreenArtworkHeader: View {
                             topRightUtilityCluster
                         }
 
-                        Text(musicManager.artistName.isEmpty ? "Music" : musicManager.artistName)
+                        Text(musicManager.artistName.isEmpty ? String(localized: "Music") : musicManager.artistName)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.white.opacity(0.70))
                             .lineLimit(1)
@@ -3276,11 +3299,11 @@ private struct LockScreenArtworkHeader: View {
                     }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(hasMediaTrack ? musicManager.songTitle : "Nothing Playing")
+                        Text(hasMediaTrack ? musicManager.songTitle : String(localized: "Nothing Playing"))
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
-                        Text(hasMediaTrack ? (musicManager.artistName.isEmpty ? "Apple Music" : musicManager.artistName) : "Press Play to start listening")
+                        Text(hasMediaTrack ? (musicManager.artistName.isEmpty ? "Apple Music" : musicManager.artistName) : String(localized: "Press Play to start listening"))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(hasMediaTrack ? .white.opacity(0.65) : .white.opacity(0.48))
                             .lineLimit(1)
@@ -3389,7 +3412,7 @@ private struct LockScreenSyncedLyricsCard: View {
 
     private func computeTriple() -> LyricDisplayTriple {
         if musicManager.isFetchingLyrics {
-            return LyricDisplayTriple(prevText: nil, prevTime: nil, currText: "Loading lyrics…", nextText: nil, nextTime: nil)
+            return LyricDisplayTriple(prevText: nil, prevTime: nil, currText: String(localized: "Loading lyrics…"), nextText: nil, nextTime: nil)
         }
         if !musicManager.syncedLyrics.isEmpty {
             let synced = musicManager.syncedLyrics
@@ -3422,7 +3445,7 @@ private struct LockScreenSyncedLyricsCard: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !plainLines.isEmpty else {
-            return LyricDisplayTriple(prevText: nil, prevTime: nil, currText: "♪ Instrumental / No lyrics found", nextText: nil, nextTime: nil)
+            return LyricDisplayTriple(prevText: nil, prevTime: nil, currText: String(localized: "♪ Instrumental / No lyrics found"), nextText: nil, nextTime: nil)
         }
         let ratio = duration > 0 ? min(0.999, max(0, elapsed / duration)) : 0
         let idx = min(plainLines.count - 1, max(0, Int(Double(plainLines.count) * ratio)))
@@ -4645,11 +4668,17 @@ final class AgentSpeechBubbleController: ObservableObject {
         let message: String
         switch reason {
         case .finished:
-            message = ["J'ai fini !", "C'est prêt !", "Terminé, à toi !", "Et voilà !"].randomElement() ?? "J'ai fini !"
+            let options = [
+                String(localized: "All done!"),
+                String(localized: "Ready for you!"),
+                String(localized: "Task complete!"),
+                String(localized: "Done!")
+            ]
+            message = options.randomElement() ?? String(localized: "All done!")
         case .question:
-            message = "J'ai une question…"
+            message = String(localized: "I have a question…")
         case .approval:
-            message = "J'ai besoin de ton accord"
+            message = String(localized: "I need your approval")
         }
 
         guard let screen = NSScreen.screen(withUUID: BoringViewCoordinator.shared.selectedScreenUUID)

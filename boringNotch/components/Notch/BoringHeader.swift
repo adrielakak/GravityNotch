@@ -74,7 +74,7 @@ struct BoringHeader: View {
                                 }
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .help("Text Capture (OCR) — Right-click for Element / Area Capture & Audio Output")
+                        .help("Text Capture (OCR) - Right-click for Element / Area Capture & Audio Output")
                         .contextMenu {
                             Button("Capture Screen Text (OCR → Clipboard)") {
                                 vm.close()
@@ -107,7 +107,11 @@ struct BoringHeader: View {
                                 }
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .help(caffeine.isActive ? "Caffeine Active (\(caffeine.remainingText)) — Right-click for timer" : "Keep Mac Awake (Caffeine)")
+                        .help(
+                            caffeine.isActive
+                                ? String(localized: "Caffeine Active (\(caffeine.remainingText)) - Right-click for timer")
+                                : String(localized: "Keep Mac Awake (Caffeine)")
+                        )
                         .contextMenu {
                             Button("Keep Awake Indefinitely (∞)") { caffeine.activate(durationMinutes: nil) }
                             Button("15 Minutes") { caffeine.activate(durationMinutes: 15) }

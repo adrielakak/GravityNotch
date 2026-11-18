@@ -68,8 +68,39 @@ enum OptionKeyAction: String, CaseIterable, Identifiable, Defaults.Serializable 
     var id: String { self.rawValue }
 }
 
+// Application language override in Settings -> General
+enum AppLanguage: String, CaseIterable, Identifiable, Defaults.Serializable {
+    case system = "system"
+    case french = "fr"
+    case english = "en"
+
+    var id: String { self.rawValue }
+
+    var localizedName: String {
+        switch self {
+        case .system:
+            return String(localized: "System")
+        case .french:
+            return "Français"
+        case .english:
+            return "English"
+        }
+    }
+
+    static func apply(_ language: AppLanguage) {
+        switch language {
+        case .system:
+            UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+        case .french, .english:
+            UserDefaults.standard.set([language.rawValue], forKey: "AppleLanguages")
+        }
+        UserDefaults.standard.synchronize()
+    }
+}
+
 extension Defaults.Keys {
     // MARK: General
+    static let appLanguage = Key<AppLanguage>("appLanguage", default: .system)
     static let menubarIcon = Key<Bool>("menubarIcon", default: true)
     static let showOnAllDisplays = Key<Bool>("showOnAllDisplays", default: false)
     static let automaticallySwitchDisplay = Key<Bool>("automaticallySwitchDisplay", default: true)

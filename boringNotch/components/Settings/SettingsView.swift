@@ -135,6 +135,7 @@ struct GeneralSettings: View {
     @EnvironmentObject var vm: BoringViewModel
     @ObservedObject var coordinator = BoringViewCoordinator.shared
 
+    @Default(.appLanguage) var appLanguage
     @Default(.mirrorShape) var mirrorShape
     @Default(.showEmojis) var showEmojis
     @Default(.gestureSensitivity) var gestureSensitivity
@@ -147,11 +148,34 @@ struct GeneralSettings: View {
     @Default(.automaticallySwitchDisplay) var automaticallySwitchDisplay
     @Default(.enableGestures) var enableGestures
     @Default(.openNotchOnHover) var openNotchOnHover
+    @State private var needsLanguageRestart: Bool = false
     
 
     var body: some View {
         Form {
             Section {
+                Picker("Language", selection: $appLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.localizedName).tag(lang)
+                    }
+                }
+                .onChange(of: appLanguage) { _, newValue in
+                    AppLanguage.apply(newValue)
+                    needsLanguageRestart = true
+                }
+                if needsLanguageRestart {
+                    HStack {
+                        Text("Restart GravityNotch to apply the new language.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Relaunch Now") {
+                            ApplicationRelauncher.restart()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
                 Toggle(isOn: Binding(
                     get: { Defaults[.menubarIcon] },
                     set: { Defaults[.menubarIcon] = $0 }
@@ -159,7 +183,7 @@ struct GeneralSettings: View {
                     Text("Show menu bar icon")
                 }
                 .tint(.effectiveAccent)
-                LaunchAtLogin.Toggle("Launch at login")
+                LaunchAtLogin.Toggle(String(localized: "Launch at login"))
                 Defaults.Toggle(key: .showOnAllDisplays) {
                     Text("Show on all displays")
                 }
@@ -297,7 +321,10 @@ struct GeneralSettings: View {
                         Spacer()
                         Text(
                             Defaults[.gestureSensitivity] == 100
-                                ? "High" : Defaults[.gestureSensitivity] == 200 ? "Medium" : "Low"
+                                ? String(localized: "High")
+                                : Defaults[.gestureSensitivity] == 200
+                                    ? String(localized: "Medium")
+                                    : String(localized: "Low")
                         )
                         .foregroundStyle(.secondary)
                     }
@@ -511,7 +538,7 @@ struct HUD: View {
             Section {
                 Picker("Option key behaviour", selection: $optionKeyAction) {
                     ForEach(OptionKeyAction.allCases) { opt in
-                        Text(opt.rawValue).tag(opt)
+                        Text(LocalizedStringKey(opt.rawValue)).tag(opt)
                     }
                 }
                 
@@ -611,7 +638,7 @@ struct Media: View {
             Section {
                 Picker("Music Source", selection: $mediaController) {
                     ForEach(availableMediaControllers) { controller in
-                        Text(controller.rawValue).tag(controller)
+                        Text(LocalizedStringKey(controller.rawValue)).tag(controller)
                     }
                 }
                 .onChange(of: mediaController) { _, _ in
@@ -652,7 +679,7 @@ struct Media: View {
                 Toggle("Show sneak peek on playback changes", isOn: $enableSneakPeek)
                 Picker("Sneak Peek Style", selection: $sneakPeekStyles) {
                     ForEach(SneakPeekStyle.allCases) { style in
-                        Text(style.rawValue).tag(style)
+                        Text(LocalizedStringKey(style.rawValue)).tag(style)
                     }
                 }
                 HStack {
@@ -723,8 +750,8 @@ struct Media: View {
                 } label: {
                     Label(
                         lockScreenMediaManager.isPreviewVisible
-                            ? "Hide Lock Screen Music Preview"
-                            : "Preview Lock Screen Music Player",
+                            ? String(localized: "Hide Lock Screen Music Preview")
+                            : String(localized: "Preview Lock Screen Music Player"),
                         systemImage: lockScreenMediaManager.isPreviewVisible ? "eye.slash" : "lock.display"
                     )
                 }
@@ -1258,7 +1285,7 @@ struct Appearance: View {
                 }
                 Picker("Slider color", selection: $sliderColor) {
                     ForEach(SliderColorEnum.allCases, id: \.self) { option in
-                        Text(option.rawValue)
+                        Text(LocalizedStringKey(option.rawValue))
                     }
                 }
             } header: {
@@ -1831,7 +1858,7 @@ func comingSoonTag() -> some View {
 }
 
 func customBadge(text: String) -> some View {
-    Text(text)
+    Text(LocalizedStringKey(text))
         .foregroundStyle(.secondary)
         .font(.footnote.bold())
         .padding(.vertical, 3)

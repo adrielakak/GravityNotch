@@ -353,10 +353,10 @@ final class ImageProcessingService {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             let alert = NSAlert()
-            alert.messageText = "No Text Found"
-            alert.informativeText = "No readable text was detected in \"\(sourceName)\"."
+            alert.messageText = String(localized: "No Text Found")
+            alert.informativeText = String(localized: "No readable text was detected in \"\(sourceName)\".")
             alert.alertStyle = .informational
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: String(localized: "OK"))
             alert.runModal()
             return
         }
@@ -365,11 +365,11 @@ final class ImageProcessingService {
         NSPasteboard.general.setString(trimmed, forType: .string)
 
         let alert = NSAlert()
-        alert.messageText = "Extracted Text (OCR) — Copied to Clipboard"
-        alert.informativeText = "From \"\(sourceName)\" (\(trimmed.count) characters):"
+        alert.messageText = String(localized: "Extracted Text (OCR) - Copied to Clipboard")
+        alert.informativeText = String(localized: "From \"\(sourceName)\" (\(trimmed.count) characters):")
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Done")
-        alert.addButton(withTitle: "Save to Shelf (.txt)")
+        alert.addButton(withTitle: String(localized: "Done"))
+        alert.addButton(withTitle: String(localized: "Save to Shelf (.txt)"))
 
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
         scrollView.hasVerticalScroller = true

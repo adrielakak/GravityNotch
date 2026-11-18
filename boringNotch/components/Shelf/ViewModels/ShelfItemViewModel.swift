@@ -211,9 +211,14 @@ final class ShelfItemViewModel: ObservableObject {
         ensureContextMenuSelection()
         let menu = NSMenu()
 
+        func makeMenuItem(_ key: String) -> NSMenuItem {
+            let mi = NSMenuItem(title: String(localized: String.LocalizationValue(key)), action: nil, keyEquivalent: "")
+            mi.representedObject = key
+            return mi
+        }
+
         func addMenuItem(title: String) {
-            let mi = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-            menu.addItem(mi)
+            menu.addItem(makeMenuItem(title))
         }
 
         let selectedItems = ShelfSelectionModel.shared.selectedItems(in: ShelfStateViewModel.shared.items)
@@ -235,7 +240,7 @@ final class ShelfItemViewModel: ObservableObject {
         }
 
         if !selectedOpenableURLs.isEmpty {
-            let openWith = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
+            let openWith = NSMenuItem(title: String(localized: "Open With"), action: nil, keyEquivalent: "")
             let submenu = NSMenu()
 
             // Choose a representative URL to compute apps (prefer current item if not a folder)
@@ -260,7 +265,7 @@ final class ShelfItemViewModel: ObservableObject {
             let defaultApp = defaultAppURL()
 
             if openWithApps.isEmpty {
-                let noApps = NSMenuItem(title: "No Compatible Apps Found", action: nil, keyEquivalent: "")
+                let noApps = NSMenuItem(title: String(localized: "No Compatible Apps Found"), action: nil, keyEquivalent: "")
                 noApps.isEnabled = false
                 submenu.addItem(noApps)
             } else {
@@ -274,7 +279,7 @@ final class ShelfItemViewModel: ObservableObject {
                         .font: NSFont.menuFont(ofSize: 0),
                         .foregroundColor: NSColor.labelColor
                     ])
-                    let defaultPart = NSAttributedString(string: " (default)", attributes: [
+                    let defaultPart = NSAttributedString(string: " (\(String(localized: "default")))", attributes: [
                         .font: NSFont.menuFont(ofSize: 0),
                         .foregroundColor: NSColor.secondaryLabelColor
                     ])
@@ -295,7 +300,7 @@ final class ShelfItemViewModel: ObservableObject {
             }
 
             submenu.addItem(NSMenuItem.separator())
-            let other = NSMenuItem(title: "Other…", action: nil, keyEquivalent: "")
+            let other = NSMenuItem(title: String(localized: "Other…"), action: nil, keyEquivalent: "")
             other.representedObject = "__OTHER__"
             submenu.addItem(other)
 
@@ -307,11 +312,11 @@ final class ShelfItemViewModel: ObservableObject {
         // Allow Quick Look for files and link URLs
         if !selectedFileURLs.isEmpty || !selectedLinkURLs.isEmpty {
             // Add Quick Look menu item
-            let quickLookItem = NSMenuItem(title: "Quick Look", action: nil, keyEquivalent: "")
+            let quickLookItem = makeMenuItem("Quick Look")
             menu.addItem(quickLookItem)
             
             // Add Slideshow as alternate menu item (shown when Option key is held)
-            let slideshowItem = NSMenuItem(title: "Quick Look", action: nil, keyEquivalent: "")
+            let slideshowItem = makeMenuItem("Quick Look")
             slideshowItem.isAlternate = true
             slideshowItem.keyEquivalentModifierMask = [.option]
             menu.addItem(slideshowItem)
@@ -329,29 +334,29 @@ final class ShelfItemViewModel: ObservableObject {
         if !imageURLs.isEmpty {
             menu.addItem(NSMenuItem.separator())
 
-            let imageActions = NSMenuItem(title: "Image Actions", action: nil, keyEquivalent: "")
+            let imageActions = NSMenuItem(title: String(localized: "Image Actions"), action: nil, keyEquivalent: "")
             let imageSubmenu = NSMenu()
 
             // Extract Text (OCR) - Gravity feature
             if imageURLs.count == 1 {
-                let extractOCR = NSMenuItem(title: "Extract Text (OCR)", action: nil, keyEquivalent: "")
+                let extractOCR = makeMenuItem("Extract Text (OCR)")
                 imageSubmenu.addItem(extractOCR)
             }
 
             // Remove Background - only for single images
             if imageURLs.count == 1 {
-                let removeBg = NSMenuItem(title: "Remove Background", action: nil, keyEquivalent: "")
+                let removeBg = makeMenuItem("Remove Background")
                 imageSubmenu.addItem(removeBg)
             }
 
             // Convert Image - only for single images
             if imageURLs.count == 1 {
-                let convertItem = NSMenuItem(title: "Convert Image…", action: nil, keyEquivalent: "")
+                let convertItem = makeMenuItem("Convert Image…")
                 imageSubmenu.addItem(convertItem)
             }
 
             // Create PDF - for one or more images
-            let createPDF = NSMenuItem(title: "Create PDF", action: nil, keyEquivalent: "")
+            let createPDF = makeMenuItem("Create PDF")
             imageSubmenu.addItem(createPDF)
 
             imageActions.submenu = imageSubmenu
@@ -365,7 +370,7 @@ final class ShelfItemViewModel: ObservableObject {
 
         // Add compression option for files/folders (single or multiple)
         if !selectedFileURLs.isEmpty {
-            let compressItem = NSMenuItem(title: "Compress", action: nil, keyEquivalent: "")
+            let compressItem = makeMenuItem("Compress")
             menu.addItem(compressItem)
         }
 
@@ -375,7 +380,7 @@ final class ShelfItemViewModel: ObservableObject {
         addMenuItem(title: "Copy")
         // If there are file URLs, add "Copy Path" as an alternate menu item (Option key)
         if !selectedFileURLs.isEmpty {
-            let copyPathItem = NSMenuItem(title: "Copy Path", action: nil, keyEquivalent: "")
+            let copyPathItem = makeMenuItem("Copy Path")
             copyPathItem.isAlternate = true
             copyPathItem.keyEquivalentModifierMask = [.option]
             menu.addItem(copyPathItem)
@@ -427,7 +432,7 @@ final class ShelfItemViewModel: ObservableObject {
         }
 
         @MainActor @objc func handle(_ sender: NSMenuItem) {
-            let title = sender.title
+            let title = (sender.representedObject as? String) ?? sender.title
 
             if let marker = sender.representedObject as? String, marker == "__OTHER__" {
                 openWithPanel()

@@ -146,7 +146,7 @@ struct ShelfView: View {
             HStack(spacing: 3) {
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: .semibold))
-                Text(title)
+                Text(LocalizedStringKey(title))
                     .font(.system(size: 10, weight: .medium, design: .rounded))
             }
             .foregroundStyle(isDestructive ? Color.red.opacity(0.9) : Color.white.opacity(0.88))
