@@ -22,26 +22,11 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; background: var(--page); }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; background: var(--page); transition: background-color 300ms ease; }
 html.at-hero { background: var(--deep); }
-main, .footer { background: var(--page); }
-.edge-tint { display: none; }
-@media (hover: none) {
-  .edge-tint {
-    display: block;
-    position: fixed; left: 0; right: 0; z-index: 2147483647;
-    height: 2px;
-    background: var(--page);
-    pointer-events: none;
-  }
-  .edge-tint-top { top: 0; }
-  .edge-tint-bottom { bottom: 0; }
-  html.at-hero .edge-tint-top,
-  html.bottom-hero .edge-tint-bottom { background: var(--deep); }
-}
 body {
   margin: 0;
-  background: transparent;
+  background: var(--page);
   color: var(--ink);
   font-family: var(--font-text);
   font-size: 17px;
