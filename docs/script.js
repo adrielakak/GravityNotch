@@ -1,6 +1,8 @@
 (() => {
   document.documentElement.classList.add("js");
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const i18n = window.gnI18n || { t: (k) => k, onChange: () => {} };
+  const t = i18n.t;
 
   const nav = document.getElementById("nav");
   const hero = document.querySelector(".hero");
@@ -30,11 +32,11 @@
   if (nav && indexEl && nameEl && percentEl && progressBar && statusBtn) {
     const navLinks = [...nav.querySelectorAll(".nav-links a[data-section]")];
     const sections = [
-      { id: "hero", index: "00", label: "Intro" },
-      { id: "demo", index: "01", label: "En action" },
-      { id: "features", index: "02", label: "Fonctionnalités" },
-      { id: "install", index: "03", label: "Installation" },
-      { id: "faq", index: "04", label: "FAQ" }
+      { id: "hero", index: "00" },
+      { id: "demo", index: "01" },
+      { id: "features", index: "02" },
+      { id: "install", index: "03" },
+      { id: "faq", index: "04" }
     ].map((s) => ({ ...s, el: document.getElementById(s.id) })).filter((s) => s.el);
 
     const hoverMedia = window.matchMedia("(hover: hover) and (pointer: fine)");
@@ -92,8 +94,9 @@
 
       if (active.id !== lastSectionId) {
         indexEl.textContent = active.index;
-        nameEl.textContent = active.label;
-        statusBtn.setAttribute("aria-label", `Section actuelle : ${active.label}. Ouvrir la navigation`);
+        const label = t(`sec.${active.id}`);
+        nameEl.textContent = label;
+        statusBtn.setAttribute("aria-label", t("status.label", { label }));
         if (lastSectionId !== null && sectionWrap && !reduceMotion && sectionWrap.animate) {
           sectionWrap.animate(
             [{ transform: `translateY(${direction * 6}px)`, opacity: 0 }, { transform: "translateY(0)", opacity: 1 }],
@@ -116,6 +119,7 @@
     }, true);
     document.addEventListener("pointerdown", () => { lastInputWasKeyboard = false; }, true);
 
+    i18n.onChange(() => { lastSectionId = undefined; scheduleUpdate(); });
     window.addEventListener("scroll", scheduleUpdate, { passive: true });
     window.addEventListener("resize", scheduleUpdate, { passive: true });
 
@@ -193,7 +197,7 @@
       const b = document.createElement("button");
       b.type = "button";
       b.setAttribute("role", "tab");
-      b.setAttribute("aria-label", `Diapositive ${i + 1}`);
+      b.setAttribute("aria-label", t("dot.label", { n: i + 1 }));
       b.addEventListener("click", () => goTo(i));
       dotsEl.appendChild(b);
       return b;
@@ -270,7 +274,7 @@
     const setPlaying = (p) => {
       playing = p;
       toggle?.classList.toggle("paused", !p);
-      toggle?.setAttribute("aria-label", p ? "Mettre en pause" : "Lire");
+      toggle?.setAttribute("aria-label", t(p ? "play.pause" : "play.play"));
       syncPlayback();
     };
     toggle?.addEventListener("click", () => setPlaying(!playing));
@@ -287,6 +291,10 @@
       else syncPlayback();
     });
 
+    i18n.onChange(() => {
+      dots.forEach((b, i) => b.setAttribute("aria-label", t("dot.label", { n: i + 1 })));
+      toggle?.setAttribute("aria-label", t(playing ? "play.pause" : "play.play"));
+    });
     setPlaying(playing);
     activate(0);
   }
@@ -297,25 +305,36 @@
     copyBtn.addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText(cmd.textContent.trim());
-        copyBtn.textContent = "Copié";
+        copyBtn.textContent = t("copy.done");
       } catch {
-        copyBtn.textContent = "Échec";
+        copyBtn.textContent = t("copy.fail");
       }
-      setTimeout(() => { copyBtn.textContent = "Copier"; }, 1600);
+      setTimeout(() => { copyBtn.textContent = t("inst.copy"); }, 1600);
     });
+  }
+
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (hero && "IntersectionObserver" in window) {
+    new IntersectionObserver(([entry]) => {
+      const onHero = entry.isIntersecting;
+      document.documentElement.classList.toggle("at-hero", onHero);
+      if (themeMeta) themeMeta.content = onHero ? "#0b10b8" : "#f1f0fe";
+    }, { rootMargin: "0px 0px -100% 0px" }).observe(hero);
   }
 
   const revealEls = document.querySelectorAll(".reveal");
   if ("IntersectionObserver" in window && !reduceMotion) {
     const io = new IntersectionObserver((entries) => {
-      entries.forEach((e) => {
-        if (!e.isIntersecting) return;
-        const siblings = [...e.target.parentElement.children].filter((c) => c.classList.contains("reveal"));
-        e.target.style.transitionDelay = `${Math.min(siblings.indexOf(e.target), 5) * 70}ms`;
-        e.target.classList.add("in");
-        io.unobserve(e.target);
-      });
-    }, { threshold: 0.15 });
+      entries
+        .filter((e) => e.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top || a.boundingClientRect.left - b.boundingClientRect.left)
+        .forEach((e, i) => {
+          e.target.style.setProperty("--reveal-delay", `${Math.min(i, 4) * 80}ms`);
+          e.target.classList.add("in");
+          e.target.addEventListener("transitionend", () => e.target.style.removeProperty("--reveal-delay"), { once: true });
+          io.unobserve(e.target);
+        });
+    }, { threshold: 0, rootMargin: "0px 0px -8% 0px" });
     revealEls.forEach((el) => io.observe(el));
   } else {
     revealEls.forEach((el) => el.classList.add("in"));

@@ -3,29 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>GravityNotch, la Dynamic Island de votre Mac</title>
-  <meta name="description" content="GravityNotch transforme l'encoche de votre MacBook en centre de contrôle : musique, paroles sur l'écran verrouillé, HUD système, capture de texte et suivi d'agents IA. Gratuit et open source.">
+  <title data-i18n="meta.title">GravityNotch, la Dynamic Island de votre Mac</title>
+  <meta name="description" data-i18n-attr="content:meta.desc" content="GravityNotch transforme l'encoche de votre MacBook en centre de contrôle : musique, paroles sur l'écran verrouillé, HUD système, capture de texte et suivi d'agents IA. Gratuit et open source.">
   <meta name="theme-color" content="#1219ed">
   <meta property="og:title" content="GravityNotch">
   <meta property="og:description" content="La Dynamic Island de votre Mac. Gratuite et open source.">
   <meta property="og:image" content="assets/video/musique.jpg">
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="stylesheet" href="styles.css">
-  <script>document.documentElement.classList.add("js");</script>
+  <script>document.documentElement.classList.add("js", "at-hero");</script>
 </head>
 <body>
 
   <header class="nav" id="nav">
     <div class="nav-inner">
-      <a class="brand" href="#top" aria-label="GravityNotch, accueil">
+      <a class="brand" href="#top" data-i18n-attr="aria-label:nav.home" aria-label="GravityNotch, accueil">
         <img src="assets/icon.png" alt="" width="28" height="28">
         <span class="brand-text">
           <strong>GravityNotch</strong>
-          <small>Le centre de contrôle dans votre encoche</small>
+          <small data-i18n="nav.tagline">Le centre de contrôle dans votre encoche</small>
         </span>
       </a>
 
-      <div class="island-status" id="island-status" role="button" tabindex="0" aria-label="Ouvrir la navigation">
+      <div class="island-status" id="island-status" role="button" tabindex="0" data-i18n-attr="aria-label:nav.open" aria-label="Ouvrir la navigation">
         <span class="island-dot" aria-hidden="true"></span>
         <span class="island-section-wrap" id="island-section-wrap">
           <span class="island-index" id="island-index">00</span>
@@ -35,14 +35,15 @@
         <span class="island-percent" id="island-percent">0%</span>
       </div>
 
-      <nav class="nav-links" aria-label="Navigation principale">
-        <a href="#demo" data-section="demo">En action</a>
-        <a href="#features" data-section="features">Fonctionnalités</a>
-        <a href="#install" data-section="install">Installation</a>
+      <nav class="nav-links" data-i18n-attr="aria-label:nav.main" aria-label="Navigation principale">
+        <a href="#demo" data-section="demo" data-i18n="sec.demo">En action</a>
+        <a href="#features" data-section="features" data-i18n="sec.features">Fonctionnalités</a>
+        <a href="#install" data-section="install" data-i18n="sec.install">Installation</a>
         <a href="#faq" data-section="faq">FAQ</a>
         <a href="https://github.com/adrielakak/GravityNotch" target="_blank" rel="noopener">GitHub</a>
       </nav>
-      <a class="pill pill-sm pill-light nav-cta" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg">Télécharger</a>
+      <button class="nav-lang" id="lang-toggle" type="button" lang="en" aria-label="Switch to English">EN</button>
+      <a class="pill pill-sm pill-light nav-cta" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg" data-i18n="nav.cta">Télécharger</a>
     </div>
     <div class="island-progress-track" aria-hidden="true">
       <div class="island-progress-bar" id="island-progress-bar"></div>
@@ -62,54 +63,54 @@
         <div class="screen-display">
           <video class="screen-video" src="assets/video/hero.mp4" poster="assets/video/hero.jpg"
                  autoplay muted loop playsinline preload="auto"
-                 aria-label="Démonstration : la musique, le volume, la luminosité et l'activité d'un agent IA s'affichent dans l'encoche"></video>
+                 data-i18n-attr="aria-label:hero.video" aria-label="Démonstration : la musique, le volume, la luminosité et l'activité d'un agent IA s'affichent dans l'encoche"></video>
         </div>
       </div>
 
       <div class="hero-copy">
-        <p class="eyebrow"><span class="dot"></span> Gratuit et open source</p>
-        <h1 class="display"><span class="soft">La Dynamic Island</span> qui manquait à votre Mac</h1>
-        <p class="lede">Musique, paroles en direct, HUD système, capture de texte et suivi d'agents IA. Tout vit dans l'encoche, rien n'encombre le Dock.</p>
+        <p class="eyebrow" data-i18n="hero.eyebrow"><span class="dot"></span> Gratuit et open source</p>
+        <h1 class="display" data-i18n="hero.title"><span class="soft">La Dynamic Island</span> qui manquait à votre Mac</h1>
+        <p class="lede" data-i18n="hero.lede">Musique, paroles en direct, HUD système, capture de texte et suivi d'agents IA. Tout vit dans l'encoche, rien n'encombre le Dock.</p>
         <div class="cta-row">
           <a class="pill pill-light pill-lg" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg">
             <svg viewBox="0 0 17 20" width="16" height="19" aria-hidden="true"><path fill="currentColor" d="M14.1 10.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.4-.9C3.6 4.8 2 5.8 1.1 7.3c-1.8 3.2-.5 7.9 1.3 10.5.9 1.3 1.9 2.7 3.2 2.6 1.3-.1 1.8-.8 3.4-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.6 1-1.5 1.4-2.9 1.4-3-.1 0-2.8-1.1-2.8-4.2zM11.5 3c.7-.9 1.2-2 1-3.1-1 0-2.2.7-2.9 1.5-.6.7-1.2 1.9-1 3 1.1.1 2.2-.6 2.9-1.4z"/></svg>
-            Télécharger pour macOS
+            <span data-i18n="cta.download">Télécharger pour macOS</span>
           </a>
           <a class="pill pill-glass pill-lg" href="https://github.com/adrielakak/GravityNotch" target="_blank" rel="noopener">
             <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.33.67.07-.52.28-.87.51-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-            Voir le code
+            <span data-i18n="cta.code">Voir le code</span>
           </a>
         </div>
-        <p class="fineprint">macOS 14 Sonoma ou plus récent · Apple Silicon et Intel</p>
+        <p class="fineprint" data-i18n="hero.fine">macOS 14 Sonoma ou plus récent · Apple Silicon et Intel</p>
       </div>
     </section>
 
     <section class="section showcase" id="demo">
       <div class="wrap">
-        <h2 class="headline reveal">Une encoche, <span class="soft">tous vos outils</span></h2>
-        <p class="sub reveal">Chaque outil apparaît au bon moment, puis se range dans l'encoche. Filmé tel quel sur un MacBook.</p>
+        <h2 class="headline reveal" data-i18n="demo.title">Une encoche, <span class="soft">tous vos outils</span></h2>
+        <p class="sub reveal" data-i18n="demo.sub">Chaque outil apparaît au bon moment, puis se range dans l'encoche. Filmé tel quel sur un MacBook.</p>
       </div>
 
-      <div class="rail" id="rail" aria-roledescription="carrousel">
+      <div class="rail" id="rail" data-i18n-attr="aria-roledescription:demo.carousel" aria-roledescription="carrousel">
         <article class="slide" aria-roledescription="diapositive" aria-label="1 sur 5">
           <div class="media media-full media-lock"><video src="assets/video/lock_screen.mp4" poster="assets/video/lock_screen.jpg" muted playsinline preload="none"></video></div>
-          <p class="slide-cap"><b>Écran verrouillé.</b> La pochette, les commandes et les paroles synchronisées, même Mac verrouillé.</p>
+          <p class="slide-cap" data-i18n="slide.1"><b>Écran verrouillé.</b> La pochette, les commandes et les paroles synchronisées, même Mac verrouillé.</p>
         </article>
         <article class="slide" aria-roledescription="diapositive" aria-label="2 sur 5">
           <div class="media media-wide"><video src="assets/video/musique.mp4" poster="assets/video/musique.jpg" muted playsinline preload="none"></video></div>
-          <p class="slide-cap"><b>Musique et Playing Next.</b> Survolez l'encoche : lecteur, paroles et file d'attente Apple Music.</p>
+          <p class="slide-cap" data-i18n="slide.2"><b>Musique et Playing Next.</b> Survolez l'encoche : lecteur, paroles et file d'attente Apple Music.</p>
         </article>
         <article class="slide" aria-roledescription="diapositive" aria-label="3 sur 5">
           <div class="media media-wide"><video src="assets/video/musique_and_brightness.mp4" poster="assets/video/musique_and_brightness.jpg" muted playsinline preload="none"></video></div>
-          <p class="slide-cap"><b>HUD système.</b> Volume et luminosité s'affichent dans l'encoche, sans les bulles de macOS.</p>
+          <p class="slide-cap" data-i18n="slide.3"><b>HUD système.</b> Volume et luminosité s'affichent dans l'encoche, sans les bulles de macOS.</p>
         </article>
         <article class="slide" aria-roledescription="diapositive" aria-label="4 sur 5">
           <div class="media media-full"><video src="assets/video/ocr.mp4" poster="assets/video/ocr.jpg" muted playsinline preload="none"></video></div>
-          <p class="slide-cap"><b>Capture de texte.</b> Sélectionnez une zone de l'écran, le texte est déjà dans le presse-papiers.</p>
+          <p class="slide-cap" data-i18n="slide.4"><b>Capture de texte.</b> Sélectionnez une zone de l'écran, le texte est déjà dans le presse-papiers.</p>
         </article>
         <article class="slide" aria-roledescription="diapositive" aria-label="5 sur 5">
           <div class="media media-wide"><video src="assets/video/ai_activity.mp4" poster="assets/video/ai_activity.jpg" muted playsinline preload="none"></video></div>
-          <p class="slide-cap"><b>Agents IA.</b> Claude Code et Antigravity suivis en direct : étape, contexte, outils.</p>
+          <p class="slide-cap" data-i18n="slide.5"><b>Agents IA.</b> Claude Code et Antigravity suivis en direct : étape, contexte, outils.</p>
         </article>
       </div>
 
@@ -119,50 +120,50 @@
             <svg class="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="3.6" height="14" rx="1.2" fill="currentColor"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2" fill="currentColor"/></svg>
             <svg class="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="currentColor"/></svg>
           </button>
-          <div class="dots" id="dots" role="tablist" aria-label="Choisir une diapositive"></div>
+          <div class="dots" id="dots" role="tablist" data-i18n-attr="aria-label:demo.choose" aria-label="Choisir une diapositive"></div>
         </div>
         <div class="arrows">
-          <button class="arrow" id="prev" type="button" aria-label="Précédent"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <button class="arrow" id="next" type="button" aria-label="Suivant"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="arrow" id="prev" type="button" data-i18n-attr="aria-label:demo.prev" aria-label="Précédent"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button class="arrow" id="next" type="button" data-i18n-attr="aria-label:demo.next" aria-label="Suivant"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </div>
       </div>
     </section>
 
     <section class="section" id="features">
       <div class="wrap">
-        <h2 class="headline reveal">Et ce n'est <span class="soft">que le début</span></h2>
-        <p class="sub reveal">Natif, écrit en Swift et SwiftUI. Il se fait oublier jusqu'au moment où vous en avez besoin.</p>
+        <h2 class="headline reveal" data-i18n="feat.title">Et ce n'est <span class="soft">que le début</span></h2>
+        <p class="sub reveal" data-i18n="feat.sub">Natif, écrit en Swift et SwiftUI. Il se fait oublier jusqu'au moment où vous en avez besoin.</p>
 
         <div class="grid">
           <div class="tile reveal">
             <div class="tile-icon"><svg viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 4.5h6v2.5H9z" fill="currentColor"/><path d="M9 11h6M9 14.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
-            <h3>Clips</h3>
-            <p>L'historique du presse-papiers : textes, liens, fichiers et couleurs, avec recherche et épinglage.</p>
+            <h3 data-i18n="tile.1.t">Clips</h3>
+            <p data-i18n="tile.1.d">L'historique du presse-papiers : textes, liens, fichiers et couleurs, avec recherche et épinglage.</p>
           </div>
           <div class="tile reveal">
             <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M3.5 9.5 6 5h12l2.5 4.5v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M3.5 10h5l1 2h5l1-2h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></div>
-            <h3>Shelf</h3>
-            <p>Déposez un fichier dans l'encoche, puis OCR, ZIP, conversion PNG ou suppression du fond.</p>
+            <h3 data-i18n="tile.2.t">Shelf</h3>
+            <p data-i18n="tile.2.d">Déposez un fichier dans l'encoche, puis OCR, ZIP, conversion PNG ou suppression du fond.</p>
           </div>
           <div class="tile reveal">
             <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5z" fill="currentColor"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M8.5 3.5c0 1 1 1 1 2s-1 1-1 2M12 3.5c0 1 1 1 1 2s-1 1-1 2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></div>
-            <h3>Caffeine</h3>
-            <p>Empêchez la mise en veille pour 15 min, 1 h, 2 h ou sans limite, depuis l'en-tête.</p>
+            <h3 data-i18n="tile.3.t">Caffeine</h3>
+            <p data-i18n="tile.3.d">Empêchez la mise en veille pour 15 min, 1 h, 2 h ou sans limite, depuis l'en-tête.</p>
           </div>
           <div class="tile reveal">
             <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg></div>
-            <h3>Sortie audio</h3>
-            <p>Passez des haut-parleurs du MacBook aux AirPods ou à un écran externe en un clic.</p>
+            <h3 data-i18n="tile.4.t">Sortie audio</h3>
+            <p data-i18n="tile.4.d">Passez des haut-parleurs du MacBook aux AirPods ou à un écran externe en un clic.</p>
           </div>
           <div class="tile reveal">
             <div class="tile-icon"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 15.5V9m0 0-3 3m3-3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-            <h3>Verr. Maj</h3>
-            <p>Un indicateur discret dans l'encoche quand le verrouillage des majuscules s'active.</p>
+            <h3 data-i18n="tile.5.t">Verr. Maj</h3>
+            <p data-i18n="tile.5.d">Un indicateur discret dans l'encoche quand le verrouillage des majuscules s'active.</p>
           </div>
           <div class="tile reveal">
             <div class="tile-icon"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
-            <h3>Calendrier</h3>
-            <p>Vos prochains événements dans l'onglet Home, à côté de la musique en cours.</p>
+            <h3 data-i18n="tile.6.t">Calendrier</h3>
+            <p data-i18n="tile.6.d">Vos prochains événements dans l'onglet Home, à côté de la musique en cours.</p>
           </div>
         </div>
       </div>
@@ -170,21 +171,21 @@
 
     <section class="section" id="install">
       <div class="wrap">
-        <h2 class="headline reveal">Installé <span class="soft">en une minute</span></h2>
-        <p class="sub reveal">L'app n'est pas signée avec un certificat Apple payant. macOS demande donc une confirmation au premier lancement.</p>
+        <h2 class="headline reveal" data-i18n="inst.title">Installé <span class="soft">en une minute</span></h2>
+        <p class="sub reveal" data-i18n="inst.sub">L'app n'est pas signée avec un certificat Apple payant. macOS demande donc une confirmation au premier lancement.</p>
 
         <ol class="steps">
-          <li class="reveal"><span class="num">1</span><h3>Glissez dans Applications</h3><p>Ouvrez <code>GravityNotch.dmg</code> et déposez l'app dans le dossier Applications.</p></li>
-          <li class="reveal"><span class="num">2</span><h3>Ouvrez quand même</h3><p>Réglages Système, Confidentialité et sécurité, puis <b>Ouvrir quand même</b>.</p></li>
-          <li class="reveal"><span class="num">3</span><h3>Autorisez l'Accessibilité</h3><p>Nécessaire pour afficher le volume et la luminosité dans l'encoche.</p></li>
+          <li class="reveal"><span class="num">1</span><h3 data-i18n="step.1.t">Glissez dans Applications</h3><p data-i18n="step.1.d">Ouvrez <code>GravityNotch.dmg</code> et déposez l'app dans le dossier Applications.</p></li>
+          <li class="reveal"><span class="num">2</span><h3 data-i18n="step.2.t">Ouvrez quand même</h3><p data-i18n="step.2.d">Réglages Système, Confidentialité et sécurité, puis <b>Ouvrir quand même</b>.</p></li>
+          <li class="reveal"><span class="num">3</span><h3 data-i18n="step.3.t">Autorisez l'Accessibilité</h3><p data-i18n="step.3.d">Nécessaire pour afficher le volume et la luminosité dans l'encoche.</p></li>
         </ol>
 
         <div class="terminal reveal">
           <div class="term-bar"><i></i><i></i><i></i><span>Terminal</span></div>
           <div class="term-body">
-            <p class="muted"># Si le bouton « Ouvrir quand même » n'apparaît pas</p>
+            <p class="muted" data-i18n="inst.comment"># Si le bouton « Ouvrir quand même » n'apparaît pas</p>
             <p><span class="prompt">$</span> <span id="cmd">xattr -cr /Applications/GravityNotch.app</span></p>
-            <button class="copy" id="copy" type="button">Copier</button>
+            <button class="copy" id="copy" type="button" data-i18n="inst.copy">Copier</button>
           </div>
         </div>
       </div>
@@ -192,27 +193,27 @@
 
     <section class="section" id="faq">
       <div class="wrap narrow">
-        <h2 class="headline reveal">Questions <span class="soft">fréquentes</span></h2>
+        <h2 class="headline reveal" data-i18n="faq.title">Questions <span class="soft">fréquentes</span></h2>
         <div class="faq">
           <details>
-            <summary>GravityNotch est-il vraiment gratuit ?</summary>
-            <p>Oui. Le code est publié sous licence GNU GPL v3.0 : vous pouvez l'utiliser, le lire, le modifier et le redistribuer selon les termes de la licence.</p>
+            <summary data-i18n="faq.1.q">GravityNotch est-il vraiment gratuit ?</summary>
+            <p data-i18n="faq.1.a">Oui. Le code est publié sous licence GNU GPL v3.0 : vous pouvez l'utiliser, le lire, le modifier et le redistribuer selon les termes de la licence.</p>
           </details>
           <details>
-            <summary>Faut-il un MacBook avec encoche ?</summary>
-            <p>Non. Sur un écran sans encoche, GravityNotch affiche une île virtuelle en haut de l'écran.</p>
+            <summary data-i18n="faq.2.q">Faut-il un MacBook avec encoche ?</summary>
+            <p data-i18n="faq.2.a">Non. Sur un écran sans encoche, GravityNotch affiche une île virtuelle en haut de l'écran.</p>
           </details>
           <details>
-            <summary>Quelles versions de macOS sont prises en charge ?</summary>
-            <p>macOS 14 Sonoma, macOS 15 Sequoia et macOS 26 Tahoe, sur Apple Silicon comme sur Intel.</p>
+            <summary data-i18n="faq.3.q">Quelles versions de macOS sont prises en charge ?</summary>
+            <p data-i18n="faq.3.a">macOS 14 Sonoma, macOS 15 Sequoia et macOS 26 Tahoe, sur Apple Silicon comme sur Intel.</p>
           </details>
           <details>
-            <summary>Pourquoi l'app demande-t-elle l'Accessibilité ?</summary>
-            <p>Pour intercepter les touches de volume, de luminosité et de rétroéclairage, et afficher leur HUD dans l'encoche à la place des bulles de macOS.</p>
+            <summary data-i18n="faq.4.q">Pourquoi l'app demande-t-elle l'Accessibilité ?</summary>
+            <p data-i18n="faq.4.a">Pour intercepter les touches de volume, de luminosité et de rétroéclairage, et afficher leur HUD dans l'encoche à la place des bulles de macOS.</p>
           </details>
           <details>
-            <summary>Quel est le lien avec Boring Notch ?</summary>
-            <p>GravityNotch est un fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a> par TheBoredTeam, à qui revient l'architecture d'origine. GravityNotch y ajoute l'écran verrouillé, Playing Next, l'OCR, Clips, Agents et plus encore.</p>
+            <summary data-i18n="faq.5.q">Quel est le lien avec Boring Notch ?</summary>
+            <p data-i18n="faq.5.a">GravityNotch est un fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a> par TheBoredTeam, à qui revient l'architecture d'origine. GravityNotch y ajoute l'écran verrouillé, Playing Next, l'OCR, Clips, Agents et plus encore.</p>
           </details>
         </div>
       </div>
@@ -222,11 +223,11 @@
       <div class="final-card reveal">
         <div class="stipple" aria-hidden="true"></div>
         <img src="assets/icon.png" alt="" width="88" height="88" class="final-icon">
-        <h2 class="display-sm">Votre encoche peut faire bien plus.</h2>
-        <p>Téléchargez GravityNotch et donnez-lui enfin du travail.</p>
+        <h2 class="display-sm" data-i18n="final.title">Votre encoche peut faire bien plus.</h2>
+        <p data-i18n="final.sub">Téléchargez GravityNotch et donnez-lui enfin du travail.</p>
         <div class="cta-row">
-          <a class="pill pill-light pill-lg" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg">Télécharger pour macOS</a>
-          <a class="pill pill-glass pill-lg" href="https://github.com/adrielakak/GravityNotch/releases" target="_blank" rel="noopener">Toutes les versions</a>
+          <a class="pill pill-light pill-lg" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg" data-i18n="cta.download">Télécharger pour macOS</a>
+          <a class="pill pill-glass pill-lg" href="https://github.com/adrielakak/GravityNotch/releases" target="_blank" rel="noopener" data-i18n="final.all">Toutes les versions</a>
         </div>
       </div>
     </section>
@@ -238,15 +239,16 @@
         <img src="assets/icon.png" alt="" width="24" height="24">
         <strong>GravityNotch</strong>
       </div>
-      <p>Fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a>, distribué sous licence GPL-3.0. Non affilié à Apple.</p>
+      <p data-i18n="footer.text">Fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a>, distribué sous licence GPL-3.0. Non affilié à Apple.</p>
       <div class="footer-links">
         <a href="https://github.com/adrielakak/GravityNotch" target="_blank" rel="noopener">GitHub</a>
         <a href="https://github.com/adrielakak/GravityNotch/releases" target="_blank" rel="noopener">Releases</a>
-        <a href="https://github.com/adrielakak/GravityNotch/issues" target="_blank" rel="noopener">Signaler un bug</a>
+        <a href="https://github.com/adrielakak/GravityNotch/issues" target="_blank" rel="noopener" data-i18n="footer.bug">Signaler un bug</a>
       </div>
     </div>
   </footer>
 
+  <script src="i18n.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

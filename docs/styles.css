@@ -22,7 +22,8 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; background: var(--page); transition: background-color 300ms ease; }
+html.at-hero { background: var(--deep); }
 body {
   margin: 0;
   background: var(--page);
@@ -195,6 +196,26 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
     transform 240ms var(--ease-out);
 }
 .nav.light .nav-cta { background: var(--ultra); color: #fff; }
+.nav-lang {
+  flex-shrink: 0;
+  height: 34px;
+  min-width: 40px;
+  padding: 0 10px;
+  border: 1px solid rgb(255 255 255 / 0.28);
+  border-radius: 999px;
+  background: transparent;
+  color: #fff;
+  font: 600 12px/1 var(--font-text);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background-color 200ms ease, border-color 200ms ease, color 280ms ease, opacity 220ms ease 60ms, transform 160ms var(--ease-out);
+}
+.nav-lang:active { transform: scale(0.94); }
+.nav.light .nav-lang { color: var(--ink); border-color: rgb(19 21 105 / 0.18); }
+@media (hover: hover) {
+  .nav-lang:hover { background: rgb(255 255 255 / 0.12); }
+  .nav.light .nav-lang:hover { background: rgb(19 21 105 / 0.06); }
+}
 @media (hover: hover) {
   .nav.light .nav-cta:hover { background: var(--deep); }
 }
@@ -295,6 +316,7 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
   padding: 7px 18px;
 }
 .nav.island-compact:not(.island-open):not(:focus-within) .nav-links,
+.nav.island-compact:not(.island-open):not(:focus-within) .nav-lang,
 .nav.island-compact:not(.island-open):not(:focus-within) .nav-cta {
   position: absolute;
   right: 12px;
@@ -332,6 +354,7 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
   }
   .brand { order: 1; margin-right: auto; }
   .brand-text strong { font-size: 15.5px; }
+  .nav-lang { order: 2; height: 30px; min-width: 36px; padding: 0 8px; font-size: 11.5px; }
   .nav-cta {
     order: 2;
     height: 30px;
@@ -628,7 +651,12 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .footer a:hover { color: var(--ultra); }
 
 /* ---------- Reveal on scroll ---------- */
-.js .reveal { opacity: 0; transform: translateY(18px); transition: opacity 700ms ease, transform 800ms var(--ease-out); }
+.js .reveal {
+  opacity: 0;
+  transform: translate3d(0, 32px, 0) scale(0.985);
+  transition: opacity 900ms var(--ease-out), transform 1100ms var(--ease-out);
+  transition-delay: var(--reveal-delay, 0ms);
+}
 .js .reveal.in { opacity: 1; transform: none; }
 
 @media (prefers-reduced-motion: reduce) {
