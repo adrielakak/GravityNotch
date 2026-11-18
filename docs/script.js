@@ -1,9 +1,12 @@
 (() => {
   document.documentElement.classList.add("js");
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const reduceMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const reduceMotion = reduceMotionQuery.matches;
   const i18n = window.gnI18n || { t: (k) => k, onChange: () => {} };
   const t = i18n.t;
 
+  const root = document.documentElement;
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
   const nav = document.getElementById("nav");
   const hero = document.querySelector(".hero");
   const heroVideo = document.querySelector(".screen-video");
@@ -14,6 +17,25 @@
       if (entry.isIntersecting) heroVideo.play().catch(() => {});
       else heroVideo.pause();
     }, { rootMargin: "-60px 0px 0px 0px" }).observe(hero);
+
+    let tintPending = false;
+    const updateHeroTint = () => {
+      tintPending = false;
+      const atHero = hero.getBoundingClientRect().bottom > 2;
+      root.classList.toggle("at-hero", atHero);
+      if (themeMeta) themeMeta.content = atHero ? "#0b10b8" : "#f1f0fe";
+    };
+    const scheduleHeroTint = () => {
+      if (!tintPending) {
+        tintPending = true;
+        requestAnimationFrame(updateHeroTint);
+      }
+    };
+    window.addEventListener("scroll", scheduleHeroTint, { passive: true });
+    window.addEventListener("resize", scheduleHeroTint, { passive: true });
+    window.addEventListener("pageshow", updateHeroTint);
+    i18n.onChange(scheduleHeroTint);
+    updateHeroTint();
   }
   if (heroVideo && reduceMotion) {
     heroVideo.removeAttribute("autoplay");
@@ -330,4 +352,224 @@
   } else {
     revealEls.forEach((el) => el.classList.add("in"));
   }
+
+  const ease = "cubic-bezier(0.22, 1, 0.36, 1)";
+  const sheet = "cubic-bezier(0.32, 0.72, 0, 1)";
+  document.querySelectorAll(".faq details").forEach((d) => {
+    const summary = d.querySelector("summary");
+    const content = d.querySelector("summary ~ *");
+    if (!summary) return;
+
+    let isOpen = d.open;
+    let heightAnim = null;
+    let contentAnim = null;
+    let span = 0;
+    let pressTimer = 0;
+    let releaseTimer = 0;
+    let startX = 0;
+    let startY = 0;
+    let moved = false;
+
+    d.classList.toggle("is-open", isOpen);
+
+    // Enables native :active states on quick taps in iOS Safari
+    summary.addEventListener("touchstart", () => {}, { passive: true });
+
+    const clearPress = () => {
+      clearTimeout(pressTimer);
+      clearTimeout(releaseTimer);
+      d.classList.remove("is-pressed");
+    };
+
+    summary.addEventListener("pointerdown", (e) => {
+      if (reduceMotionQuery.matches) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      clearTimeout(pressTimer);
+      clearTimeout(releaseTimer);
+      moved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      if (e.pointerType === "touch") {
+        pressTimer = setTimeout(() => { d.classList.add("is-pressed"); }, 40);
+      } else {
+        d.classList.add("is-pressed");
+      }
+    });
+
+    summary.addEventListener("pointermove", (e) => {
+      if (!moved && Math.hypot(e.clientX - startX, e.clientY - startY) > 8) {
+        moved = true;
+        clearPress();
+      }
+    });
+
+    summary.addEventListener("pointercancel", clearPress);
+    summary.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse") clearPress();
+    });
+
+    summary.addEventListener("pointerup", (e) => {
+      clearTimeout(pressTimer);
+      if (reduceMotionQuery.matches || moved) {
+        clearPress();
+        return;
+      }
+      if (e.pointerType === "touch") {
+        if (!d.classList.contains("is-pressed")) d.classList.add("is-pressed");
+        releaseTimer = setTimeout(() => { d.classList.remove("is-pressed"); }, 95);
+      } else {
+        clearPress();
+      }
+    });
+
+    summary.addEventListener("click", (e) => {
+      e.preventDefault();
+      const expanding = !isOpen;
+      isOpen = expanding;
+      d.classList.toggle("is-open", isOpen);
+
+      if (!d.animate) {
+        d.open = isOpen;
+        return;
+      }
+
+      if (reduceMotionQuery.matches) {
+        const curOpacity = content && contentAnim
+          ? parseFloat(getComputedStyle(content).opacity)
+          : (expanding ? 0 : 1);
+        heightAnim?.cancel();
+        heightAnim = null;
+        contentAnim?.cancel();
+        contentAnim = null;
+
+        if (expanding) {
+          d.open = true;
+          if (content) {
+            const anim = content.animate(
+              { opacity: [Number.isFinite(curOpacity) ? curOpacity : 0, 1] },
+              { duration: 200, easing: "ease" }
+            );
+            contentAnim = anim;
+            anim.onfinish = () => { if (contentAnim === anim) contentAnim = null; };
+          }
+        } else if (content) {
+          const anim = content.animate(
+            { opacity: [Number.isFinite(curOpacity) ? curOpacity : 1, 0] },
+            { duration: 160, easing: "ease", fill: "forwards" }
+          );
+          contentAnim = anim;
+          anim.onfinish = () => {
+            if (contentAnim !== anim) return;
+            contentAnim = null;
+            if (!isOpen) d.open = false;
+            anim.cancel();
+          };
+        } else {
+          d.open = false;
+        }
+        return;
+      }
+
+      const wasAnimating = Boolean(heightAnim || contentAnim);
+
+      // Read live presentation values before cancelling running animations
+      let fromHeight;
+      if (heightAnim) {
+        try {
+          heightAnim.commitStyles();
+          fromHeight = parseFloat(d.style.height);
+        } catch {}
+        if (!Number.isFinite(fromHeight)) fromHeight = parseFloat(getComputedStyle(d).height);
+        heightAnim.cancel();
+        d.style.height = "";
+        heightAnim = null;
+      } else {
+        fromHeight = parseFloat(getComputedStyle(d).height);
+      }
+
+      let fromOpacity = expanding ? 0 : 1;
+      let fromTransform = expanding ? "translateY(-10px)" : "translateY(0px)";
+      let fromFilter = expanding ? "blur(4px)" : "blur(0px)";
+      if (content && contentAnim) {
+        const cs = getComputedStyle(content);
+        const op = parseFloat(cs.opacity);
+        if (Number.isFinite(op)) fromOpacity = op;
+        fromTransform = cs.transform === "none" ? "translateY(0px)" : cs.transform;
+        fromFilter = cs.filter === "none" ? "blur(0px)" : cs.filter;
+        contentAnim.cancel();
+        contentAnim = null;
+      }
+
+      let toHeight;
+      if (expanding) {
+        d.open = true;
+        toHeight = parseFloat(getComputedStyle(d).height);
+      } else {
+        const dCs = getComputedStyle(d);
+        toHeight =
+          parseFloat(getComputedStyle(summary).height) +
+          parseFloat(dCs.paddingTop) +
+          parseFloat(dCs.paddingBottom) +
+          parseFloat(dCs.borderTopWidth) +
+          parseFloat(dCs.borderBottomWidth);
+      }
+
+      const delta = Math.abs(toHeight - fromHeight);
+      if (!wasAnimating) span = delta;
+      else if (delta > span) span = delta;
+      const ratio = span > 0 ? Math.min(1, delta / span) : 1;
+      const scaleDuration = (base) => Math.max(180, Math.round(base * (0.35 + 0.65 * ratio)));
+
+      const heightDelay = expanding ? 0 : (fromOpacity > 0.15 ? 110 : 0);
+      const heightDuration = scaleDuration(expanding ? 500 : 380);
+
+      const hAnim = d.animate(
+        { height: [`${fromHeight}px`, `${toHeight}px`] },
+        { duration: heightDuration, delay: heightDelay, easing: ease, fill: "backwards" }
+      );
+      heightAnim = hAnim;
+
+      let cAnim = null;
+      if (content) {
+        if (expanding) {
+          const contentDelay = fromOpacity < 0.05 && delta > 20 ? 120 : 0;
+          const contentDuration = Math.max(180, Math.round(400 * Math.max(0.4, 1 - fromOpacity)));
+          cAnim = content.animate(
+            {
+              opacity: [fromOpacity, 1],
+              transform: [fromTransform, "translateY(0px)"],
+              filter: [fromFilter, "blur(0px)"]
+            },
+            { duration: contentDuration, delay: contentDelay, easing: sheet, fill: "backwards" }
+          );
+          contentAnim = cAnim;
+          cAnim.onfinish = () => { if (contentAnim === cAnim) contentAnim = null; };
+        } else {
+          const contentDuration = Math.max(60, Math.round(170 * Math.max(0.2, fromOpacity)));
+          cAnim = content.animate(
+            {
+              opacity: [fromOpacity, 0],
+              transform: [fromTransform, "translateY(-6px)"],
+              filter: [fromFilter, "blur(3px)"]
+            },
+            { duration: contentDuration, easing: "ease-out", fill: "forwards" }
+          );
+          contentAnim = cAnim;
+        }
+      }
+
+      hAnim.onfinish = () => {
+        if (heightAnim !== hAnim) return;
+        heightAnim = null;
+        if (!isOpen) {
+          // Collapse is complete: hide content in DOM before cancelling forwards-fill
+          d.open = false;
+          if (contentAnim === cAnim) {
+            cAnim?.cancel();
+            contentAnim = null;
+          }
+        }
+      };
+    });
+  });
 })();
