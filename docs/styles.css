@@ -341,8 +341,9 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 /* ---------- Hero ---------- */
 .hero {
   position: relative; isolation: isolate; overflow: hidden;
+  min-height: 100vh; min-height: 100svh; min-height: 100dvh;
   padding: 100px var(--gutter) 76px;
-  display: flex; flex-direction: column; align-items: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
   color: #fff;
   background:
     radial-gradient(90% 50% at 50% 30%, #5a62ff 0%, transparent 65%),
@@ -418,7 +419,7 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .fineprint { margin: 22px 0 0; font-size: 14px; font-weight: 500; color: rgb(255 255 255 / 0.78); }
 
 @media (max-width: 640px) {
-  .hero { padding-top: 84px; }
+  .hero { padding: 88px var(--gutter) 48px; justify-content: center; }
   .screen { border-radius: 18px 18px 0 0; padding: 8px 8px 0; }
   .screen::before { top: 2px; width: 4px; height: 4px; margin-left: -2px; }
   .screen-display { border-radius: 11px 11px 0 0; padding-bottom: 6px; }
@@ -540,6 +541,12 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .prompt { color: #8f95ff; }
 .copy { position: absolute; right: 18px; top: 50%; transform: translateY(-50%); border: 0; border-radius: 999px; padding: 8px 16px; background: rgb(255 255 255 / 0.14); color: #fff; font: 500 13px var(--font-text); cursor: pointer; transition: background-color 160ms ease; }
 .copy:hover { background: rgb(255 255 255 / 0.24); }
+@media (max-width: 720px) {
+  .term-body { padding: 16px 16px 18px; font-size: clamp(11.5px, 3vw, 13.5px); }
+  .term-body p { padding-right: 0; }
+  .term-body .muted { white-space: normal; margin-bottom: 6px; }
+  .copy { position: static; transform: none; display: block; width: 100%; margin-top: 16px; padding: 10px 16px; text-align: center; }
+}
 
 /* ---------- FAQ ---------- */
 .faq { margin-top: 48px; display: grid; gap: 10px; }
