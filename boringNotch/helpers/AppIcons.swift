@@ -1297,6 +1297,7 @@ final class AntigravityAgentMonitor: ObservableObject {
         let snapshot: AgentSessionSnapshot
         let rawPhase: AgentWorkPhase
         let turnComplete: Bool
+        var hasPendingTool: Bool = true
     }
 
     private struct ISODateParser {
@@ -1426,36 +1427,30 @@ final class AntigravityAgentMonitor: ObservableObject {
         return lines
     }
 
+    nonisolated static func isUserPromptTool(_ toolName: String) -> Bool {
+        let lower = toolName.lowercased().replacingOccurrences(of: "task", with: "")
+        return lower.contains("exit_plan_mode")
+            || lower.contains("exitplan")
+            || lower.contains("ask")
+            || lower.contains("question")
+            || lower.contains("notify_user")
+            || lower.contains("confirm")
+    }
+
     private nonisolated static func resolveSnapshot(from entry: CachedSessionEntry, now: Date) -> AgentSessionSnapshot {
         let s = entry.snapshot
         let age = now.timeIntervalSince(entry.modDate)
-        let isActive: Bool
-        let isWorkingNow: Bool
-        let effectivePhase: AgentWorkPhase
 
-        switch s.kind {
-        case .antigravity:
-            isActive = age < 45.0
-            isWorkingNow = age < 18.0
-            if isWorkingNow && entry.rawPhase == .waiting {
-                effectivePhase = .thinking
-            } else if !isActive {
-                effectivePhase = .waiting
-            } else {
-                effectivePhase = entry.rawPhase
-            }
-        case .claudeCode, .codex:
-            // Mid-turn the transcript stays silent while a command, a search or a long thought runs,
-            // so silence alone does not mean the agent stopped. Edits and questions are the exception:
-            // there, silence means the agent is blocked on the user.
-            let midTurn = !entry.turnComplete
-            let pendingTool = s.recentEvents.first?.toolName.lowercased() ?? ""
-            let blockedOnUser = entry.rawPhase == .editing
-                || pendingTool.contains("askuser") || pendingTool.contains("question") || pendingTool.contains("exitplan")
-            isActive = age < (midTurn ? 600.0 : 45.0)
-            isWorkingNow = midTurn && age < (blockedOnUser ? 22.0 : 600.0)
-            effectivePhase = (entry.turnComplete || !isActive) ? .waiting : entry.rawPhase
-        }
+        // Mid-turn the transcript stays silent while a command, a search or a long thought runs,
+        // so silence alone does not mean the agent stopped. Edits and questions are the exception:
+        // there, silence means the agent is blocked on the user.
+        let midTurn = !entry.turnComplete
+        let pendingTool = entry.hasPendingTool ? (s.recentEvents.first?.toolName ?? "") : ""
+        let blockedOnUser = entry.hasPendingTool && (entry.rawPhase == .editing || isUserPromptTool(pendingTool))
+        let isActive = age < (midTurn ? 600.0 : 45.0)
+        let isWorkingNow = midTurn && age < (blockedOnUser ? 22.0 : 600.0)
+        let workingPhase: AgentWorkPhase = entry.rawPhase == .waiting ? .thinking : entry.rawPhase
+        let effectivePhase: AgentWorkPhase = (entry.turnComplete || !isActive) ? .waiting : workingPhase
 
         return AgentSessionSnapshot(
             id: s.id,
@@ -1543,6 +1538,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             var events: [AgentToolEvent] = []
             var lastStepDate: Date = candidate.modDate
             var lastRecordType = ""
+            var lastTurnComplete = false
+            var pendingToolCalls = 0
 
             for line in lines.suffix(160) {
                 guard let lineData = line.data(using: .utf8),
@@ -1550,7 +1547,11 @@ final class AntigravityAgentMonitor: ObservableObject {
 
                 let stepIdx = (obj["step_index"] as? Int) ?? lastStep
                 lastStep = max(lastStep, stepIdx)
-                lastRecordType = (obj["type"] as? String) ?? lastRecordType
+                let recordType = (obj["type"] as? String) ?? ""
+                if !recordType.isEmpty {
+                    lastRecordType = recordType
+                }
+                let recordStatus = (obj["status"] as? String) ?? "DONE"
 
                 if let d = dateParser.parse(obj["created_at"] as? String) {
                     lastStepDate = d
@@ -1566,6 +1567,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                 sumOutput += outTok
 
                 if let toolCalls = obj["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty {
+                    lastTurnComplete = false
+                    pendingToolCalls = toolCalls.count
                     for tc in toolCalls {
                         let name = (tc["name"] as? String) ?? "tool"
                         let args = (tc["args"] as? [String: Any]) ?? [:]
@@ -1613,10 +1616,35 @@ final class AntigravityAgentMonitor: ObservableObject {
                             )
                         )
                     }
-                } else if lastRecordType == "USER_INPUT" {
+                } else if recordType == "PLANNER_RESPONSE" {
+                    pendingToolCalls = 0
+                    lastTurnComplete = (recordStatus == "DONE")
+                    if !lastTurnComplete && latestPhase == .waiting {
+                        latestPhase = .thinking
+                    }
+                } else if recordType == "USER_INPUT" {
+                    lastTurnComplete = false
+                    pendingToolCalls = 0
                     latestPhase = .thinking
                     latestTitle = "Processing prompt"
                     latestDetail = "Analyzing context…"
+                } else if !recordType.isEmpty {
+                    lastTurnComplete = false
+                    if recordType == "SYSTEM_MESSAGE" {
+                        pendingToolCalls = 0
+                    } else if pendingToolCalls > 0 {
+                        pendingToolCalls -= 1
+                    }
+                    if pendingToolCalls == 0 && (latestPhase == .waiting || latestPhase == .editing) {
+                        latestPhase = .thinking
+                    }
+                }
+
+                if recordStatus != "DONE" {
+                    lastTurnComplete = false
+                    if latestPhase == .waiting {
+                        latestPhase = .thinking
+                    }
                 }
             }
 
@@ -1648,7 +1676,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                 fileSize: candidate.fileSize,
                 snapshot: baseSnapshot,
                 rawPhase: latestPhase,
-                turnComplete: false
+                turnComplete: lastTurnComplete,
+                hasPendingTool: pendingToolCalls > 0
             )
             cache[key] = entry
             snapshots.append(resolveSnapshot(from: entry, now: now))
@@ -4444,12 +4473,12 @@ final class AgentSpeechBubbleController: ObservableObject {
             else { continue }
 
             let reason: AgentSpeechBubble.Reason
-            if session.phase == .waiting || session.kind == .antigravity {
+            if session.phase == .waiting {
                 reason = .finished
             } else {
                 // Still mid-turn but silent: the agent is blocked on the user
-                let pendingTool = session.recentEvents.first?.toolName.lowercased() ?? ""
-                if pendingTool.contains("askuser") || pendingTool.contains("question") || pendingTool.contains("exitplan") {
+                let pendingTool = session.recentEvents.first?.toolName ?? ""
+                if AntigravityAgentMonitor.isUserPromptTool(pendingTool) {
                     reason = .question
                 } else if session.phase == .editing {
                     reason = .approval
