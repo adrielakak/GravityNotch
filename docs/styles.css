@@ -24,6 +24,7 @@
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; background: var(--page); }
 html.at-hero { background: var(--deep); }
+main, .footer { background: var(--page); }
 .edge-tint { display: none; }
 @media (hover: none) {
   .edge-tint {
