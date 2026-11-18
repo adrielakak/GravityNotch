@@ -22,7 +22,7 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; background: var(--page); transition: background-color 300ms ease; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; background: var(--page); }
 html.at-hero { background: var(--deep); }
 .edge-tint { display: none; }
 @media (hover: none) {
@@ -32,11 +32,11 @@ html.at-hero { background: var(--deep); }
     height: 2px;
     background: var(--page);
     pointer-events: none;
-    transition: background-color 300ms ease;
   }
   .edge-tint-top { top: 0; }
   .edge-tint-bottom { bottom: 0; }
-  html.at-hero .edge-tint { background: var(--deep); }
+  html.at-hero .edge-tint-top,
+  html.bottom-hero .edge-tint-bottom { background: var(--deep); }
 }
 body {
   margin: 0;

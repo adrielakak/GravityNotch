@@ -314,12 +314,23 @@
   }
 
   const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (hero && "IntersectionObserver" in window) {
-    new IntersectionObserver(([entry]) => {
-      const onHero = entry.isIntersecting;
-      document.documentElement.classList.toggle("at-hero", onHero);
-      if (themeMeta) themeMeta.content = onHero ? "#0b10b8" : "#f1f0fe";
-    }, { rootMargin: "0px 0px -100% 0px" }).observe(hero);
+  if (hero) {
+    const root = document.documentElement;
+    let tintPending = false;
+    const updateTint = () => {
+      tintPending = false;
+      const heroBottom = hero.getBoundingClientRect().bottom;
+      const topOnHero = heroBottom > 0;
+      root.classList.toggle("at-hero", topOnHero);
+      root.classList.toggle("bottom-hero", heroBottom > window.innerHeight - 2);
+      if (themeMeta) themeMeta.content = topOnHero ? "#0b10b8" : "#f1f0fe";
+    };
+    const scheduleTint = () => {
+      if (!tintPending) { tintPending = true; requestAnimationFrame(updateTint); }
+    };
+    window.addEventListener("scroll", scheduleTint, { passive: true });
+    window.addEventListener("resize", scheduleTint, { passive: true });
+    updateTint();
   }
 
   const revealEls = document.querySelectorAll(".reveal");
