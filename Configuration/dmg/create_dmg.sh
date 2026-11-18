@@ -22,8 +22,18 @@ abs_path() {
   python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$1"
 }
 
+DMGBUILD_BIN=""
+
 ensure_dmgbuild_and_badge_support() {
   if command -v dmgbuild >/dev/null 2>&1; then
+    DMGBUILD_BIN="$(command -v dmgbuild)"
+    return 0
+  fi
+
+  local py_scripts
+  py_scripts="$(python3 -c 'import sysconfig; print(sysconfig.get_path("scripts") or "")' 2>/dev/null || true)"
+  if [ -n "$py_scripts" ] && [ -x "$py_scripts/dmgbuild" ]; then
+    DMGBUILD_BIN="$py_scripts/dmgbuild"
     return 0
   fi
 
@@ -105,6 +115,7 @@ if [ ! -d "$DMG_APP_PATH" ]; then
   exit 3
 fi
 
-dmgbuild -s "$SETTINGS" "$DMG_VOLUME_NAME" "$DMG_OUTPUT"
+rm -f "$DMG_OUTPUT"
+"$DMGBUILD_BIN" -s "$SETTINGS" "$DMG_VOLUME_NAME" "$DMG_OUTPUT"
 
 exit $?

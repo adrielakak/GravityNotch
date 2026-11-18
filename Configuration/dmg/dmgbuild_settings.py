@@ -7,13 +7,13 @@ import os
 #  - DMG_BACKGROUND: absolute path to the background image to use
 
 APP_PATH = os.environ.get('DMG_APP_PATH')
-VOLUME_NAME = os.environ.get('DMG_VOLUME_NAME', 'Boring Notch')
+VOLUME_NAME = os.environ.get('DMG_VOLUME_NAME', 'GravityNotch')
 BACKGROUND = os.environ.get('DMG_BACKGROUND', '')
 BADGE_ICON = os.environ.get('DMG_BADGE_ICON', '')
 
 # If DMG_BACKGROUND not provided, default to the hiDPI TIFF in .background.
 if not BACKGROUND:
-    base = os.path.join(os.path.dirname(__file__), '.background', 'background.tiff')
+    BACKGROUND = os.path.join(os.path.dirname(__file__), '.background', 'background.tiff')
 
 # Basic DMG metadata
 volume_name = VOLUME_NAME
@@ -27,24 +27,27 @@ symlinks = {'Applications': '/Applications'}
 # Background image path (dmgbuild will copy this file into the DMG's .background)
 background = BACKGROUND
 
-
-# Window rectangle: ((left, top), (right, bottom))
-window_rect = ((0, 0), (660, 400))
+# Window rectangle: ((left, top), (width, height))
+window_rect = ((200, 200), (660, 400))
 
 # Icon size (points)
 icon_size = 128
+text_size = 12
 
 # Icon locations: map filename (or bundle name) -> (x, y) in window coords
-app_basename = os.path.basename(APP_PATH) if APP_PATH else 'Boring Notch.app'
+app_basename = os.path.basename(APP_PATH) if APP_PATH else 'GravityNotch.app'
 icon_locations = {
-    app_basename: (150, 180),
-    'Applications': (510, 180),
+    app_basename: (175, 185),
+    'Applications': (485, 185),
 }
 
-# Misc Finder options
+# Finder window appearance: no toolbar, no sidebar, no status/path/tab bars
 show_statusbar = False
 show_tabview = False
 show_toolbar = False
+show_pathbar = False
+show_sidebar = False
+sidebar_width = 0
 
 # Optionally set a custom icon for the DMG volume (leave empty to skip)
 if BADGE_ICON and os.path.exists(BADGE_ICON):
