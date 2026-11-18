@@ -1,3 +1,8 @@
+html { background: var(--page); }
+html.at-hero { background: var(--deep); }
+body { background: transparent; }
+main, .footer { background: var(--page); }
+
 @media (max-width: 640px) {
   .hero {
     min-height: 100vh;
@@ -6,17 +11,11 @@
   }
 }
 
-.safari-top-tint {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: max(2px, env(safe-area-inset-top, 0px));
-  background: var(--deep);
-  pointer-events: none;
-  z-index: 1;
+.faq details { overflow: hidden; }
+.faq summary { transition: color 200ms ease; }
+@media (hover: hover) {
+  .faq summary:hover { color: var(--ultra); }
 }
-.safari-top-tint[hidden] { display: none; }
-@media (hover: hover) and (pointer: fine) {
-  .safari-top-tint { display: none; }
-}
+.faq summary::after { transition: transform 360ms var(--ease-out); }
+.faq details[open]:not(.is-open) summary::after { transform: none; }
+.faq details.is-open summary::after { transform: rotate(45deg); }
