@@ -38,24 +38,29 @@ final class MediaKeyInterceptor: ObservableObject {
     @MainActor @Published private(set) var isDisabledBySafetyTimeout: Bool = false
     @MainActor @Published private(set) var safetyRemainingSeconds: Int = 0
 
-    // Event tap resources
+    // Event tap resources (synchronized with stateLock; never touched via blocking IPC in callback)
+    private let stateLock = NSLock()
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var eventTapQueue: DispatchQueue?
+    private var eventTapThread: Thread?
     private var eventTapRunLoop: CFRunLoop?
 
     // Passive fallback monitors (listen-only, never block system input)
     private var globalMonitor: Any?
     private var localMonitor: Any?
 
-    // Continuous permission watchdog (1.0s) and 30s safety debug timer
+    // Continuous permission watchdog (0.5s) + DistributedNotification observer + 30s safety debug timer
     private var permissionWatchdogTimer: Timer?
+    private var accessibilityDistributedObserver: Any?
     private var safetyCountdownTimer: Timer?
     private var safetyDeadline: Date?
     private var lastKnownTrust: Bool = AXIsProcessTrusted()
 
-    // Lock-free flag read by the real-time tap callback
+    // Lock-free flags read by the real-time tap callback (never call AXIsProcessTrusted in callback)
+    fileprivate var cachedTrustForCallback: Bool = AXIsProcessTrusted()
     fileprivate var isSafetyHoldActive: Bool = false
+    fileprivate var consecutiveTimeoutCount: Int = 0
+    fileprivate var lastTimeoutTimestamp: CFAbsoluteTime = 0
 
     private let step: Float = 1.0 / 16.0
     private static let safetyTimeoutDuration: TimeInterval = 30.0
@@ -107,16 +112,27 @@ final class MediaKeyInterceptor: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.permissionWatchdogTimer?.invalidate()
-            let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
                 self?.pollPermissionsAndEnforceSafety()
             }
             RunLoop.main.add(timer, forMode: .common)
             self.permissionWatchdogTimer = timer
+
+            if self.accessibilityDistributedObserver == nil {
+                self.accessibilityDistributedObserver = DistributedNotificationCenter.default().addObserver(
+                    forName: NSNotification.Name("com.apple.accessibility.api"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.pollPermissionsAndEnforceSafety()
+                }
+            }
         }
     }
 
     private func pollPermissionsAndEnforceSafety() {
         let trusted = AXIsProcessTrusted()
+        cachedTrustForCallback = trusted
         let trustChanged = (trusted != lastKnownTrust)
         lastKnownTrust = trusted
 
@@ -238,6 +254,7 @@ final class MediaKeyInterceptor: ObservableObject {
     @discardableResult
     private func installEventTapIfAuthorized() -> Bool {
         let trusted = AXIsProcessTrusted()
+        cachedTrustForCallback = trusted
         guard trusted else {
             Self.logger.warning("installEventTapIfAuthorized aborted: AXIsProcessTrusted=false")
             if eventTap != nil {
@@ -252,7 +269,11 @@ final class MediaKeyInterceptor: ObservableObject {
             return false
         }
 
-        if let existingTap = eventTap {
+        stateLock.lock()
+        let existingTap = eventTap
+        stateLock.unlock()
+
+        if let existingTap {
             if CFMachPortIsValid(existingTap) {
                 return true
             }
@@ -267,22 +288,47 @@ final class MediaKeyInterceptor: ObservableObject {
             guard let userInfo else { return Unmanaged.passUnretained(cgEvent) }
             let interceptor = Unmanaged<MediaKeyInterceptor>.fromOpaque(userInfo).takeUnretainedValue()
 
-            if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                let reasonStr = (type == .tapDisabledByTimeout) ? "tapDisabledByTimeout" : "tapDisabledByUserInput"
-                let currentlyTrusted = AXIsProcessTrusted()
-                MediaKeyInterceptor.logger.warning("CGEventTap received \(reasonStr, privacy: .public) (trusted=\(currentlyTrusted, privacy: .public), safetyHold=\(interceptor.isSafetyHoldActive, privacy: .public))")
+            if type == .tapDisabledByUserInput {
+                // Never re-enable on user/system revocation: disable immediately and tear down async.
+                // Never call AXIsProcessTrusted() (sync TCC IPC) inside a CGEventTap callback.
+                interceptor.cachedTrustForCallback = false
+                if let tap = interceptor.eventTap {
+                    CGEvent.tapEnable(tap: tap, enable: false)
+                }
+                MediaKeyInterceptor.logger.warning("CGEventTap received tapDisabledByUserInput; disabling and tearing down immediately.")
+                DispatchQueue.main.async {
+                    interceptor.tearDownActiveTap(
+                        reason: "Disabled via tapDisabledByUserInput",
+                        enterSafetyHold: interceptor.isSafetyHoldActive
+                    )
+                }
+                return Unmanaged.passUnretained(cgEvent)
+            }
 
-                if currentlyTrusted && !interceptor.isSafetyHoldActive,
-                   let tap = interceptor.eventTap, CFMachPortIsValid(tap) {
+            if type == .tapDisabledByTimeout {
+                let now = CFAbsoluteTimeGetCurrent()
+                if now - interceptor.lastTimeoutTimestamp < 5.0 {
+                    interceptor.consecutiveTimeoutCount += 1
+                } else {
+                    interceptor.consecutiveTimeoutCount = 1
+                }
+                interceptor.lastTimeoutTimestamp = now
+
+                let shouldReenable = interceptor.cachedTrustForCallback
+                    && !interceptor.isSafetyHoldActive
+                    && interceptor.consecutiveTimeoutCount < 2
+
+                if shouldReenable, let tap = interceptor.eventTap, CFMachPortIsValid(tap) {
                     CGEvent.tapEnable(tap: tap, enable: true)
-                    MediaKeyInterceptor.logger.notice("Re-enabled CGEventTap after \(reasonStr, privacy: .public)")
+                    MediaKeyInterceptor.logger.notice("Re-enabled CGEventTap after transient tapDisabledByTimeout")
                 } else {
                     if let tap = interceptor.eventTap {
                         CGEvent.tapEnable(tap: tap, enable: false)
                     }
+                    MediaKeyInterceptor.logger.warning("CGEventTap disabled after tapDisabledByTimeout; tearing down.")
                     DispatchQueue.main.async {
                         interceptor.tearDownActiveTap(
-                            reason: "Disabled via \(reasonStr) while untrusted or in safety hold",
+                            reason: "Disabled via tapDisabledByTimeout",
                             enterSafetyHold: interceptor.isSafetyHoldActive
                         )
                     }
@@ -319,20 +365,39 @@ final class MediaKeyInterceptor: ObservableObject {
             return false
         }
 
-        eventTap = tap
-        runLoopSource = source
+        consecutiveTimeoutCount = 0
+        lastTimeoutTimestamp = 0
 
-        let queue = DispatchQueue(label: "com.gravitynotch.MediaKeyTap", qos: .userInteractive)
-        eventTapQueue = queue
-        queue.async { [weak self] in
-            guard let self else { return }
+        let threadReady = DispatchSemaphore(value: 0)
+        var capturedRunLoop: CFRunLoop?
+
+        let thread = Thread { [weak self] in
             let rl = CFRunLoopGetCurrent()
-            self.eventTapRunLoop = rl
+            capturedRunLoop = rl
             CFRunLoopAddSource(rl, source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
-            Self.logger.notice("Active CGEventTap installed and enabled on dedicated run loop (mask=NSSystemDefined only).")
+            threadReady.signal()
             CFRunLoopRun()
+            // Ensure self stays weakly referenced without leaking
+            _ = self
         }
+        thread.name = "com.gravitynotch.MediaKeyTap"
+        thread.qualityOfService = .userInteractive
+
+        stateLock.lock()
+        eventTap = tap
+        runLoopSource = source
+        eventTapThread = thread
+        stateLock.unlock()
+
+        thread.start()
+        threadReady.wait()
+
+        stateLock.lock()
+        eventTapRunLoop = capturedRunLoop
+        stateLock.unlock()
+
+        Self.logger.notice("Active CGEventTap installed and enabled on dedicated Thread run loop (mask=NSSystemDefined only).")
 
         removePassiveMonitors()
         armSafetyTimerIfNeeded()
@@ -345,14 +410,15 @@ final class MediaKeyInterceptor: ObservableObject {
         return true
     }
 
-    /// Safely disables the active tap FIRST, removes it from the run loop, and invalidates the CFMachPort
-    /// so WindowServer can never block waiting on this process.
+    /// Safely disables the active tap FIRST, invalidates the CFMachPort immediately so WindowServer
+    /// drops the Mach port without blocking input, and tears down the dedicated RunLoop from its own thread.
     private func tearDownActiveTap(reason: String, enterSafetyHold: Bool) {
         disarmSafetyTimer()
         if enterSafetyHold {
             isSafetyHoldActive = true
         }
 
+        stateLock.lock()
         let tapToInvalidate = eventTap
         let sourceToRemove = runLoopSource
         let runLoopToStop = eventTapRunLoop
@@ -360,22 +426,25 @@ final class MediaKeyInterceptor: ObservableObject {
         eventTap = nil
         runLoopSource = nil
         eventTapRunLoop = nil
-        eventTapQueue = nil
+        eventTapThread = nil
+        stateLock.unlock()
 
         if let tap = tapToInvalidate {
-            // 1. Disable tap FIRST
+            // 1. Disable tap FIRST and invalidate Mach port immediately so WindowServer never stalls
             CGEvent.tapEnable(tap: tap, enable: false)
-            // 2. Remove source from run loop
-            if let rl = runLoopToStop, let src = sourceToRemove {
-                CFRunLoopRemoveSource(rl, src, .commonModes)
-            }
-            // 3. Invalidate the Mach port so WindowServer drops the connection immediately
             CFMachPortInvalidate(tap)
-            // 4. Stop dedicated run loop
+
+            // 2. Remove source and stop dedicated RunLoop on its owning thread
             if let rl = runLoopToStop {
-                CFRunLoopStop(rl)
+                CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) {
+                    if let src = sourceToRemove {
+                        CFRunLoopRemoveSource(rl, src, .commonModes)
+                    }
+                    CFRunLoopStop(rl)
+                }
+                CFRunLoopWakeUp(rl)
             }
-            Self.logger.notice("Active CGEventTap disabled, removed from runLoop, and CFMachPort invalidated (reason: \(reason, privacy: .public))")
+            Self.logger.notice("Active CGEventTap disabled and CFMachPort invalidated (reason: \(reason, privacy: .public))")
         }
 
         if Defaults[.hudReplacement] {
@@ -508,8 +577,8 @@ final class MediaKeyInterceptor: ObservableObject {
             return Unmanaged.passUnretained(cgEvent)
         }
 
-        // 4. Verify permission and safety hold before swallowing any event.
-        if isSafetyHoldActive || !AXIsProcessTrusted() {
+        // 4. Verify cached permission and safety hold before swallowing any event (zero sync IPC here).
+        if isSafetyHoldActive || !cachedTrustForCallback {
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: false)
             }

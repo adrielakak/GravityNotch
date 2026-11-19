@@ -7,6 +7,7 @@
 
 
 import SwiftUI
+import LaunchAtLogin
 
 struct OnboardingFinishView: View {
     let onFinish: () -> Void
@@ -30,7 +31,25 @@ struct OnboardingFinishView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
-            
+
+            VStack(alignment: .leading, spacing: 6) {
+                LaunchAtLogin.Toggle {
+                    Text("Launch at login")
+                        .fontWeight(.medium)
+                }
+                .toggleStyle(.switch)
+                Text("Keep GravityNotch running in the background whenever your Mac restarts.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            )
+            .padding(.horizontal, 28)
+
             Spacer()
             Spacer()
 

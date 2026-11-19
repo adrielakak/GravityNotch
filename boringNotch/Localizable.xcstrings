@@ -26638,6 +26638,22 @@
           }
         }
       }
+    },
+    "Keep GravityNotch running in the background whenever your Mac restarts.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep GravityNotch running in the background whenever your Mac restarts."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvrir GravityNotch automatiquement en arrière-plan à chaque démarrage du Mac."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
