@@ -9,14 +9,43 @@
   const themeMeta = document.querySelector('meta[name="theme-color"]');
   const nav = document.getElementById("nav");
   const hero = document.querySelector(".hero");
+  const heroScreen = document.querySelector(".screen");
   const heroVideo = document.querySelector(".screen-video");
   if (hero) {
+    const tryPlayHero = () => {
+      if (!heroVideo || reduceMotion) return;
+      heroVideo.muted = true;
+      heroVideo.defaultMuted = true;
+      const p = heroVideo.play();
+      if (p && typeof p.catch === "function") {
+        p.then(() => {
+          heroScreen?.classList.remove("is-paused");
+        }).catch(() => {
+          heroScreen?.classList.add("is-paused");
+        });
+      }
+    };
+
     new IntersectionObserver(([entry]) => {
       nav?.classList.toggle("light", !entry.isIntersecting);
       if (!heroVideo || reduceMotion) return;
-      if (entry.isIntersecting) heroVideo.play().catch(() => {});
+      if (entry.isIntersecting) tryPlayHero();
       else heroVideo.pause();
     }, { rootMargin: "-60px 0px 0px 0px" }).observe(hero);
+
+    if (heroVideo && !reduceMotion) {
+      heroVideo.addEventListener("play", () => heroScreen?.classList.remove("is-paused"));
+      heroScreen?.addEventListener("click", () => {
+        if (heroVideo.paused) tryPlayHero();
+      });
+      const resumeOnGesture = () => {
+        if (heroScreen?.classList.contains("is-paused") && heroVideo.paused && hero.getBoundingClientRect().bottom > 60) {
+          tryPlayHero();
+        }
+      };
+      document.addEventListener("click", resumeOnGesture, { passive: true });
+      document.addEventListener("touchend", resumeOnGesture, { passive: true });
+    }
 
     let tintPending = false;
     const updateHeroTint = () => {
@@ -302,6 +331,14 @@
     toggle?.addEventListener("click", () => setPlaying(!playing));
     document.getElementById("prev")?.addEventListener("click", () => goTo(active - 1));
     document.getElementById("next")?.addEventListener("click", () => goTo(active + 1));
+    slides.forEach((slide, i) => {
+      slide.querySelector(".media")?.addEventListener("click", () => {
+        const v = videos[i];
+        if (!v || reduceMotion) return;
+        if (i !== active) goTo(i);
+        else if (v.paused && playing) v.play().catch(() => {});
+      });
+    });
 
     new IntersectionObserver(([entry]) => {
       inView = entry.isIntersecting;
