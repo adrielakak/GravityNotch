@@ -15,6 +15,7 @@ enum OnboardingStep {
     case calendarPermission
     case remindersPermission
     case accessibilityPermission
+    case screenRecordingPermission
     case musicPermission
     case finished
 }
@@ -114,11 +115,34 @@ struct OnboardingView: View {
                         Task {
                             await requestAccessibilityPermission()
                             withAnimation(.easeInOut(duration: 0.6)) {
+                                step = .screenRecordingPermission
+                            }
+                        }
+                    },
+                    onSkip: {
+                        withAnimation(.easeInOut(duration: 0.6)) {
+                            step = .screenRecordingPermission
+                        }
+                    }
+                )
+                .transition(.opacity)
+
+            case .screenRecordingPermission:
+                PermissionRequestView(
+                    icon: Image(systemName: "text.viewfinder"),
+                    title: "Enable Screen Recording Access",
+                    description: "Screen Recording access lets GravityNotch capture selected areas of your screen for instant OCR text extraction and quick shelf screenshots.",
+                    privacyNote: "Screen captures happen locally on your Mac only when you trigger a capture. Nothing is ever recorded in the background.",
+                    onAllow: {
+                        Task {
+                            await requestScreenRecordingPermission()
+                            withAnimation(.easeInOut(duration: 0.6)) {
                                 step = .musicPermission
                             }
                         }
                     },
                     onSkip: {
+                        bringOnboardingWindowToFront(floating: true)
                         withAnimation(.easeInOut(duration: 0.6)) {
                             step = .musicPermission
                         }
@@ -135,10 +159,18 @@ struct OnboardingView: View {
                         }
                     }
                 )
+                .onReceive(NotificationCenter.default.publisher(for: Notification.Name.accessibilityAuthorizationChanged)) { notification in
+                    if (notification.userInfo?["granted"] as? Bool) == true {
+                        bringOnboardingWindowToFront(floating: true)
+                    }
+                }
                 .transition(.opacity)
 
             case .finished:
                 OnboardingFinishView(onFinish: onFinish, onOpenSettings: onOpenSettings)
+                    .onAppear {
+                        bringOnboardingWindowToFront(floating: true)
+                    }
             }
         }
         .frame(width: 400, height: 600)
@@ -147,19 +179,69 @@ struct OnboardingView: View {
 
     // MARK: - Permission Request Logic
 
+    @MainActor
+    private func bringOnboardingWindowToFront(floating: Bool = true) {
+        guard let window = NSApp.windows.first(where: { $0.identifier == NSUserInterfaceItemIdentifier("OnboardingWindow") }) else {
+            return
+        }
+        window.level = floating ? .floating : .normal
+        if floating {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
+    }
+
     func requestCameraPermission() async {
         await AVCaptureDevice.requestAccess(for: .video)
+        await MainActor.run {
+            bringOnboardingWindowToFront(floating: true)
+        }
     }
 
     func requestCalendarPermission() async {
         _ = try? await calendarService.requestAccess(to: .event)
+        await MainActor.run {
+            bringOnboardingWindowToFront(floating: true)
+        }
     }
 
     func requestRemindersPermission() async {
         _ = try? await calendarService.requestAccess(to: .reminder)
+        await MainActor.run {
+            bringOnboardingWindowToFront(floating: true)
+        }
     }
     
     func requestAccessibilityPermission() async {
-        await XPCHelperClient.shared.ensureAccessibilityAuthorization(promptIfNeeded: true)
+        await MainActor.run {
+            // Let the system prompt and System Settings stay unobstructed while granting Accessibility
+            bringOnboardingWindowToFront(floating: false)
+        }
+        let granted = await XPCHelperClient.shared.ensureAccessibilityAuthorization(promptIfNeeded: true)
+        if granted {
+            await MainActor.run {
+                bringOnboardingWindowToFront(floating: true)
+            }
+        }
+    }
+
+    func requestScreenRecordingPermission() async {
+        let alreadyGranted = CGPreflightScreenCaptureAccess()
+        if alreadyGranted {
+            await MainActor.run {
+                bringOnboardingWindowToFront(floating: true)
+            }
+            return
+        }
+        await MainActor.run {
+            bringOnboardingWindowToFront(floating: false)
+        }
+        let granted = CGRequestScreenCaptureAccess()
+        if granted {
+            await MainActor.run {
+                bringOnboardingWindowToFront(floating: true)
+            }
+        }
     }
 }

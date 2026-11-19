@@ -561,6 +561,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showOnboardingWindow(step: OnboardingStep = .welcome) {
+        NSApp.setActivationPolicy(.regular)
+
         if onboardingWindowController == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 400, height: 600),
@@ -572,13 +574,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.title = "Onboarding"
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
+            window.level = .floating
+            window.hidesOnDeactivate = false
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.contentView = NSHostingView(
                 rootView: OnboardingView(
                     step: step,
                     onFinish: {
                         window.orderOut(nil)
-//                        NSApp.setActivationPolicy(.accessory)
                         window.close()
+                        NSApp.setActivationPolicy(.accessory)
                         NSApp.deactivate()
                     },
                     onOpenSettings: {
@@ -592,8 +597,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             onboardingWindowController = NSWindowController(window: window)
         }
 
-//        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        onboardingWindowController?.window?.level = .floating
         onboardingWindowController?.window?.makeKeyAndOrderFront(nil)
         onboardingWindowController?.window?.orderFrontRegardless()
     }

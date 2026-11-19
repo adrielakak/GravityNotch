@@ -26590,6 +26590,54 @@
           }
         }
       }
+    },
+    "Enable Screen Recording Access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Screen Recording Access"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoriser l'enregistrement de l'écran"
+          }
+        }
+      }
+    },
+    "Screen Recording access lets GravityNotch capture selected areas of your screen for instant OCR text extraction and quick shelf screenshots.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen Recording access lets GravityNotch capture selected areas of your screen for instant OCR text extraction and quick shelf screenshots."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accès à l'enregistrement d'écran permet à GravityNotch de capturer une zone de l'écran pour extraire le texte instantanément (OCR) ou l'envoyer dans le Shelf."
+          }
+        }
+      }
+    },
+    "Screen captures happen locally on your Mac only when you trigger a capture. Nothing is ever recorded in the background.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen captures happen locally on your Mac only when you trigger a capture. Nothing is ever recorded in the background."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les captures ont lieu localement sur votre Mac uniquement lorsque vous les déclenchez. Rien n'est jamais enregistré en arrière-plan."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
