@@ -498,7 +498,7 @@ struct HUD: View {
     @Default(.hudTapSafetyTimeout) var hudTapSafetyTimeout
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
-    @State private var accessibilityAuthorized = CGPreflightPostEventAccess()
+    @State private var accessibilityAuthorized = MediaKeyInterceptor.isTrustedFreshViaSubprocess()
     
     var body: some View {
         let isAuthorized = mediaKeyInterceptor.isAccessibilityGranted && accessibilityAuthorized

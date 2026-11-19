@@ -7,12 +7,22 @@
 
 import AVFoundation
 import Combine
+import CoreGraphics
 import Defaults
 import KeyboardShortcuts
 import Sparkle
 import SwiftUI
 
 @main
+enum GravityNotchEntrypoint {
+    static func main() {
+        if CommandLine.arguments.contains("--check-post-event") {
+            Darwin.exit(CGPreflightPostEventAccess() ? 0 : 1)
+        }
+        DynamicNotchApp.main()
+    }
+}
+
 struct DynamicNotchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @Default(.menubarIcon) var showMenuBarIcon

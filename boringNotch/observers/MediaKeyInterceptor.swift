@@ -49,10 +49,11 @@ final class MediaKeyInterceptor: ObservableObject {
     private var globalMonitor: Any?
     private var localMonitor: Any?
 
-    // Off-main trust watchdog + DistributedNotification observer + 30s safety debug timer
+    // Off-main trust watchdog + TCC database stat stamp + DistributedNotification observer + 30s safety debug timer
     private let watchdogQueue = DispatchQueue(label: "com.gravitynotch.TrustWatchdog", qos: .userInteractive)
     private var permissionWatchdog: DispatchSourceTimer?
     private var lastIdleTrustCheck: CFAbsoluteTime = 0
+    private var lastTCCStamp: TCCStamp?
     private var accessibilityDistributedObserver: Any?
     private var safetyCountdownTimer: Timer?
     private var safetyDeadline: Date?
@@ -67,17 +68,75 @@ final class MediaKeyInterceptor: ObservableObject {
 
     private let step: Float = 1.0 / 16.0
     private static let safetyTimeoutDuration: TimeInterval = 30.0
-    private static let activeWatchdogInterval: TimeInterval = 0.25
-    private static let idleWatchdogInterval: TimeInterval = 1.5
+    private static let activeWatchdogInterval: TimeInterval = 0.10
+    private static let idleWatchdogInterval: TimeInterval = 0.75
     fileprivate static let trustStalenessLimit: CFAbsoluteTime = 1.5
 
-    /// Fresh TCC check, used instead of AXIsProcessTrusted() for everything tap related.
-    /// AXIsProcessTrusted() answers from an in-process cache after its first call, and removing the app
-    /// from the Accessibility list with "-" does not invalidate that cache: it keeps returning true.
-    /// CGPreflightPostEventAccess() hits tccd on every call and is the same PostEvent check WindowServer
-    /// applies to every event an active tap passes through. Once it fails, WindowServer drops those events
-    /// ("Sender is prohibited from synthesizing events"), including the NSSystemDefined mouse button
-    /// events (subtype 7) emitted on every click, which freezes clicks system wide.
+    private struct FileStamp: Equatable {
+        let rc: Int32
+        let mtimeSec: Int
+        let mtimeNsec: Int
+        let size: off_t
+    }
+
+    private struct TCCStamp: Equatable {
+        let db: FileStamp
+        let wal: FileStamp
+        let dir: FileStamp
+    }
+
+    private static func statStamp(_ path: String) -> FileStamp {
+        var st = stat()
+        let rc = lstat(path, &st)
+        if rc != 0 {
+            return FileStamp(rc: -1, mtimeSec: 0, mtimeNsec: 0, size: 0)
+        }
+        return FileStamp(
+            rc: 0,
+            mtimeSec: st.st_mtimespec.tv_sec,
+            mtimeNsec: st.st_mtimespec.tv_nsec,
+            size: st.st_size
+        )
+    }
+
+    private static func readTCCStamp() -> TCCStamp {
+        TCCStamp(
+            db: statStamp("/Library/Application Support/com.apple.TCC/TCC.db"),
+            wal: statStamp("/Library/Application Support/com.apple.TCC/TCC.db-wal"),
+            dir: statStamp("/Library/Application Support/com.apple.TCC")
+        )
+    }
+
+    /// Both AXIsProcessTrusted() and CGPreflightPostEventAccess() cache `true` per process for its
+    /// entire lifetime on macOS Tahoe, so removing the app with "-" leaves in-process checks returning true.
+    /// Spawning a short-lived self-probe (--check-post-event) gives a fresh PID that hits tccd directly
+    /// with the exact same bundle ID and ad-hoc cdhash.
+    static func isTrustedFreshViaSubprocess() -> Bool {
+        guard let execURL = Bundle.main.executableURL else {
+            return CGPreflightPostEventAccess()
+        }
+        let process = Process()
+        process.executableURL = execURL
+        process.arguments = ["--check-post-event"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            done.signal()
+        }
+        do {
+            try process.run()
+        } catch {
+            return CGPreflightPostEventAccess()
+        }
+        if done.wait(timeout: .now() + 1.0) == .timedOut {
+            process.terminate()
+            return false
+        }
+        return process.terminationStatus == 0
+    }
+
     static func isTrustedForActiveTap() -> Bool {
         CGPreflightPostEventAccess()
     }
@@ -97,13 +156,16 @@ final class MediaKeyInterceptor: ObservableObject {
     // MARK: - Accessibility Permissions
 
     func checkAccessibilityPermission() -> Bool {
-        Self.isTrustedForActiveTap()
+        Self.isTrustedFreshViaSubprocess()
     }
 
     func requestAccessibilityAuthorization() {
         Self.logger.notice("Requesting Accessibility authorization prompt")
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+        if !CGPreflightPostEventAccess() {
+            _ = CGRequestPostEventAccess()
+        }
     }
 
     func openAccessibilitySystemSettings() {
@@ -150,16 +212,42 @@ final class MediaKeyInterceptor: ObservableObject {
     }
 
     /// Runs on watchdogQueue so a busy or hung main thread can never delay the revocation response.
+    /// Uses ultra-cheap POSIX stat() on the system TCC database (~2 us) to detect any TCC change
+    /// (such as clicking "-" in Accessibility) in <= 100 ms, bypassing in-process TCC caching.
     private func checkTrustOnWatchdogQueue(force: Bool) {
         stateLock.lock()
         let tapActive = eventTap != nil
         stateLock.unlock()
 
         let now = CFAbsoluteTimeGetCurrent()
-        if !force && !tapActive && now - lastIdleTrustCheck < Self.idleWatchdogInterval { return }
+        let currentStamp = Self.readTCCStamp()
+        let isInitialCheck = (lastTCCStamp == nil)
+        let stampChanged = !isInitialCheck && (currentStamp != lastTCCStamp)
+
+        if isInitialCheck {
+            lastTCCStamp = currentStamp
+        } else if stampChanged {
+            lastTCCStamp = currentStamp
+        }
+
+        if !force && !isInitialCheck && !stampChanged {
+            if tapActive {
+                // TCC database unchanged: refresh callback fail-closed lease
+                lastTrustConfirmation = now
+            }
+            return
+        }
         lastIdleTrustCheck = now
 
-        let trusted = Self.isTrustedForActiveTap()
+        // If TCC changed while an active tap is installed, tear down the Mach port IMMEDIATELY
+        // before spawning the fresh probe so WindowServer cannot drop a single mouse click.
+        if (stampChanged || force) && tapActive {
+            cachedTrustForCallback = false
+            emergencyDisableTap()
+        }
+
+        let trusted = Self.isTrustedFreshViaSubprocess()
+
         cachedTrustForCallback = trusted
         if trusted {
             lastTrustConfirmation = CFAbsoluteTimeGetCurrent()
@@ -168,7 +256,7 @@ final class MediaKeyInterceptor: ObservableObject {
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.applyTrustState(trusted)
+            self?.applyTrustState(trusted, freshVerified: true)
         }
     }
 
@@ -183,7 +271,7 @@ final class MediaKeyInterceptor: ObservableObject {
         Self.logger.error("PostEvent permission revoked while tap active: CGEventTap disabled and invalidated from watchdog queue.")
     }
 
-    private func applyTrustState(_ trusted: Bool) {
+    private func applyTrustState(_ trusted: Bool, freshVerified: Bool = false) {
         let trustChanged = (trusted != lastKnownTrust)
         lastKnownTrust = trusted
 
@@ -218,7 +306,7 @@ final class MediaKeyInterceptor: ObservableObject {
         // Permission is granted: recreate active tap if HUD replacement is enabled and not held by safety timeout
         if Defaults[.hudReplacement] && eventTap == nil && !isSafetyHoldActive {
             Self.logger.notice("Accessibility permission available: installing active CGEventTap without app restart.")
-            _ = installEventTapIfAuthorized()
+            _ = installEventTapIfAuthorized(trustAlreadyVerified: freshVerified)
         }
     }
 
@@ -258,7 +346,7 @@ final class MediaKeyInterceptor: ObservableObject {
         await MainActor.run {
             self.isDisabledBySafetyTimeout = false
         }
-        _ = installEventTapIfAuthorized()
+        _ = installEventTapIfAuthorized(trustAlreadyVerified: true)
     }
 
     func stop() {
@@ -282,7 +370,7 @@ final class MediaKeyInterceptor: ObservableObject {
             self.isDisabledBySafetyTimeout = false
         }
         if Defaults[.hudReplacement] {
-            _ = installEventTapIfAuthorized()
+            _ = installEventTapIfAuthorized(trustAlreadyVerified: false)
         }
     }
 
@@ -303,8 +391,8 @@ final class MediaKeyInterceptor: ObservableObject {
     // MARK: - Active Event Tap Installation & Immediate Safe Teardown
 
     @discardableResult
-    private func installEventTapIfAuthorized() -> Bool {
-        let trusted = Self.isTrustedForActiveTap()
+    private func installEventTapIfAuthorized(trustAlreadyVerified: Bool = false) -> Bool {
+        let trusted = trustAlreadyVerified ? true : Self.isTrustedFreshViaSubprocess()
         cachedTrustForCallback = trusted
         guard trusted else {
             Self.logger.warning("installEventTapIfAuthorized aborted: CGPreflightPostEventAccess=false")

@@ -109,7 +109,7 @@ final class XPCHelperClient: NSObject {
     }
     
     nonisolated func isAccessibilityAuthorized() async -> Bool {
-        let localTrusted = CGPreflightPostEventAccess()
+        let localTrusted = MediaKeyInterceptor.isTrustedFreshViaSubprocess()
         await MainActor.run {
             notifyAuthorizationChange(localTrusted)
         }
