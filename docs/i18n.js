@@ -25,7 +25,7 @@
     "demo.choose": "Choose a slide",
     "demo.prev": "Previous",
     "demo.next": "Next",
-    "slide.1": "<b>Lock screen.</b> Artwork, controls and synced lyrics, even while your Mac is locked.",
+    "slide.1": "<b>Lock screen.</b> Artwork (animated with Apple Music only), controls and synced lyrics, even while your Mac is locked.",
     "slide.2": "<b>Music and Playing Next.</b> Hover over the notch: player, lyrics and your Apple Music queue.",
     "slide.3": "<b>System HUD.</b> Volume and brightness show up in the notch, without the macOS bubbles.",
     "slide.4": "<b>Text capture.</b> Select an area of the screen and the text is already in your clipboard.",
