@@ -32,7 +32,7 @@ final class MediaKeyInterceptor: ObservableObject {
     }
 
     // Published state for UI (Settings & Notch header)
-    @MainActor @Published private(set) var isAccessibilityGranted: Bool = AXIsProcessTrusted()
+    @MainActor @Published private(set) var isAccessibilityGranted: Bool = MediaKeyInterceptor.isTrustedForActiveTap()
     @MainActor @Published private(set) var isTapActive: Bool = false
     @MainActor @Published private(set) var isDegradedMode: Bool = false
     @MainActor @Published private(set) var isDisabledBySafetyTimeout: Bool = false
@@ -49,21 +49,38 @@ final class MediaKeyInterceptor: ObservableObject {
     private var globalMonitor: Any?
     private var localMonitor: Any?
 
-    // Continuous permission watchdog (0.5s) + DistributedNotification observer + 30s safety debug timer
-    private var permissionWatchdogTimer: Timer?
+    // Off-main trust watchdog + DistributedNotification observer + 30s safety debug timer
+    private let watchdogQueue = DispatchQueue(label: "com.gravitynotch.TrustWatchdog", qos: .userInteractive)
+    private var permissionWatchdog: DispatchSourceTimer?
+    private var lastIdleTrustCheck: CFAbsoluteTime = 0
     private var accessibilityDistributedObserver: Any?
     private var safetyCountdownTimer: Timer?
     private var safetyDeadline: Date?
-    private var lastKnownTrust: Bool = AXIsProcessTrusted()
+    private var lastKnownTrust: Bool = MediaKeyInterceptor.isTrustedForActiveTap()
 
-    // Lock-free flags read by the real-time tap callback (never call AXIsProcessTrusted in callback)
-    fileprivate var cachedTrustForCallback: Bool = AXIsProcessTrusted()
+    // Lock-free flags read by the real-time tap callback (never do TCC IPC in callback)
+    fileprivate var cachedTrustForCallback: Bool = MediaKeyInterceptor.isTrustedForActiveTap()
+    fileprivate var lastTrustConfirmation: CFAbsoluteTime = 0
     fileprivate var isSafetyHoldActive: Bool = false
     fileprivate var consecutiveTimeoutCount: Int = 0
     fileprivate var lastTimeoutTimestamp: CFAbsoluteTime = 0
 
     private let step: Float = 1.0 / 16.0
     private static let safetyTimeoutDuration: TimeInterval = 30.0
+    private static let activeWatchdogInterval: TimeInterval = 0.25
+    private static let idleWatchdogInterval: TimeInterval = 1.5
+    fileprivate static let trustStalenessLimit: CFAbsoluteTime = 1.5
+
+    /// Fresh TCC check, used instead of AXIsProcessTrusted() for everything tap related.
+    /// AXIsProcessTrusted() answers from an in-process cache after its first call, and removing the app
+    /// from the Accessibility list with "-" does not invalidate that cache: it keeps returning true.
+    /// CGPreflightPostEventAccess() hits tccd on every call and is the same PostEvent check WindowServer
+    /// applies to every event an active tap passes through. Once it fails, WindowServer drops those events
+    /// ("Sender is prohibited from synthesizing events"), including the NSSystemDefined mouse button
+    /// events (subtype 7) emitted on every click, which freezes clicks system wide.
+    static func isTrustedForActiveTap() -> Bool {
+        CGPreflightPostEventAccess()
+    }
     private var audioPlayer: AVAudioPlayer?
 
     private init() {
@@ -80,8 +97,7 @@ final class MediaKeyInterceptor: ObservableObject {
     // MARK: - Accessibility Permissions
 
     func checkAccessibilityPermission() -> Bool {
-        let axTrusted = AXIsProcessTrusted()
-        return axTrusted
+        Self.isTrustedForActiveTap()
     }
 
     func requestAccessibilityAuthorization() {
@@ -98,7 +114,7 @@ final class MediaKeyInterceptor: ObservableObject {
     }
 
     func ensureAccessibilityAuthorization(promptIfNeeded: Bool = false) async -> Bool {
-        if AXIsProcessTrusted() { return true }
+        if Self.isTrustedForActiveTap() { return true }
         if promptIfNeeded {
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             if AXIsProcessTrustedWithOptions(options) { return true }
@@ -106,33 +122,68 @@ final class MediaKeyInterceptor: ObservableObject {
         return await XPCHelperClient.shared.ensureAccessibilityAuthorization(promptIfNeeded: promptIfNeeded)
     }
 
-    // MARK: - Continuous Permission Watchdog (1.0s)
+    // MARK: - Off-Main Trust Watchdog (0.25s while a tap is active, 1.5s otherwise)
 
     private func startPermissionWatchdog() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.permissionWatchdogTimer?.invalidate()
-            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-                self?.pollPermissionsAndEnforceSafety()
+        watchdogQueue.async { [weak self] in
+            guard let self, self.permissionWatchdog == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: self.watchdogQueue)
+            timer.schedule(deadline: .now(), repeating: Self.activeWatchdogInterval, leeway: .milliseconds(50))
+            timer.setEventHandler { [weak self] in
+                self?.checkTrustOnWatchdogQueue(force: false)
             }
-            RunLoop.main.add(timer, forMode: .common)
-            self.permissionWatchdogTimer = timer
+            timer.resume()
+            self.permissionWatchdog = timer
+        }
 
-            if self.accessibilityDistributedObserver == nil {
-                self.accessibilityDistributedObserver = DistributedNotificationCenter.default().addObserver(
-                    forName: NSNotification.Name("com.apple.accessibility.api"),
-                    object: nil,
-                    queue: .main
-                ) { [weak self] _ in
-                    self?.pollPermissionsAndEnforceSafety()
-                }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.accessibilityDistributedObserver == nil else { return }
+            self.accessibilityDistributedObserver = DistributedNotificationCenter.default().addObserver(
+                forName: NSNotification.Name("com.apple.accessibility.api"),
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.watchdogQueue.async { self.checkTrustOnWatchdogQueue(force: true) }
             }
         }
     }
 
-    private func pollPermissionsAndEnforceSafety() {
-        let trusted = AXIsProcessTrusted()
+    /// Runs on watchdogQueue so a busy or hung main thread can never delay the revocation response.
+    private func checkTrustOnWatchdogQueue(force: Bool) {
+        stateLock.lock()
+        let tapActive = eventTap != nil
+        stateLock.unlock()
+
+        let now = CFAbsoluteTimeGetCurrent()
+        if !force && !tapActive && now - lastIdleTrustCheck < Self.idleWatchdogInterval { return }
+        lastIdleTrustCheck = now
+
+        let trusted = Self.isTrustedForActiveTap()
         cachedTrustForCallback = trusted
+        if trusted {
+            lastTrustConfirmation = CFAbsoluteTimeGetCurrent()
+        } else if tapActive {
+            emergencyDisableTap()
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.applyTrustState(trusted)
+        }
+    }
+
+    /// Thread-safe: disables and invalidates the Mach port right away. Full cleanup follows on main.
+    private func emergencyDisableTap() {
+        stateLock.lock()
+        let tap = eventTap
+        stateLock.unlock()
+        guard let tap, CFMachPortIsValid(tap) else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+        Self.logger.error("PostEvent permission revoked while tap active: CGEventTap disabled and invalidated from watchdog queue.")
+    }
+
+    private func applyTrustState(_ trusted: Bool) {
         let trustChanged = (trusted != lastKnownTrust)
         lastKnownTrust = trusted
 
@@ -141,7 +192,7 @@ final class MediaKeyInterceptor: ObservableObject {
                 self.isAccessibilityGranted = trusted
             }
             if trustChanged {
-                Self.logger.notice("Accessibility permission state changed: AXIsProcessTrusted=\(trusted, privacy: .public)")
+                Self.logger.notice("Accessibility permission state changed: PostEventAccess=\(trusted, privacy: .public)")
                 NotificationCenter.default.post(
                     name: .accessibilityAuthorizationChanged,
                     object: nil,
@@ -184,7 +235,7 @@ final class MediaKeyInterceptor: ObservableObject {
 
         let trusted = checkAccessibilityPermission()
         let listenPreflight = CGPreflightListenEventAccess()
-        Self.logger.info("Starting MediaKeyInterceptor (AXIsProcessTrusted=\(trusted, privacy: .public), CGPreflightListenEventAccess=\(listenPreflight, privacy: .public))")
+        Self.logger.info("Starting MediaKeyInterceptor (PostEventAccess=\(trusted, privacy: .public), CGPreflightListenEventAccess=\(listenPreflight, privacy: .public))")
 
         await MainActor.run {
             self.isAccessibilityGranted = trusted
@@ -253,10 +304,10 @@ final class MediaKeyInterceptor: ObservableObject {
 
     @discardableResult
     private func installEventTapIfAuthorized() -> Bool {
-        let trusted = AXIsProcessTrusted()
+        let trusted = Self.isTrustedForActiveTap()
         cachedTrustForCallback = trusted
         guard trusted else {
-            Self.logger.warning("installEventTapIfAuthorized aborted: AXIsProcessTrusted=false")
+            Self.logger.warning("installEventTapIfAuthorized aborted: CGPreflightPostEventAccess=false")
             if eventTap != nil {
                 tearDownActiveTap(reason: "Permission check failed", enterSafetyHold: false)
             }
@@ -290,7 +341,7 @@ final class MediaKeyInterceptor: ObservableObject {
 
             if type == .tapDisabledByUserInput {
                 // Never re-enable on user/system revocation: disable immediately and tear down async.
-                // Never call AXIsProcessTrusted() (sync TCC IPC) inside a CGEventTap callback.
+                // Never call any TCC check (sync IPC) inside a CGEventTap callback.
                 interceptor.cachedTrustForCallback = false
                 if let tap = interceptor.eventTap {
                     CGEvent.tapEnable(tap: tap, enable: false)
@@ -336,6 +387,25 @@ final class MediaKeyInterceptor: ObservableObject {
                 return Unmanaged.passUnretained(cgEvent)
             }
 
+            // Fail closed for EVERY event, not only volume keys: each event passed through an active tap
+            // is re-checked by WindowServer, and dropped once the permission is gone.
+            let trustIsFresh = CFAbsoluteTimeGetCurrent() - interceptor.lastTrustConfirmation
+                < MediaKeyInterceptor.trustStalenessLimit
+            if !interceptor.cachedTrustForCallback || !trustIsFresh {
+                if let tap = interceptor.eventTap {
+                    CGEvent.tapEnable(tap: tap, enable: false)
+                }
+                DispatchQueue.main.async {
+                    interceptor.tearDownActiveTap(
+                        reason: interceptor.cachedTrustForCallback
+                            ? "Trust not confirmed for \(MediaKeyInterceptor.trustStalenessLimit)s (fail-closed)"
+                            : "Permission lost detected inside callback",
+                        enterSafetyHold: interceptor.isSafetyHoldActive
+                    )
+                }
+                return Unmanaged.passUnretained(cgEvent)
+            }
+
             return interceptor.handleEventFast(cgEvent, type: type)
         }
 
@@ -350,7 +420,7 @@ final class MediaKeyInterceptor: ObservableObject {
             callback: callback,
             userInfo: selfPtr
         ) else {
-            Self.logger.error("CGEvent.tapCreate(.cgSessionEventTap) returned nil despite AXIsProcessTrusted=true. Falling back to degraded mode.")
+            Self.logger.error("CGEvent.tapCreate(.cgSessionEventTap) returned nil despite PostEventAccess=true. Falling back to degraded mode.")
             installPassiveMonitorsIfNeeded()
             Task { @MainActor in
                 self.isTapActive = false
@@ -367,6 +437,7 @@ final class MediaKeyInterceptor: ObservableObject {
 
         consecutiveTimeoutCount = 0
         lastTimeoutTimestamp = 0
+        lastTrustConfirmation = CFAbsoluteTimeGetCurrent()
 
         let threadReady = DispatchSemaphore(value: 0)
         var capturedRunLoop: CFRunLoop?
@@ -430,9 +501,11 @@ final class MediaKeyInterceptor: ObservableObject {
         stateLock.unlock()
 
         if let tap = tapToInvalidate {
-            // 1. Disable tap FIRST and invalidate Mach port immediately so WindowServer never stalls
-            CGEvent.tapEnable(tap: tap, enable: false)
-            CFMachPortInvalidate(tap)
+            // 1. Disable tap FIRST and invalidate Mach port immediately (may already be done by the watchdog)
+            if CFMachPortIsValid(tap) {
+                CGEvent.tapEnable(tap: tap, enable: false)
+                CFMachPortInvalidate(tap)
+            }
 
             // 2. Remove source and stop dedicated RunLoop on its owning thread
             if let rl = runLoopToStop {

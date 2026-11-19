@@ -33,7 +33,8 @@ fi
 
 BUILD_DIR="$REPO_ROOT/build"
 DERIVED_DATA="$BUILD_DIR/DerivedData"
-STAGE_DIR="$BUILD_DIR/stage"
+STAGE_DIR="$(mktemp -d /tmp/gravitynotch-stage.XXXXXX)"
+trap 'rm -rf "$STAGE_DIR"' EXIT
 STAGED_APP="$STAGE_DIR/GravityNotch.app"
 DMG_OUTPUT="$BUILD_DIR/GravityNotch.dmg"
 
