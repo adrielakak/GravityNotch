@@ -384,12 +384,24 @@ struct ContentView: View {
                     case .home:
                         NotchHomeView(albumArtNamespace: albumArtNamespace)
                     case .shelf:
-                        ShelfView()
+                        if Defaults[.boringShelf] {
+                            ShelfView()
+                        } else {
+                            NotchHomeView(albumArtNamespace: albumArtNamespace)
+                        }
                     case .clipboard:
-                        ClipboardNotchView()
+                        if Defaults[.showClipboardTab] {
+                            ClipboardNotchView()
+                        } else {
+                            NotchHomeView(albumArtNamespace: albumArtNamespace)
+                        }
                     case .agents:
-                        AgentsNotchView()
-                            .frame(maxWidth: .infinity, maxHeight: openContentMaxHeight, alignment: .top)
+                        if Defaults[.showAgentsTab] {
+                            AgentsNotchView()
+                                .frame(maxWidth: .infinity, maxHeight: openContentMaxHeight, alignment: .top)
+                        } else {
+                            NotchHomeView(albumArtNamespace: albumArtNamespace)
+                        }
                     }
                 }
                 .transition(
@@ -559,6 +571,10 @@ struct ContentView: View {
     }
 
     private func openAgentsTab() {
+        guard Defaults[.showAgentsTab] else {
+            doOpen()
+            return
+        }
         withAnimation(animationSpring) {
             coordinator.currentView = .agents
             vm.open()

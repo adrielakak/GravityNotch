@@ -1328,6 +1328,20 @@ struct Appearance: View {
             }
 
             Section {
+                Defaults.Toggle(key: .boringShelf) {
+                    Text("Show Shelf tab")
+                }
+                Defaults.Toggle(key: .showClipboardTab) {
+                    Text("Show Clips tab")
+                }
+                Defaults.Toggle(key: .showAgentsTab) {
+                    Text("Show Agents (AI) tab")
+                }
+            } header: {
+                Text("Notch Tabs")
+            }
+
+            Section {
                 Defaults.Toggle(key: .enableAgentLiveActivity) {
                     Text("Show live coding agents in closed notch")
                 }

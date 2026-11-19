@@ -15,10 +15,18 @@ struct BoringHeader: View {
     @StateObject var tvm = ShelfStateViewModel.shared
     @ObservedObject var caffeine = CaffeineManager.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
+    @Default(.boringShelf) private var boringShelf
+    @Default(.showClipboardTab) private var showClipboardTab
+    @Default(.showAgentsTab) private var showAgentsTab
+
+    private var hasExtraTabs: Bool {
+        boringShelf || showClipboardTab || showAgentsTab
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             HStack {
-                if (!tvm.isEmpty || coordinator.alwaysShowTabs) && Defaults[.boringShelf] {
+                if hasExtraTabs && ((!tvm.isEmpty && boringShelf) || coordinator.alwaysShowTabs) {
                     TabSelectionView()
                 } else if vm.notchState == .open {
                     EmptyView()

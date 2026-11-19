@@ -146,6 +146,8 @@ extension Defaults.Keys {
     static let prioritizeAgentsOverPausedMusic = Key<Bool>("prioritizeAgentsOverPausedMusic", default: true)
     
     // MARK: Appearance
+    static let showClipboardTab = Key<Bool>("showClipboardTab", default: true)
+    static let showAgentsTab = Key<Bool>("showAgentsTab", default: true)
     static let showEmojis = Key<Bool>("showEmojis", default: false)
     //static let alwaysShowTabs = Key<Bool>("alwaysShowTabs", default: true)
     static let showMirror = Key<Bool>("showMirror", default: false)

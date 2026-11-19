@@ -26526,6 +26526,70 @@
           }
         }
       }
+    },
+    "Notch Tabs": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notch Tabs"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Onglets de l'encoche"
+          }
+        }
+      }
+    },
+    "Show Shelf tab": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Shelf tab"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher l'onglet Shelf"
+          }
+        }
+      }
+    },
+    "Show Clips tab": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Clips tab"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher l'onglet Clips"
+          }
+        }
+      }
+    },
+    "Show Agents (AI) tab": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Agents (AI) tab"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher l'onglet Agents (IA)"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
