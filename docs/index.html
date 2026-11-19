@@ -10,7 +10,7 @@
   <meta property="og:description" content="La Dynamic Island de votre Mac. Gratuite et open source.">
   <meta property="og:image" content="assets/video/musique.jpg">
   <link rel="icon" type="image/png" href="assets/favicon.png">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
   <script>document.documentElement.classList.add("js", "at-hero");</script>
 </head>
 <body>
@@ -61,9 +61,25 @@
 
       <div class="screen">
         <div class="screen-display">
-          <video class="screen-video" src="assets/video/hero.mp4" poster="assets/video/hero.jpg"
-                 autoplay muted loop playsinline preload="auto"
-                 data-i18n-attr="aria-label:hero.video" aria-label="Démonstration : la musique, le volume, la luminosité et l'activité d'un agent IA s'affichent dans l'encoche"></video>
+          <div class="mac-menubar" aria-hidden="true">
+            <div class="mac-menu-left">
+              <span>GravityNotch</span>
+              <span>File</span>
+              <span>Edit</span>
+              <span>View</span>
+            </div>
+            <div class="mac-menu-right">
+              <svg viewBox="0 0 16 12" width="12" height="9"><path fill="currentColor" d="M8 2.4c2.8 0 5.3 1.1 7.1 2.9l-1.3 1.3C12.3 5.1 10.3 4.2 8 4.2s-4.3.9-5.8 2.4L.9 5.3C2.7 3.5 5.2 2.4 8 2.4zm0 3.4c1.8 0 3.5.7 4.7 1.9l-1.3 1.3c-.9-.9-2.1-1.4-3.4-1.4s-2.5.5-3.4 1.4L3.3 7.7C4.5 6.5 6.2 5.8 8 5.8zm0 3.4c.9 0 1.7.4 2.2 1l-2.2 2.2-2.2-2.2c.5-.6 1.3-1 2.2-1z"/></svg>
+              <svg viewBox="0 0 22 11" width="16" height="8"><rect x="0.8" y="0.8" width="17.4" height="9.4" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.3" opacity="0.75"/><rect x="2.5" y="2.5" width="12" height="6" rx="1.2" fill="currentColor"/><path d="M19.5 3.6v3.8a1.6 1.6 0 0 0 0-3.8z" fill="currentColor" opacity="0.65"/></svg>
+              <span>22:15</span>
+            </div>
+          </div>
+          <div class="mac-notch" aria-hidden="true"><span class="mac-camera"></span></div>
+          <div class="screen-stage">
+            <video class="screen-video" src="assets/video/hero.mp4" poster="assets/video/hero.jpg"
+                   autoplay muted loop playsinline preload="auto"
+                   data-i18n-attr="aria-label:hero.video" aria-label="Démonstration : la musique, le volume, la luminosité et l'activité d'un agent IA s'affichent dans l'encoche"></video>
+          </div>
         </div>
       </div>
 
