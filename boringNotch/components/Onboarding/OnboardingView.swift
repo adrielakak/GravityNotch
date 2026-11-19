@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AVFoundation
+import Defaults
 
 enum OnboardingStep {
     case welcome
@@ -22,6 +23,7 @@ private let calendarService = CalendarService()
 
 struct OnboardingView: View {
     @State var step: OnboardingStep = .welcome
+    @Default(.appLanguage) private var appLanguage
     let onFinish: () -> Void
     let onOpenSettings: () -> Void
 
@@ -140,6 +142,7 @@ struct OnboardingView: View {
             }
         }
         .frame(width: 400, height: 600)
+        .environment(\.locale, appLanguage.locale)
     }
 
     // MARK: - Permission Request Logic

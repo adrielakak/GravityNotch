@@ -76,6 +76,17 @@ enum AppLanguage: String, CaseIterable, Identifiable, Defaults.Serializable {
 
     var id: String { self.rawValue }
 
+    var locale: Locale {
+        switch self {
+        case .system:
+            return .autoupdatingCurrent
+        case .french:
+            return Locale(identifier: "fr")
+        case .english:
+            return Locale(identifier: "en")
+        }
+    }
+
     var localizedName: String {
         switch self {
         case .system:

@@ -26334,6 +26334,198 @@
           }
         }
       }
+    },
+    "Enable Camera Access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Camera Access"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoriser l'accès à la caméra"
+          }
+        }
+      }
+    },
+    "Boring Notch includes a mirror feature that lets you quickly check your appearance using your camera, right from the notch. Camera access is required only to show this live preview. You can turn the mirror feature on or off at any time in the app.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch includes a mirror feature that lets you quickly check your appearance using your camera, right from the notch. Camera access is required only to show this live preview. You can turn the mirror feature on or off at any time in the app."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch inclut une fonction miroir qui vous permet de vérifier rapidement votre apparence avec la caméra, directement depuis l'encoche. L'accès à la caméra sert uniquement à afficher cet aperçu en direct et peut être désactivé à tout moment."
+          }
+        }
+      }
+    },
+    "Your camera is never used without your consent, and nothing is recorded or stored.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your camera is never used without your consent, and nothing is recorded or stored."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Votre caméra n'est jamais utilisée sans votre accord, et rien n'est enregistré ni stocké."
+          }
+        }
+      }
+    },
+    "Enable Calendar Access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Calendar Access"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoriser l'accès au calendrier"
+          }
+        }
+      }
+    },
+    "Boring Notch can show all your upcoming events in one place. Access to your calendar is needed to display your schedule.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch can show all your upcoming events in one place. Access to your calendar is needed to display your schedule."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch peut afficher tous vos prochains événements au même endroit. L'accès au calendrier est requis pour afficher votre planning."
+          }
+        }
+      }
+    },
+    "Your calendar data is only used to show your events and is never shared.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your calendar data is only used to show your events and is never shared."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vos données de calendrier servent uniquement à afficher vos événements et ne sont jamais partagées."
+          }
+        }
+      }
+    },
+    "Enable Reminders Access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Reminders Access"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoriser l'accès aux rappels"
+          }
+        }
+      }
+    },
+    "Boring Notch can show your scheduled reminders alongside your calendar events. Access to Reminders is needed to display your reminders.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch can show your scheduled reminders alongside your calendar events. Access to Reminders is needed to display your reminders."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch peut afficher vos rappels programmés à côté de vos événements du calendrier. L'accès aux rappels est nécessaire pour les afficher."
+          }
+        }
+      }
+    },
+    "Your reminders data is only used to show your reminders and is never shared.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your reminders data is only used to show your reminders and is never shared."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vos rappels servent uniquement à les afficher dans l'encoche et ne sont jamais partagés."
+          }
+        }
+      }
+    },
+    "Enable Accessibility Access": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Accessibility Access"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autoriser l'accès Accessibilité"
+          }
+        }
+      }
+    },
+    "Accessibility access is required to replace system notifications with the Boring Notch HUD. This allows the app to intercept media and brightness events to display custom HUD overlays.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accessibility access is required to replace system notifications with the GravityNotch HUD. This allows the app to intercept media and brightness events to display custom HUD overlays."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accès Accessibilité est nécessaire pour remplacer les notifications système par le HUD de GravityNotch (volume, luminosité et rétroéclairage clavier directement dans l'encoche)."
+          }
+        }
+      }
+    },
+    "Accessibility access is used only to improve media and brightness notifications. No data is collected or shared.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accessibility access is used only to improve media and brightness notifications. No data is collected or shared."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accès Accessibilité sert uniquement aux indicateurs de volume et de luminosité. Aucune donnée n'est collectée ni partagée."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
