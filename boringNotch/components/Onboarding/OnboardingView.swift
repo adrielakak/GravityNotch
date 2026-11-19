@@ -15,7 +15,6 @@ enum OnboardingStep {
     case calendarPermission
     case remindersPermission
     case accessibilityPermission
-    case screenRecordingPermission
     case musicPermission
     case finished
 }
@@ -115,28 +114,6 @@ struct OnboardingView: View {
                         Task {
                             await requestAccessibilityPermission()
                             withAnimation(.easeInOut(duration: 0.6)) {
-                                step = .screenRecordingPermission
-                            }
-                        }
-                    },
-                    onSkip: {
-                        withAnimation(.easeInOut(duration: 0.6)) {
-                            step = .screenRecordingPermission
-                        }
-                    }
-                )
-                .transition(.opacity)
-
-            case .screenRecordingPermission:
-                PermissionRequestView(
-                    icon: Image(systemName: "text.viewfinder"),
-                    title: "Enable Screen Recording Access",
-                    description: "Screen Recording access lets GravityNotch capture selected areas of your screen for instant OCR text extraction and quick shelf screenshots.",
-                    privacyNote: "Screen captures happen locally on your Mac only when you trigger a capture. Nothing is ever recorded in the background.",
-                    onAllow: {
-                        Task {
-                            await requestScreenRecordingPermission()
-                            withAnimation(.easeInOut(duration: 0.6)) {
                                 step = .musicPermission
                             }
                         }
@@ -219,25 +196,6 @@ struct OnboardingView: View {
             bringOnboardingWindowToFront(floating: false)
         }
         let granted = await XPCHelperClient.shared.ensureAccessibilityAuthorization(promptIfNeeded: true)
-        if granted {
-            await MainActor.run {
-                bringOnboardingWindowToFront(floating: true)
-            }
-        }
-    }
-
-    func requestScreenRecordingPermission() async {
-        let alreadyGranted = CGPreflightScreenCaptureAccess()
-        if alreadyGranted {
-            await MainActor.run {
-                bringOnboardingWindowToFront(floating: true)
-            }
-            return
-        }
-        await MainActor.run {
-            bringOnboardingWindowToFront(floating: false)
-        }
-        let granted = CGRequestScreenCaptureAccess()
         if granted {
             await MainActor.run {
                 bringOnboardingWindowToFront(floating: true)
