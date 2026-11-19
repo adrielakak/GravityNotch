@@ -11,10 +11,10 @@ import tempfile
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # Brand palette (matches docs/styles.css)
-LILAC_BG = (241, 240, 254, 255)       # #f1f0fe
-ULTRA = (18, 25, 237, 255)            # #1219ed
-DEEP_ULTRA = (11, 16, 184, 255)       # #0b10b8
-INK_NAVY = (19, 21, 105, 255)         # #131569
+LILAC_BG = (245, 245, 247, 255)       # #f5f5f7
+ULTRA = (37, 99, 235, 255)            # #2563eb
+DEEP_ULTRA = (11, 14, 24, 255)        # #0b0e18
+INK_NAVY = (17, 19, 29, 255)          # #11131d
 
 BASE_W = 660
 BASE_H = 400

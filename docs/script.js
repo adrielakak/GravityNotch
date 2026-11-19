@@ -23,7 +23,7 @@
       tintPending = false;
       const atHero = hero.getBoundingClientRect().bottom > 2;
       root.classList.toggle("at-hero", atHero);
-      if (themeMeta) themeMeta.content = atHero ? "#0b10b8" : "#f1f0fe";
+      if (themeMeta) themeMeta.content = atHero ? "#070910" : "#f5f5f7";
     };
     const scheduleHeroTint = () => {
       if (!tintPending) {
