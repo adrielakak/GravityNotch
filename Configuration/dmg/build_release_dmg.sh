@@ -4,6 +4,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REQ_FILE="Configuration/dmg/requirements.txt"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-gravitynotch}"
+UPDATE_APPCAST=1
+RELEASE_TAG=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tag)
+      RELEASE_TAG="${2:?--tag requires a value}"
+      shift 2
+      ;;
+    --no-appcast)
+      UPDATE_APPCAST=0
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
 
 die() {
   echo "Error: $*" >&2
@@ -63,10 +84,49 @@ echo "Staging app bundle as GravityNotch.app..."
 ditto --norsrc "$BUILT_APP" "$STAGED_APP"
 xattr -cr "$STAGED_APP"
 
-echo "Applying ad-hoc code signature..."
-codesign --force --deep -s - "$STAGED_APP"
+find_sign_update() {
+  local local_bin="$REPO_ROOT/build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update"
+  if [ -x "$local_bin" ]; then
+    echo "$local_bin"
+    return 0
+  fi
+  if command -v sign_update >/dev/null 2>&1; then
+    command -v sign_update
+    return 0
+  fi
+  return 1
+}
+
+echo "Signing app bundle (identity: $CODESIGN_IDENTITY)..."
+codesign --force --deep -s "$CODESIGN_IDENTITY" "$STAGED_APP"
 
 echo "Packaging $DMG_OUTPUT..."
 "$SCRIPT_DIR/create_dmg.sh" "$STAGED_APP" "$DMG_OUTPUT" "GravityNotch"
 
-echo "Release DMG ready: $DMG_OUTPUT"
+SHORT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGED_APP/Contents/Info.plist")"
+BUILD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$STAGED_APP/Contents/Info.plist")"
+if [ -z "$RELEASE_TAG" ]; then
+  RELEASE_TAG="gravitynotch-v$SHORT_VERSION"
+fi
+DMG_BYTES="$(stat -f%z "$DMG_OUTPUT")"
+DOWNLOAD_URL="https://github.com/adrielakak/GravityNotch/releases/download/$RELEASE_TAG/GravityNotch.dmg"
+NOTES_URL="https://github.com/adrielakak/GravityNotch/releases/tag/$RELEASE_TAG"
+
+echo "Release DMG ready: $DMG_OUTPUT (v$SHORT_VERSION / build $BUILD_VERSION, $DMG_BYTES bytes)"
+
+if [ "$UPDATE_APPCAST" -eq 1 ]; then
+  if SIGN_UPDATE_BIN="$(find_sign_update)"; then
+    ED_SIG="$("$SIGN_UPDATE_BIN" --account "$SPARKLE_KEY_ACCOUNT" -p "$DMG_OUTPUT")"
+    python3 "$SCRIPT_DIR/update_appcast.py" \
+      --appcast "$REPO_ROOT/docs/appcast.xml" \
+      --version "$BUILD_VERSION" \
+      --short-version "$SHORT_VERSION" \
+      --url "$DOWNLOAD_URL" \
+      --length "$DMG_BYTES" \
+      --ed-signature "$ED_SIG" \
+      --notes-url "$NOTES_URL"
+    echo "Updated docs/appcast.xml for $RELEASE_TAG (EdDSA signed with account '$SPARKLE_KEY_ACCOUNT')."
+  else
+    echo "Warning: Sparkle sign_update binary not found; skipped docs/appcast.xml update." >&2
+  fi
+fi

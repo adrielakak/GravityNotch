@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>GravityNotch Updates</title>
+        <link>https://adrielakak.github.io/GravityNotch/</link>
+        <description>Latest releases of GravityNotch for macOS.</description>
+        <language>en</language>
+        <item>
+            <title>GravityNotch 1.2.6</title>
+            <link>https://github.com/adrielakak/GravityNotch/releases/tag/gravitynotch-v1.2.6</link>
+            <sparkle:version>272</sparkle:version>
+            <sparkle:shortVersionString>1.2.6</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/adrielakak/GravityNotch/releases/tag/gravitynotch-v1.2.6</sparkle:releaseNotesLink>
+            <pubDate>Fri, 20 Nov 2026 07:57:32 GMT</pubDate>
+            <enclosure url="https://github.com/adrielakak/GravityNotch/releases/download/gravitynotch-v1.2.6/GravityNotch.dmg" length="9613938" type="application/octet-stream" sparkle:edSignature="q3+u4c2JZo88IvMxNwyCDl3Jjaw+1GjbmVV2OUSm1UXXSQoN4rugmEqLc4/JwfZedUxIG4x59OYDXW3optG6BQ==" />
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+        </item>
+    </channel>
+</rss>

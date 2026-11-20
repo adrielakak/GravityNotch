@@ -8,13 +8,13 @@
 		<true/>
 	</dict>
 	<key>SUEnableAutomaticChecks</key>
-	<false/>
+	<true/>
 	<key>SUAutomaticallyUpdate</key>
-	<false/>
+	<true/>
 	<key>SUFeedURL</key>
-	<string></string>
+	<string>https://adrielakak.github.io/GravityNotch/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>B1Y47t8C/v8ImurYA+9arEsuCrpxwJSviekiflMElbI=</string>
+	<string>y452W2q1ZsPcONs2z0X4LRgn9qwR5k0b2oJBQ35yLcQ=</string>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict/>

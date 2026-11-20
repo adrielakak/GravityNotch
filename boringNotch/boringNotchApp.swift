@@ -31,9 +31,9 @@ struct DynamicNotchApp: App {
     let updaterController: SPUStandardUpdaterController
 
     init() {
-        // Sparkle auto-updater permanently disabled to preserve custom Gravity-enhanced build
+        // Sparkle auto-updater pointed at https://adrielakak.github.io/GravityNotch/appcast.xml
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
 
         // Initialize the settings window controller with the updater controller
         SettingsWindowController.shared.setUpdaterController(updaterController)
