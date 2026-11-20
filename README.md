@@ -1,12 +1,33 @@
-# GravityNotch
-
-> **License & Credits (GPL-3.0)**: This project is an enhanced fork of [TheBoredTeam/boring.notch](https://github.com/TheBoredTeam/boring.notch), distributed under the **GNU General Public License v3.0 ([`LICENSE`](LICENSE))**. All credit for the original architecture and codebase goes to the *Boring Notch* authors.
-
-**GravityNotch** turns your MacBook notch into a native *Dynamic Island* control center, combining the stability and native Swift/SwiftUI design of **Boring Notch** with a lock screen player, interactive queue, macOS Tahoe system HUDs, screen OCR, clipboard history, and live AI coding agent tracking.
-
 <p align="center"><img src="docs/assets/icon.png" alt="GravityNotch icon" width="96"></p>
 
-🌐 **Website**: [adrielakak.github.io/GravityNotch](https://adrielakak.github.io/GravityNotch/) (video demos, installation guide, and FAQ)
+<h1 align="center">GravityNotch</h1>
+
+<p align="center">
+  <b>Turn your MacBook notch into a Dynamic Island.</b><br>
+  Free and open source. System HUDs that work on macOS 26 Tahoe, a lock screen music player with synced lyrics,<br>
+  and live Claude Code / Codex agent tracking, right in the notch.
+</p>
+
+<p align="center">
+  <a href="https://github.com/adrielakak/GravityNotch/releases/latest"><img src="https://img.shields.io/github/v/release/adrielakak/GravityNotch?label=release&color=1219ed" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-131569?logo=apple" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Swift-SwiftUI-3a4ca2?logo=swift&logoColor=white" alt="Swift / SwiftUI">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/adrielakak/GravityNotch?color=0b10b8" alt="GPL-3.0 license"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg"><b>⬇️ Download the DMG</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://adrielakak.github.io/GravityNotch/"><b>🌐 Website & demos</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/adrielakak/GravityNotch/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"><b>🤝 Good first issues</b></a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/readme-demo.gif" alt="GravityNotch demo: music player with Playing Next queue, volume and brightness HUDs, and the live Claude Code agents tab" width="100%">
+</p>
+
+> **Credits (GPL-3.0)**: GravityNotch is an enhanced fork of [TheBoredTeam/boring.notch](https://github.com/TheBoredTeam/boring.notch), distributed under the [GNU General Public License v3.0](LICENSE). All credit for the original architecture and codebase goes to the *Boring Notch* authors.
 
 ---
 
@@ -100,6 +121,12 @@ This builds the Release target, packages `build/GravityNotch.dmg`, signs it with
 ## 🌐 Website
 
 The project landing page lives in [`docs/`](docs/) (static HTML/CSS/JS served via GitHub Pages): [adrielakak.github.io/GravityNotch](https://adrielakak.github.io/GravityNotch/).
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome, from first-timers too. Start with an issue labeled [`good first issue`](https://github.com/adrielakak/GravityNotch/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), and read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request (it explains one Xcode project quirk that will save you time).
 
 ---
 

@@ -1,0 +1,30 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: GravityNotch version
+      placeholder: "1.2.7"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: "macOS 26.1, MacBook Air M3 (notch)"
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or screen recording
+      description: Optional, but very helpful for UI bugs.

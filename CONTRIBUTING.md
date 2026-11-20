@@ -1,133 +1,103 @@
-# Contributing
+# Contributing to GravityNotch
 
-Thank you for taking the time to contribute! ❤️
-
-These guidelines help streamline the contribution process for everyone involved. By following them, you'll make it easier for maintainers to review your work and collaborate with you effectively.
-
-You can contribute in many ways: writing code, improving documentation, reporting bugs, requesting features, or creating tutorials and blog posts. Every contribution, large or small, helps make Boring Notch better.
+Thanks for taking the time to contribute! Code, translations, bug reports, docs and feature ideas are all welcome, and first-time open source contributors are explicitly welcome too.
 
 ## Table of Contents
 
-- [Localizations](#localizations)
-- [Contributing Code](#contributing-code)
-  - [Before You Start](#before-you-start)
-  - [Setting Up Your Environment](#setting-up-your-environment)
-  - [Making Changes](#making-changes)
-  - [Pull Requests](#pull-requests)
-<!-- - [Code Style Guidelines](#code-style-guidelines) -->
+- [Where to Start](#where-to-start)
+- [Setting Up Your Environment](#setting-up-your-environment)
+- [The One Xcode Quirk You Must Know](#the-one-xcode-quirk-you-must-know)
+- [Making Changes](#making-changes)
+- [Pull Requests](#pull-requests)
+- [Translations](#translations)
 - [Reporting Bugs](#reporting-bugs)
 - [Feature Requests](#feature-requests)
-- [Getting Help](#getting-help)
 
-## Localizations
+## Where to Start
 
-Please submit all translations to [Crowdin](https://crowdin.com/project/boring-notch). New strings added to the `dev` branch from code changes will sync automatically to Crowdin, and Crowdin will automatically open a new PR with translations to allow us to integrate them.
+- Browse issues labeled [`good first issue`](https://github.com/adrielakak/GravityNotch/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22): they are scoped, and each one points to the files involved.
+- Comment on the issue before you start so nobody else works on the same thing.
+- For larger changes, open an issue first to discuss the approach.
 
-## Contributing Code
+## Setting Up Your Environment
 
-### Before You Start
+Requirements: macOS 14 or later and Xcode 16+.
 
-- **Check existing issues**: Before creating a new issue or starting work, search existing issues to avoid duplicates.
-- **Discuss major changes**: For significant features or major changes, please open an issue first to discuss your approach with maintainers and the community.
-<!-- - **Review the code style**: Familiarize yourself with our code style guidelines below to ensure consistency. -->
-
-> [!IMPORTANT]
-> All code contributions must be based on the `dev` branch, not `main`. Documentation changes should be based on `main` instead.
-
-### Setting Up Your Environment
-
-1. **Fork the repository**: Click the "Fork" button at the top of the repository page to create your own copy.
-
-2. **Clone your fork**:
+1. Fork the repository, then clone your fork:
    ```bash
-   git clone https://github.com/{your-username}/boring.notch.git
-   cd boring.notch
+   git clone https://github.com/{your-username}/GravityNotch.git
+   cd GravityNotch
    ```
-   Replace `{your-username}` with your GitHub username.
-
-3. **Switch to the `dev` branch**:
+2. Create a branch from `main`:
    ```bash
-   git checkout dev
+   git checkout -b fix/short-description
    ```
-   All code contributions must be based on the `dev` branch, not `main`. Documentation changes should be based on `main` instead.
-
-5. **Create a new feature branch**:
+3. Build without a signing identity:
    ```bash
-   git checkout -b feature/{your-feature-name}
+   xcodebuild -project boringNotch.xcodeproj -scheme boringNotch -configuration Debug \
+     CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="" build
    ```
-   Replace `{your-feature-name}` with a descriptive name. Use lowercase letters, numbers, and hyphens only (e.g., `feature/add-dark-mode` or `fix/notification-crash`).
+   Or open `boringNotch.xcodeproj` in Xcode and run the `boringNotch` scheme.
 
-### Making Changes
+The project has no test target yet, so verification means: it builds, and you ran the app and checked your change works.
 
-1. **Make your changes**: Implement your feature or bug fix. Write clean, well-documented code <!-- following the project's style guidelines. -->
+## The One Xcode Quirk You Must Know
 
-2. **Test your changes**: Ensure your changes work as expected and don't break existing functionality.
+Only `boringNotch/private/` and `BoringNotchXPCHelper/` are file-system synchronized groups. In every other folder, a new `.swift` file is **not compiled** until it is added to the `boringNotch` target (in Xcode: drag the file into the project navigator and tick the `boringNotch` target, or add it via *File > Add Files*).
 
-3. **Commit your changes**:
-   ```bash
-   git add .
-   git commit -m "Add descriptive commit message"
-   ```
-   Write clear, concise commit messages that explain what your changes do and why.
+Also note:
+- Most GravityNotch-specific features (Clips, Agents, Caffeine, OCR, lock screen panel, Caps Lock HUD) currently live in `boringNotch/helpers/AppIcons.swift`.
+- `boringNotch/helpers/Clipboard+Content.swift` is **not** part of the target and contains outdated duplicates of some of those types. Edit the versions in `AppIcons.swift`, not that file.
 
-4. **Keep your branch up to date**:
-   Regularly sync your branch with the latest changes from the `dev` branch to avoid conflicts.
+Quick map of the codebase:
 
-5. **Push to your fork**:
-   ```bash
-   git push origin feature/{your-feature-name}
-   ```
+| Area | Where |
+| --- | --- |
+| App entry, windows per screen | `boringNotch/boringNotchApp.swift` |
+| Root view (closed notch, live activities, tabs) | `boringNotch/ContentView.swift` |
+| Tabs (`home`, `shelf`, `clipboard`, `agents`) | `boringNotch/enums/generic.swift`, `boringNotch/components/Tabs/` |
+| Header buttons (OCR, Caffeine, audio output) | `boringNotch/components/Notch/BoringHeader.swift` |
+| Settings keys | `boringNotch/models/Constants.swift` (`Defaults.Keys`) |
+| Settings UI | `boringNotch/components/Settings/` |
+| Music controllers | `boringNotch/MediaControllers/` |
+| Volume / brightness key interception | `boringNotch/observers/MediaKeyInterceptor.swift` |
+| Shelf | `boringNotch/components/Shelf/` |
 
-### Pull Requests
+## Making Changes
 
-1. **Create a pull request**: Go to the original repository and click "New Pull Request." Select your feature branch and set the base branch to `dev`.
+- Keep pull requests focused: one fix or feature per PR.
+- Add user-facing strings to the string catalog (`boringNotch/Localizable.xcstrings`) instead of hardcoding them.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) when you can: `feat: ...`, `fix: ...`, `docs: ...`, `chore: ...`.
+- Remove debug prints before submitting.
 
-2. **Write a detailed description**: Your PR should include:
-   - A clear title summarizing the changes
-   - A detailed description of what was changed and why
-   - Reference to any related issues (e.g., "Fixes #123" or "Relates to #456")
-   - Screenshots or screen recordings for UI changes
+## Pull Requests
 
-3. **Respond to feedback**: Maintainers may request changes.
+1. Push your branch to your fork and open a pull request against `main` of `adrielakak/GravityNotch`.
+2. In the description, explain what changed and why, reference the issue (`Fixes #12`), and add a screenshot or short screen recording for any UI change.
+3. Be ready for a round of feedback. Reviews usually happen within a few days.
 
-4. **Be patient**: Reviews take time. Maintainers will get to your PR as soon as they can.
+## Translations
 
-<!-- ## Code Style Guidelines
+GravityNotch is fully translated in English and French. Fifteen other languages (Arabic, Chinese Simplified, Czech, German, Hungarian, Italian, Korean, Polish, Portuguese (Brazil), Russian, Spanish, Turkish, Ukrainian, British English) inherited the original Boring Notch translations, but every GravityNotch-specific feature (Clips, Agents, lock screen player, onboarding...) is still missing in them.
 
-- Follow the existing code style and conventions used in the project
-- Write clear, self-documenting code with meaningful variable and function names
-- Add comments for complex logic or non-obvious implementations
-- Ensure your code is properly formatted before committing
-- Remove any debugging code, console logs, or commented-out code before submitting -->
+To complete or add a language:
+
+1. Open `boringNotch/Localizable.xcstrings` in Xcode (it opens as a table).
+2. Select your language in the sidebar (or add one with the **+** button), then filter on untranslated strings and fill them in.
+3. Open a pull request. Partial translations are fine.
 
 ## Reporting Bugs
 
-When reporting bugs, please include:
+Open an issue with:
 
-- A clear, descriptive title
-- Steps to reproduce the issue
-- Expected behavior vs. actual behavior
-- Screenshots or error messages if applicable
-- Your environment details (OS version, app version, etc.)
+- Steps to reproduce, expected vs. actual behavior
+- Your macOS version, Mac model (notch or not, Apple Silicon or Intel) and GravityNotch version
+- Screenshots or a screen recording if possible
 
 ## Feature Requests
 
-Feature requests are welcome! Please:
-
-- Check if the feature has already been requested
-- Clearly describe the feature and its use case
-- Explain why this feature would be valuable to users
-- Be open to discussion and alternative approaches
-
-## Getting Help
-
-If you need help or have questions:
-
-- Check the project documentation
-- Search existing issues for similar questions
-- Open a new issue with the "question" label
-- Join our [community Discord server](https://discord.com/servers/boring-notch-1269588937320566815)
+Open an issue describing the use case and why it would help. Check existing issues first to avoid duplicates.
 
 ---
 
-Thank you for contributing to Boring Notch! Your efforts help make this project better for everyone. 🎉
+GravityNotch is a fork of [TheBoredTeam/boring.notch](https://github.com/TheBoredTeam/boring.notch). Bugs that also exist in the original app are worth reporting upstream too.
