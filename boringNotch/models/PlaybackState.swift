@@ -28,6 +28,21 @@ struct PlaybackState {
     var artwork: Data?
     var volume: Double = 0.5
     var isFavorite: Bool = false
+
+    static func idle(bundleIdentifier: String) -> PlaybackState {
+        PlaybackState(
+            bundleIdentifier: bundleIdentifier,
+            isPlaying: false,
+            title: "Not Playing",
+            artist: "Unknown",
+            album: "Unknown",
+            currentTime: 0,
+            duration: 0,
+            playbackRate: 1,
+            lastUpdated: Date(),
+            artwork: nil
+        )
+    }
 }
 
 extension PlaybackState: Equatable {

@@ -29,6 +29,7 @@ class AppleMusicController: MediaControllerProtocol {
     }
 
     private var notificationTask: Task<Void, Never>?
+    private var terminationObserver: NSObjectProtocol?
     private var positionResyncTask: Task<Void, Never>?
     private var periodicSyncTask: Task<Void, Never>?
     private var artworkRetryTask: Task<Void, Never>?
@@ -36,6 +37,7 @@ class AppleMusicController: MediaControllerProtocol {
     // MARK: - Initialization
     init() {
         setupPlaybackStateChangeObserver()
+        setupTerminationObserver()
         setupPeriodicSync()
         Task {
             if isActive() {
@@ -50,14 +52,42 @@ class AppleMusicController: MediaControllerProtocol {
                 named: NSNotification.Name("com.apple.Music.playerInfo")
             )
             
-            for await _ in notifications {
-                await self?.updatePlaybackInfo()
+            for await notification in notifications {
+                guard let self else { return }
+                if (notification.userInfo?["Player State"] as? String) == "Stopped" || !self.isActive() {
+                    self.resetToIdleState()
+                    continue
+                }
+                await self.updatePlaybackInfo()
             }
         }
+    }
+
+    private func setupTerminationObserver() {
+        terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == "com.apple.Music" else { return }
+            self?.resetToIdleState()
+        }
+    }
+
+    private func resetToIdleState() {
+        positionResyncTask?.cancel()
+        positionResyncTask = nil
+        artworkRetryTask?.cancel()
+        artworkRetryTask = nil
+        playbackState = .idle(bundleIdentifier: "com.apple.Music")
     }
     
     deinit {
         notificationTask?.cancel()
+        if let terminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(terminationObserver)
+        }
         positionResyncTask?.cancel()
         periodicSyncTask?.cancel()
         artworkRetryTask?.cancel()
@@ -210,6 +240,10 @@ class AppleMusicController: MediaControllerProtocol {
     }
     
     func updatePlaybackInfo() async {
+        guard isActive() else {
+            resetToIdleState()
+            return
+        }
         guard let descriptor = try? await fetchPlaybackInfoAsync() else { return }
         guard descriptor.numberOfItems >= 11 else { return }
         var updatedState = self.playbackState

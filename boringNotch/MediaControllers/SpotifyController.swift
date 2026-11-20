@@ -30,6 +30,7 @@ class SpotifyController: MediaControllerProtocol {
     var supportsFavorite: Bool { false }
 
     private var notificationTask: Task<Void, Never>?
+    private var terminationObserver: NSObjectProtocol?
     
     // Constant for time between command and update
     private let commandUpdateDelay: Duration = .milliseconds(25)
@@ -39,6 +40,7 @@ class SpotifyController: MediaControllerProtocol {
     
     init() {
         setupPlaybackStateChangeObserver()
+        setupTerminationObserver()
         Task {
             if isActive() {
                 await updatePlaybackInfo()
@@ -52,14 +54,41 @@ class SpotifyController: MediaControllerProtocol {
                 named: NSNotification.Name("com.spotify.client.PlaybackStateChanged")
             )
             
-            for await _ in notifications {
-                await self?.updatePlaybackInfo()
+            for await notification in notifications {
+                guard let self else { return }
+                if (notification.userInfo?["Player State"] as? String) == "Stopped" || !self.isActive() {
+                    self.resetToIdleState()
+                    continue
+                }
+                await self.updatePlaybackInfo()
             }
         }
+    }
+
+    private func setupTerminationObserver() {
+        terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == "com.spotify.client" else { return }
+            self?.resetToIdleState()
+        }
+    }
+
+    private func resetToIdleState() {
+        artworkFetchTask?.cancel()
+        artworkFetchTask = nil
+        lastArtworkURL = nil
+        playbackState = .idle(bundleIdentifier: "com.spotify.client")
     }
     
     deinit {
         notificationTask?.cancel()
+        if let terminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(terminationObserver)
+        }
         artworkFetchTask?.cancel()
     }
     
@@ -97,6 +126,10 @@ class SpotifyController: MediaControllerProtocol {
     }
     
     func updatePlaybackInfo() async {
+        guard isActive() else {
+            resetToIdleState()
+            return
+        }
         guard let descriptor = try? await fetchPlaybackInfoAsync() else { return }
         guard descriptor.numberOfItems >= 10 else { return }
         

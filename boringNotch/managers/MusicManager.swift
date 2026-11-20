@@ -341,13 +341,17 @@ class MusicManager: ObservableObject {
     }
 
     // MARK: - Lyrics
+    private static let placeholderTitles: Set<String> = ["", "I'm Handsome", "Not Playing", "Unknown"]
+
     func refreshLyrics() {
-        guard !songTitle.isEmpty else { return }
+        let trimmed = songTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !Self.placeholderTitles.contains(trimmed) else { return }
         fetchLyricsIfAvailable(bundleIdentifier: bundleIdentifier, title: songTitle, artist: artistName)
     }
 
     private func fetchLyricsIfAvailable(bundleIdentifier: String?, title: String, artist: String) {
-        guard !title.isEmpty else {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !Self.placeholderTitles.contains(trimmed) else {
             DispatchQueue.main.async {
                 self.isFetchingLyrics = false
                 self.currentLyrics = ""

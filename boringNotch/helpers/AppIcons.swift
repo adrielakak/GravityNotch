@@ -2923,6 +2923,8 @@ final class LockScreenMediaPanelManager: ObservableObject {
     private var panelWindow: BoringNotchSkyLightWindow?
     private var panelScreen: NSScreen?
     private var wallpaperTransitionID: Int = 0
+    private var isLockScreenActive: Bool = false
+    private var lockScreenMediaObserver: AnyCancellable?
     @Published private(set) var isPreviewVisible: Bool = false
     /// The animated artwork fills the whole screen behind the player. Only ever true for tracks that have one.
     @Published private(set) var isWallpaperMode: Bool = false
@@ -3005,22 +3007,52 @@ final class LockScreenMediaPanelManager: ObservableObject {
         wallpaperVideoURL = nil
     }
 
+    private static let desktopPlayerBundleIDs: Set<String> = [
+        "com.apple.Music",
+        "com.spotify.client",
+        "com.github.th-ch.youtube-music"
+    ]
+
     static func hasActiveMedia(_ music: MusicManager? = nil) -> Bool {
         let music = music ?? MusicManager.shared
-        return !(music.songTitle == "I'm Handsome"
-          && music.bundleIdentifier == nil
-          && music.songDuration <= 0
-          && !music.isPlaying)
+        if music.isPlaying { return true }
+
+        let title = music.songTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if title.isEmpty || title == "I'm Handsome" || title == "Not Playing" || title == "Unknown" {
+            return false
+        }
+        if music.songDuration <= 0 {
+            return false
+        }
+        if let bundleID = music.bundleIdentifier,
+           desktopPlayerBundleIDs.contains(bundleID),
+           !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundleID }) {
+            return false
+        }
+        return true
     }
 
     func showOnLockScreen() {
         isPreviewVisible = false
+        isLockScreenActive = true
         guard Defaults[.showOnLockScreen], Defaults[.lockScreenMediaPlayer] else { return }
+        startObservingMediaForLockScreen()
+        guard Self.hasActiveMedia() else {
+            dismissPanelWindow()
+            return
+        }
         presentPanel(delegateToSkyLight: true)
     }
 
     func hideFromLockScreen() {
         isPreviewVisible = false
+        isLockScreenActive = false
+        lockScreenMediaObserver?.cancel()
+        lockScreenMediaObserver = nil
+        dismissPanelWindow()
+    }
+
+    private func dismissPanelWindow() {
         resetWallpaperMode()
         guard let window = panelWindow else { return }
         window.disableSkyLight()
@@ -3029,10 +3061,39 @@ final class LockScreenMediaPanelManager: ObservableObject {
         window.contentView = nil
     }
 
+    private func startObservingMediaForLockScreen() {
+        lockScreenMediaObserver?.cancel()
+        let music = MusicManager.shared
+        lockScreenMediaObserver = Publishers.CombineLatest4(
+            music.$isPlaying,
+            music.$songTitle,
+            music.$songDuration,
+            music.$bundleIdentifier
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _, _, _, _ in
+            guard let self, self.isLockScreenActive, !self.isPreviewVisible else { return }
+            guard Defaults[.showOnLockScreen], Defaults[.lockScreenMediaPlayer] else {
+                self.dismissPanelWindow()
+                return
+            }
+            if Self.hasActiveMedia() {
+                if self.panelWindow?.isVisible != true {
+                    self.presentPanel(delegateToSkyLight: true)
+                }
+            } else if self.panelWindow?.isVisible == true {
+                self.dismissPanelWindow()
+            }
+        }
+    }
+
     func togglePreviewOnDesktop() {
         if isPreviewVisible {
             hideFromLockScreen()
         } else {
+            isLockScreenActive = false
+            lockScreenMediaObserver?.cancel()
+            lockScreenMediaObserver = nil
             isPreviewVisible = true
             presentPanel(delegateToSkyLight: false)
         }
