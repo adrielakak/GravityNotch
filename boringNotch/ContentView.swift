@@ -28,6 +28,8 @@ struct ContentView: View {
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
+    @State private var headerDropTargeting: Bool = false
+    @State private var nonShelfDropTargeting: Bool = false
 
     @State private var gestureProgress: CGFloat = .zero
 
@@ -243,6 +245,9 @@ struct ContentView: View {
         .background(dragDetector)
         .preferredColorScheme(.dark)
         .environmentObject(vm)
+        .onChange(of: headerDropTargeting || nonShelfDropTargeting) { _, isTargeted in
+            vm.generalDropTargeting = isTargeted
+        }
         .onChange(of: vm.anyDropZoneTargeting) { _, isTargeted in
             anyDropDebounceTask?.cancel()
 
@@ -376,32 +381,25 @@ struct ContentView: View {
                   view
                       .fixedSize()
               }
+              .onDrop(
+                  of: [.fileURL, .url, .utf8PlainText, .plainText, .data],
+                  delegate: GeneralDropTargetDelegate(isTargeted: $headerDropTargeting)
+              )
               .zIndex(2)
             if vm.notchState == .open {
                 let openContentMaxHeight = max(108, vm.notchSize.height - max(24, vm.effectiveClosedNotchHeight) - 22)
                 VStack {
-                    switch coordinator.currentView {
-                    case .home:
-                        NotchHomeView(albumArtNamespace: albumArtNamespace)
-                    case .shelf:
-                        if Defaults[.boringShelf] {
-                            ShelfView()
-                        } else {
-                            NotchHomeView(albumArtNamespace: albumArtNamespace)
-                        }
-                    case .clipboard:
-                        if Defaults[.showClipboardTab] {
-                            ClipboardNotchView()
-                        } else {
-                            NotchHomeView(albumArtNamespace: albumArtNamespace)
-                        }
-                    case .agents:
-                        if Defaults[.showAgentsTab] {
-                            AgentsNotchView()
-                                .frame(maxWidth: .infinity, maxHeight: openContentMaxHeight, alignment: .top)
-                        } else {
-                            NotchHomeView(albumArtNamespace: albumArtNamespace)
-                        }
+                    if coordinator.currentView == .shelf && Defaults[.boringShelf] {
+                        ShelfView()
+                    } else {
+                        nonShelfTabContent(maxHeight: openContentMaxHeight)
+                            .onDrop(
+                                of: [.fileURL, .url, .utf8PlainText, .plainText, .data],
+                                delegate: GeneralDropTargetDelegate(isTargeted: $nonShelfDropTargeting)
+                            )
+                            .onDisappear {
+                                nonShelfDropTargeting = false
+                            }
                     }
                 }
                 .transition(
@@ -414,7 +412,27 @@ struct ContentView: View {
                 .opacity(gestureProgress != 0 ? 1.0 - min(abs(gestureProgress) * 0.1, 0.3) : 1.0)
             }
         }
-        .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], delegate: GeneralDropTargetDelegate(isTargeted: $vm.generalDropTargeting))
+    }
+
+    @ViewBuilder
+    private func nonShelfTabContent(maxHeight: CGFloat) -> some View {
+        switch coordinator.currentView {
+        case .home, .shelf:
+            NotchHomeView(albumArtNamespace: albumArtNamespace)
+        case .clipboard:
+            if Defaults[.showClipboardTab] {
+                ClipboardNotchView()
+            } else {
+                NotchHomeView(albumArtNamespace: albumArtNamespace)
+            }
+        case .agents:
+            if Defaults[.showAgentsTab] {
+                AgentsNotchView()
+                    .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .top)
+            } else {
+                NotchHomeView(albumArtNamespace: albumArtNamespace)
+            }
+        }
     }
 
     @ViewBuilder
@@ -554,7 +572,7 @@ struct ContentView: View {
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
-        .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], isTargeted: $vm.dragDetectorTargeting) { providers in
+        .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data, .image], isTargeted: $vm.dragDetectorTargeting) { providers in
             vm.dropEvent = true
             ShelfStateViewModel.shared.load(providers)
             return true

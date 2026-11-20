@@ -134,6 +134,9 @@ extension NSItemProvider {
                         resolvedURL = URL(fileURLWithPath: string)
                     }
                 }
+                if let url = resolvedURL, url.isFileURL {
+                    resolvedURL = (url as NSURL).filePathURL ?? url
+                }
                 cont.resume(returning: resolvedURL)
             }
         }

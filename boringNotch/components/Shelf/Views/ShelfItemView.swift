@@ -40,6 +40,15 @@ struct ShelfItemView: View {
                 .padding(.vertical, 10)
                 .padding(.horizontal, 5)
                 .background(backgroundView)
+                .overlay(alignment: .topTrailing) {
+                    if selection.isSelectionMode {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(isSelected ? Color.red : Color.white.opacity(0.55))
+                            .background(Circle().fill(Color.black.opacity(0.6)))
+                            .padding(5)
+                    }
+                }
                 .contentShape(Rectangle())
                 .animation(.easeInOut(duration: 0.1), value: debouncedDropTarget)
                 .animation(.easeInOut(duration: 0.1), value: isSelected)
@@ -233,7 +242,8 @@ private struct DraggableClickHandler<Content: View>: NSViewRepresentable {
         }
         
         override func mouseDragged(with event: NSEvent) {
-            guard let mouseDownEvent = mouseDownEvent else {
+            guard !ShelfSelectionModel.shared.isSelectionMode,
+                  let mouseDownEvent = mouseDownEvent else {
                 super.mouseDragged(with: event)
                 return
             }

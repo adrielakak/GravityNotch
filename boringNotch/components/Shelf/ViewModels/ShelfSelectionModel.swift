@@ -18,9 +18,30 @@ final class ShelfSelectionModel: ObservableObject {
     static let shared = ShelfSelectionModel()
 
     @Published private(set) var selectedIDs: Set<UUID> = []
+    @Published var isSelectionMode: Bool = false
 
     // Anchor for shift-range selection
     private var lastAnchorID: UUID? = nil
+
+    func enterSelectionMode(preselecting item: ShelfItem? = nil) {
+        isSelectionMode = true
+        if let item {
+            selectedIDs.insert(item.id)
+            lastAnchorID = item.id
+        }
+    }
+
+    func exitSelectionMode(clearSelection: Bool = true) {
+        isSelectionMode = false
+        if clearSelection {
+            clear()
+        }
+    }
+
+    func selectAll(in allItems: [ShelfItem]) {
+        selectedIDs = Set(allItems.map(\.id))
+        lastAnchorID = allItems.last?.id
+    }
 
     func isSelected(_ id: UUID) -> Bool { selectedIDs.contains(id) }
 
