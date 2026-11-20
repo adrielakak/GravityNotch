@@ -6,8 +6,10 @@
 //
 
 import AppKit
+import AudioToolbox
 import Combine
 import CoreAudio
+import Defaults
 import Foundation
 
 final class VolumeManager: NSObject, ObservableObject {
@@ -25,10 +27,32 @@ final class VolumeManager: NSObject, ObservableObject {
     private var previousVolumeBeforeMute: Float32 = 0.2
     private var softwareMuted: Bool = false
 
+    private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
+    private var activeDeviceListeners: [(deviceID: AudioObjectID, address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)] = []
+    private var lastInternalWriteAt: Date = .distantPast
+    private var lastDeviceSwitchAt: Date = .distantPast
+
     private override init() {
         super.init()
         setupAudioListener()
-        fetchCurrentVolume()
+        fetchCurrentVolume(triggerExternalHUD: false)
+    }
+
+    deinit {
+        if let block = defaultOutputListenerBlock {
+            var defaultDevAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &defaultDevAddr,
+                DispatchQueue.main,
+                block
+            )
+        }
+        removeDeviceListeners()
     }
 
     var shouldShowOverlay: Bool { Date().timeIntervalSince(lastChangeAt) < visibleDuration }
@@ -71,12 +95,12 @@ final class VolumeManager: NSObject, ObservableObject {
         BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .volume, value: CGFloat(willBeMuted ? 0 : resultingVolume))
     }
     
-    func refresh() { fetchCurrentVolume() }
+    func refresh() { fetchCurrentVolume(triggerExternalHUD: false) }
 
     func adjustRelative(delta: Float32) {
         if isMutedInternal() { toggleMuteInternal() }
         guard let current = readVolumeInternal() else {
-            fetchCurrentVolume()
+            fetchCurrentVolume(triggerExternalHUD: false)
             return
         }
         let target = max(0, min(1, current + delta))
@@ -121,78 +145,118 @@ final class VolumeManager: NSObject, ObservableObject {
         return defaultDeviceID
     }
 
-    private func fetchCurrentVolume() {
+    private func fetchCurrentVolume(triggerExternalHUD: Bool = true) {
         let deviceID = systemOutputDeviceID()
         guard deviceID != kAudioObjectUnknown else { return }
-        var volumes: [Float32] = []
-        let candidateElements: [UInt32] = [kAudioObjectPropertyElementMain, 1, 2, 3, 4]
-        for element in candidateElements {
-            if let v = readValidatedScalar(deviceID: deviceID, element: element) {
-                volumes.append(v)
-            }
-        }
-        if !volumes.isEmpty {
-            let avg = max(0, min(1, volumes.reduce(0, +) / Float32(volumes.count)))
-            DispatchQueue.main.async {
-                if self.rawVolume != avg {  
+
+        let resolvedVolume = readVolumeInternal(for: deviceID)
+        let resolvedMuted: Bool? = {
+            var muteAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            guard AudioObjectHasProperty(deviceID, &muteAddr) else { return nil }
+            var sizeNeeded: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(deviceID, &muteAddr, 0, nil, &sizeNeeded) == noErr,
+                  sizeNeeded == UInt32(MemoryLayout<UInt32>.size)
+            else { return nil }
+            var muted: UInt32 = 0
+            var mSize = sizeNeeded
+            guard AudioObjectGetPropertyData(deviceID, &muteAddr, 0, nil, &mSize, &muted) == noErr else { return nil }
+            return muted != 0
+        }()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let previousVolume = self.rawVolume
+            let previousMuted = self.isMuted
+            var volumeChanged = false
+            var muteChanged = false
+
+            if let avg = resolvedVolume {
+                if abs(previousVolume - avg) > 0.005 {
+                    volumeChanged = true
                     if self.didInitialFetch {
                         self.lastChangeAt = Date()
                     }
                 }
                 self.rawVolume = avg
-                self.didInitialFetch = true
-
             }
-        }
-
-        var muteAddr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        if AudioObjectHasProperty(deviceID, &muteAddr) {
-            var sizeNeeded: UInt32 = 0
-            if AudioObjectGetPropertyDataSize(deviceID, &muteAddr, 0, nil, &sizeNeeded) == noErr,
-                sizeNeeded == UInt32(MemoryLayout<UInt32>.size)
-            {
-                var muted: UInt32 = 0
-                var mSize = sizeNeeded
-                if AudioObjectGetPropertyData(deviceID, &muteAddr, 0, nil, &mSize, &muted) == noErr
-                {
-                    let newMuted = muted != 0
-                    DispatchQueue.main.async {
-                        if self.isMuted != newMuted { self.lastChangeAt = Date() }
-                        self.isMuted = newMuted
+            if let newMuted = resolvedMuted {
+                if previousMuted != newMuted {
+                    muteChanged = true
+                    if self.didInitialFetch {
+                        self.lastChangeAt = Date()
                     }
+                }
+                self.isMuted = newMuted
+            }
+
+            let wasInitialFetch = self.didInitialFetch
+            if resolvedVolume != nil || resolvedMuted != nil {
+                self.didInitialFetch = true
+            }
+
+            let outsideInternalWrite = Date().timeIntervalSince(self.lastInternalWriteAt) > 0.35
+            let outsideDeviceSwitch = Date().timeIntervalSince(self.lastDeviceSwitchAt) > 0.85
+
+            if triggerExternalHUD && wasInitialFetch && (volumeChanged || muteChanged)
+                && outsideInternalWrite && outsideDeviceSwitch
+            {
+                let displayedVolume = self.isMuted ? 0 : self.rawVolume
+                Task { @MainActor in
+                    guard Defaults[.hudReplacement] else { return }
+                    BoringViewCoordinator.shared.toggleSneakPeek(
+                        status: true,
+                        type: .volume,
+                        value: CGFloat(displayedVolume)
+                    )
                 }
             }
         }
     }
 
     private func setupAudioListener() {
-        let deviceID = systemOutputDeviceID()
-        guard deviceID != kAudioObjectUnknown else { return }
-
         var defaultDevAddr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject), &defaultDevAddr, nil
-        ) { _, _ in
-            self.fetchCurrentVolume()
+        let defaultBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self else { return }
+            self.lastDeviceSwitchAt = Date()
+            self.rebindDeviceListeners()
+            self.fetchCurrentVolume(triggerExternalHUD: false)
+        }
+        if AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &defaultDevAddr,
+            DispatchQueue.main,
+            defaultBlock
+        ) == noErr {
+            defaultOutputListenerBlock = defaultBlock
         }
 
+        rebindDeviceListeners()
+    }
+
+    /// Tears down listeners on the previous output device and binds scalar, virtual main volume,
+    /// and mute listeners to the current default output device (e.g. AirPods or external audio).
+    private func rebindDeviceListeners() {
+        removeDeviceListeners()
+
+        let deviceID = systemOutputDeviceID()
+        guard deviceID != kAudioObjectUnknown else { return }
+
+        var addedAddresses: [AudioObjectPropertyAddress] = []
         var masterAddr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
         if AudioObjectHasProperty(deviceID, &masterAddr) {
-            AudioObjectAddPropertyListenerBlock(deviceID, &masterAddr, nil) { _, _ in
-                self.fetchCurrentVolume()
-            }
+            addedAddresses.append(masterAddr)
         } else {
             for ch in [UInt32(1), UInt32(2)] {
                 var chAddr = AudioObjectPropertyAddress(
@@ -201,40 +265,64 @@ final class VolumeManager: NSObject, ObservableObject {
                     mElement: ch
                 )
                 if AudioObjectHasProperty(deviceID, &chAddr) {
-                    AudioObjectAddPropertyListenerBlock(deviceID, &chAddr, nil) { _, _ in
-                        self.fetchCurrentVolume()
-                    }
+                    addedAddresses.append(chAddr)
                 }
             }
         }
 
-        // Mute
+        var virtualMainAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        if AudioObjectHasProperty(deviceID, &virtualMainAddr) {
+            addedAddresses.append(virtualMainAddr)
+        }
+
         var muteAddr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
         if AudioObjectHasProperty(deviceID, &muteAddr) {
-            AudioObjectAddPropertyListenerBlock(deviceID, &muteAddr, nil) { _, _ in
-                self.fetchCurrentVolume()
+            addedAddresses.append(muteAddr)
+        }
+
+        for var addr in addedAddresses {
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                self?.fetchCurrentVolume(triggerExternalHUD: true)
+            }
+            if AudioObjectAddPropertyListenerBlock(deviceID, &addr, DispatchQueue.main, block) == noErr {
+                activeDeviceListeners.append((deviceID: deviceID, address: addr, block: block))
             }
         }
     }
 
-    private func readVolumeInternal() -> Float32? {
-        let deviceID = systemOutputDeviceID()
-        if deviceID == kAudioObjectUnknown { return nil }
+    private func removeDeviceListeners() {
+        for entry in activeDeviceListeners {
+            var addr = entry.address
+            AudioObjectRemovePropertyListenerBlock(entry.deviceID, &addr, DispatchQueue.main, entry.block)
+        }
+        activeDeviceListeners.removeAll()
+    }
+
+    private func readVolumeInternal(for deviceID: AudioObjectID? = nil) -> Float32? {
+        let targetID = deviceID ?? systemOutputDeviceID()
+        if targetID == kAudioObjectUnknown { return nil }
         var collected: [Float32] = []
         for el in [kAudioObjectPropertyElementMain, 1, 2, 3, 4] {
-            if let v = readValidatedScalar(deviceID: deviceID, element: el) { collected.append(v) }
+            if let v = readValidatedScalar(deviceID: targetID, element: el) { collected.append(v) }
         }
-        guard !collected.isEmpty else { return nil }
-        return collected.reduce(0, +) / Float32(collected.count)
+        if !collected.isEmpty {
+            return max(0, min(1, collected.reduce(0, +) / Float32(collected.count)))
+        }
+        return readVirtualMainVolume(deviceID: targetID)
     }
 
     private func writeVolumeInternal(_ value: Float32) {
         let deviceID = systemOutputDeviceID()
         if deviceID == kAudioObjectUnknown { return }
+        lastInternalWriteAt = Date()
         let newVal = max(0, min(1, value))
 
         var written = false
@@ -252,7 +340,7 @@ final class VolumeManager: NSObject, ObservableObject {
             written = any
         }
         if !written {
-            // silent fail
+            _ = writeVirtualMainVolume(deviceID: deviceID, value: newVal)
         }
     }
 
@@ -304,6 +392,7 @@ final class VolumeManager: NSObject, ObservableObject {
         var muted: UInt32 = 0
         var size = sizeNeeded
         if AudioObjectGetPropertyData(deviceID, &muteAddr, 0, nil, &size, &muted) == noErr {
+            lastInternalWriteAt = Date()
             var newVal: UInt32 = muted == 0 ? 1 : 0
             AudioObjectSetPropertyData(deviceID, &muteAddr, 0, nil, size, &newVal)
             let vol = readVolumeInternal() ?? rawVolume
@@ -357,6 +446,38 @@ final class VolumeManager: NSObject, ObservableObject {
         var sizeNeeded: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(deviceID, &addr, 0, nil, &sizeNeeded) == noErr,
             sizeNeeded == UInt32(MemoryLayout<Float32>.size)
+        else { return false }
+        var val = value
+        return AudioObjectSetPropertyData(deviceID, &addr, 0, nil, sizeNeeded, &val) == noErr
+    }
+
+    private func readVirtualMainVolume(deviceID: AudioObjectID) -> Float32? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectHasProperty(deviceID, &addr) else { return nil }
+        var sizeNeeded: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &addr, 0, nil, &sizeNeeded) == noErr,
+              sizeNeeded == UInt32(MemoryLayout<Float32>.size)
+        else { return nil }
+        var vol: Float32 = 0
+        var size = sizeNeeded
+        guard AudioObjectGetPropertyData(deviceID, &addr, 0, nil, &size, &vol) == noErr else { return nil }
+        return max(0, min(1, vol))
+    }
+
+    private func writeVirtualMainVolume(deviceID: AudioObjectID, value: Float32) -> Bool {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectHasProperty(deviceID, &addr) else { return false }
+        var sizeNeeded: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &addr, 0, nil, &sizeNeeded) == noErr,
+              sizeNeeded == UInt32(MemoryLayout<Float32>.size)
         else { return false }
         var val = value
         return AudioObjectSetPropertyData(deviceID, &addr, 0, nil, sizeNeeded, &val) == noErr

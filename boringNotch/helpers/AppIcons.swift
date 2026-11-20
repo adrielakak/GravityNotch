@@ -7,11 +7,13 @@
 
 import SwiftUI
 import AppKit
+import ApplicationServices
 import AVFoundation
 import Combine
 import CoreAudio
 import Defaults
 import IOKit.pwr_mgt
+import OSLog
 
 struct AppIcons {
     
@@ -162,6 +164,1050 @@ final class AudioOutputRoutingMenu: NSObject {
 
     @objc private func selectDevice(_ sender: NSMenuItem) {
         setOutputDevice(AudioDeviceID(sender.tag))
+    }
+}
+
+// MARK: - Bluetooth / AirPods Live Activity Manager & Closed-Notch View
+
+enum BluetoothAudioModelKind: Equatable {
+    case airPods
+    case airPodsGen3
+    case airPodsGen4
+    case airPodsPro
+    case airPodsMax
+    case beatsOverEar
+    case beatsInEar
+    case headphones
+    case speaker
+
+    private static let appleProductMap: [Int: BluetoothAudioModelKind] = [
+        0x2002: .airPods,      // AirPods (1st gen)
+        0x200F: .airPods,      // AirPods (2nd gen)
+        0x2013: .airPodsGen3,  // AirPods (3rd gen)
+        0x2019: .airPodsGen4,  // AirPods (4th gen)
+        0x201B: .airPodsGen4,  // AirPods (4th gen ANC)
+        0x200E: .airPodsPro,   // AirPods Pro (1st gen)
+        0x2014: .airPodsPro,   // AirPods Pro (2nd gen Lightning)
+        0x2024: .airPodsPro,   // AirPods Pro (2nd gen USB-C)
+        0x2027: .airPodsPro,   // AirPods Pro (2nd/3rd gen USB-C revision)
+        0x200A: .airPodsMax,   // AirPods Max (Lightning)
+        0x201F: .airPodsMax,   // AirPods Max (USB-C)
+        0x2006: .beatsOverEar, // Beats Solo3
+        0x2009: .beatsOverEar, // Beats Studio3
+        0x2010: .beatsOverEar, // Beats Solo Pro
+        0x2017: .beatsOverEar, // Beats Studio Pro
+        0x2026: .beatsOverEar, // Beats Solo 4
+        0x200B: .beatsInEar,   // Powerbeats Pro
+        0x200C: .beatsInEar,   // Beats Solo Buds / Flex
+        0x200D: .beatsInEar,   // Beats Powerbeats
+        0x2011: .beatsInEar,   // Beats Studio Buds
+        0x2012: .beatsInEar,   // Beats Fit Pro
+        0x2015: .beatsInEar,   // Beats Studio Buds+
+        0x2016: .beatsInEar,   // Powerbeats Pro 2
+        0x2018: .beatsInEar,   // Beats Fit Pro revision
+        0x201D: .beatsInEar    // Beats Solo Buds
+    ]
+
+    static func resolve(vendorID: Int?, productID: Int?, minorType: String?, name: String) -> BluetoothAudioModelKind {
+        if let productID, (vendorID == 0x004C || vendorID == 0x000A || vendorID == nil),
+           let mapped = appleProductMap[productID] {
+            return mapped
+        }
+        let lower = name.lowercased()
+        if lower.contains("airpods max") { return .airPodsMax }
+        if lower.contains("airpods pro") { return .airPodsPro }
+        if lower.contains("airpods 4") { return .airPodsGen4 }
+        if lower.contains("airpods 3") { return .airPodsGen3 }
+        if lower.contains("airpods") { return .airPods }
+        if lower.contains("beats") {
+            return (lower.contains("studio") || lower.contains("solo pro") || lower.contains("solo 4")) ? .beatsOverEar : .beatsInEar
+        }
+        if minorType?.lowercased().contains("loudspeaker") == true || lower.contains("speaker") || lower.contains("soundbar") || lower.contains("homepod") {
+            return .speaker
+        }
+        return .headphones
+    }
+
+    var symbolName: String {
+        switch self {
+        case .airPods: return Self.availableSymbol("airpod.right", fallback: Self.availableSymbol("airpods", fallback: "headphones"))
+        case .airPodsGen3: return Self.availableSymbol("airpod.gen3.right", fallback: Self.availableSymbol("airpod.right", fallback: "headphones"))
+        case .airPodsGen4: return Self.availableSymbol("airpod.gen4.right", fallback: Self.availableSymbol("airpod.gen3.right", fallback: Self.availableSymbol("airpod.right", fallback: "headphones")))
+        case .airPodsPro: return Self.availableSymbol("airpodpro.right", fallback: Self.availableSymbol("airpodspro", fallback: "headphones"))
+        case .airPodsMax: return Self.availableSymbol("airpodsmax", fallback: "headphones")
+        case .beatsOverEar: return Self.availableSymbol("beats.headphones", fallback: "headphones")
+        case .beatsInEar: return Self.availableSymbol("beats.fit.pro", fallback: "headphones")
+        case .headphones: return "headphones"
+        case .speaker: return "hifispeaker.fill"
+        }
+    }
+
+    var caseSymbolName: String {
+        switch self {
+        case .airPodsPro:
+            return Self.availableSymbol("airpodspro.chargingcase.wireless.fill", fallback: "battery.100percent")
+        case .airPods, .airPodsGen3, .airPodsGen4:
+            return Self.availableSymbol("airpods.chargingcase.fill", fallback: "battery.100percent")
+        default:
+            return "battery.100percent"
+        }
+    }
+
+    var accentColor: Color {
+        switch self {
+        case .airPods, .airPodsGen3, .airPodsGen4, .airPodsPro, .airPodsMax:
+            return Color(red: 0.35, green: 0.80, blue: 1.0)
+        case .beatsOverEar, .beatsInEar:
+            return Color(red: 0.98, green: 0.36, blue: 0.44)
+        case .headphones, .speaker:
+            return Color(red: 0.42, green: 0.72, blue: 1.0)
+        }
+    }
+
+    private static func availableSymbol(_ name: String, fallback: String) -> String {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil ? name : fallback
+    }
+}
+
+struct BluetoothAudioDeviceInfo: Equatable {
+    let uid: String
+    let name: String
+    let modelKind: BluetoothAudioModelKind
+    var leftBattery: Int?
+    var rightBattery: Int?
+    var caseBattery: Int?
+    var mainBattery: Int?
+
+    var hasAnyBattery: Bool {
+        leftBattery != nil || rightBattery != nil || caseBattery != nil || mainBattery != nil
+    }
+
+    var hasEarbudBatteries: Bool {
+        leftBattery != nil || rightBattery != nil
+    }
+
+    var primaryBatteryPercentage: Int? {
+        if let leftBattery, let rightBattery {
+            return min(leftBattery, rightBattery)
+        }
+        return leftBattery ?? rightBattery ?? mainBattery
+    }
+
+    var hoverBreakdownText: String? {
+        var parts: [String] = []
+        if let leftBattery { parts.append("L \(leftBattery)%") }
+        if let rightBattery { parts.append("R \(rightBattery)%") }
+        if let caseBattery { parts.append("Case \(caseBattery)%") }
+        if parts.isEmpty, let mainBattery {
+            parts.append("Battery \(mainBattery)%")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ")
+    }
+}
+
+/// Hides macOS's "AirPods Connected" system banner as soon as ControlCenter creates it.
+///
+/// macOS converts the `com.apple.BTUserNotifications` "Connected" request into a Smart Routing
+/// system banner drawn by ControlCenter (not NotificationCenter): an `AXSystemDialog` window hanging
+/// from the menu bar, with no close button or dismiss action. Its only writable attribute is
+/// `AXPosition`, so a matching window is moved off every screen until it fades out on its own.
+///
+/// A window is touched only when all of these hold: it belongs to ControlCenter, its subrole is
+/// `AXSystemDialog`, it carries a Smart Routing device image (`Banner PID <productID>`), it shows the
+/// exact localized "Connected" label, and it names a Bluetooth audio device. NotificationCenter is
+/// never observed, so no app notification can be affected.
+@MainActor
+private final class BluetoothBannerSuppressor {
+    static let shared = BluetoothBannerSuppressor()
+
+    private static let logger = Logger(subsystem: "theboringteam.boringnotch", category: "BluetoothBannerSuppressor")
+    private static let controlCenterBundleID = "com.apple.controlcenter"
+    private static let controlCenterSoundTablePath = "/System/Library/CoreServices/ControlCenter.app/Contents/Resources/Sound.loctable"
+    private static let smartRoutingImagePrefix = "banner pid "
+    private static let bluetoothAudioBrandTokens = ["airpods", "beats"]
+
+    private var axObserver: AXObserver?
+    private var observedPID: pid_t = 0
+    private var followUpTask: Task<Void, Never>?
+    private var lastSuppressionAt: Date = .distantPast
+    private var cancellables = Set<AnyCancellable>()
+    private lazy var connectedLabels: Set<String> = Self.loadConnectedLabels()
+
+    private init() {
+        Defaults.publisher(.showBluetoothAudioLiveActivity)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshMonitoringState() }
+            .store(in: &cancellables)
+
+        DistributedNotificationCenter.default()
+            .publisher(for: Notification.Name("com.apple.accessibility.api"))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshMonitoringState() }
+            .store(in: &cancellables)
+
+        NotificationCenter.default
+            .publisher(for: NSApplication.didBecomeActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshMonitoringState() }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didLaunchApplicationNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      app.bundleIdentifier == Self.controlCenterBundleID else { return }
+                self?.teardownObserver()
+                self?.refreshMonitoringState()
+            }
+            .store(in: &cancellables)
+
+        refreshMonitoringState()
+    }
+
+    func refreshMonitoringState() {
+        let trusted = AXIsProcessTrusted()
+        // Deferred: this runs during BluetoothAudioLiveActivityManager.init, before `shared` is set.
+        Task { @MainActor in
+            BluetoothAudioLiveActivityManager.shared.syncBannerSuppressorTrust(trusted)
+        }
+        let enabled = Defaults[.showBluetoothAudioLiveActivity]
+        guard enabled, trusted else {
+            if axObserver != nil || !trusted {
+                Self.logger.notice("Banner suppression inactive enabled=\(enabled, privacy: .public) trusted=\(trusted, privacy: .public)")
+            }
+            teardownObserver()
+            return
+        }
+        installObserverIfNeeded()
+    }
+
+    /// Called when CoreAudio switches to a Bluetooth device, in case ControlCenter posts the banner
+    /// before our observer is (re)installed.
+    func scanSoon() {
+        refreshMonitoringState()
+        guard axObserver != nil else { return }
+        scanControlCenterWindows()
+        scheduleFollowUpScans()
+    }
+
+    private func handleControlCenterAXEvent() {
+        guard Defaults[.showBluetoothAudioLiveActivity] else {
+            teardownObserver()
+            return
+        }
+        scanControlCenterWindows()
+        scheduleFollowUpScans()
+    }
+
+    /// The banner is fully populated when `AXCreated` fires, but the device may reach CoreAudio a few
+    /// milliseconds later, so re-check shortly after.
+    private func scheduleFollowUpScans() {
+        followUpTask?.cancel()
+        followUpTask = Task { [weak self] in
+            for delay in [60, 180, 450] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                self.scanControlCenterWindows()
+            }
+        }
+    }
+
+    private func installObserverIfNeeded() {
+        guard let pid = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Self.controlCenterBundleID)
+            .first?.processIdentifier else {
+            return
+        }
+        if axObserver != nil && observedPID == pid { return }
+        teardownObserver()
+
+        var observer: AXObserver?
+        let status = AXObserverCreate(pid, { _, _, _, refcon in
+            guard let refcon else { return }
+            let suppressor = Unmanaged<BluetoothBannerSuppressor>.fromOpaque(refcon).takeUnretainedValue()
+            // The run loop source is on the main run loop: handle synchronously so the banner is
+            // moved before WindowServer composites its first frame.
+            MainActor.assumeIsolated {
+                suppressor.handleControlCenterAXEvent()
+            }
+        }, &observer)
+
+        guard status == .success, let observer else {
+            Self.logger.error("AXObserverCreate failed status=\(status.rawValue, privacy: .public) pid=\(pid, privacy: .public)")
+            return
+        }
+        let appElement = AXUIElementCreateApplication(pid)
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let statuses = [kAXCreatedNotification, kAXWindowCreatedNotification, kAXMovedNotification].map {
+            AXObserverAddNotification(observer, appElement, $0 as CFString, refcon).rawValue
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+
+        axObserver = observer
+        observedPID = pid
+        Self.logger.notice("Observing ControlCenter pid=\(pid, privacy: .public) statuses=\(statuses, privacy: .public)")
+    }
+
+    private func teardownObserver() {
+        followUpTask?.cancel()
+        followUpTask = nil
+        if let observer = axObserver {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        }
+        axObserver = nil
+        observedPID = 0
+    }
+
+    private func scanControlCenterWindows() {
+        guard observedPID != 0 else { return }
+        let appElement = AXUIElementCreateApplication(observedPID)
+        guard let windows = Self.copyElementArray(appElement, attribute: kAXWindowsAttribute) else { return }
+
+        for window in windows where Self.copyStringAttribute(window, attribute: kAXSubroleAttribute) == "AXSystemDialog" {
+            guard let frame = Self.copyFrame(window), Self.isOnAnyScreen(frame) else { continue }
+            guard let banner = matchSmartRoutingConnectedBanner(window) else { continue }
+            hide(window, frame: frame, deviceName: banner.deviceName)
+        }
+    }
+
+    private func matchSmartRoutingConnectedBanner(_ window: AXUIElement) -> (deviceName: String, battery: Int?)? {
+        guard Self.copyStringAttribute(window, attribute: kAXRoleAttribute) == (kAXWindowRole as String) else { return nil }
+
+        var imageDescriptions: [String] = []
+        var texts: [String] = []
+        Self.collectContent(from: window, depth: 0, imageDescriptions: &imageDescriptions, texts: &texts)
+
+        guard imageDescriptions.contains(where: { Self.normalizeText($0).hasPrefix(Self.smartRoutingImagePrefix) }) else {
+            return nil
+        }
+        let normalizedTexts = texts.map(Self.normalizeText)
+        guard normalizedTexts.contains(where: { connectedLabels.contains($0) }) else { return nil }
+
+        let knownNames = BluetoothAudioLiveActivityManager.bluetoothAudioDeviceNames().map(Self.normalizeText)
+        let candidates = texts.filter { text in
+            let norm = Self.normalizeText(text)
+            return !connectedLabels.contains(norm) && Int(norm) == nil && !norm.isEmpty
+        }
+        guard let deviceName = candidates.first(where: { text in
+            let norm = Self.normalizeText(text)
+            return knownNames.contains(norm) || Self.bluetoothAudioBrandTokens.contains { norm.contains($0) }
+        }) else {
+            return nil
+        }
+        let battery = normalizedTexts.compactMap { Int($0) }.first { (0...100).contains($0) }
+        return (deviceName, battery)
+    }
+
+    private func hide(_ window: AXUIElement, frame: CGRect, deviceName: String) {
+        var target = CGPoint(x: frame.origin.x, y: Self.offscreenY(forHeight: frame.height))
+        guard let value = AXValueCreate(.cgPoint, &target) else { return }
+        let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+        guard result == .success else {
+            Self.logger.error("Failed to move Smart Routing banner err=\(result.rawValue, privacy: .public)")
+            return
+        }
+        Self.logger.notice("Hid macOS Smart Routing banner for \(deviceName, privacy: .private)")
+
+        // ControlCenter may re-post the same banner (battery refresh); report one connection only.
+        let now = Date()
+        defer { lastSuppressionAt = now }
+        guard now.timeIntervalSince(lastSuppressionAt) > 3 else { return }
+        BluetoothAudioLiveActivityManager.shared.systemBannerSuppressed(deviceName: deviceName)
+    }
+
+    // MARK: AX helpers
+
+    private static func collectContent(
+        from element: AXUIElement,
+        depth: Int,
+        imageDescriptions: inout [String],
+        texts: inout [String]
+    ) {
+        guard depth <= 4, texts.count + imageDescriptions.count < 24 else { return }
+        switch copyStringAttribute(element, attribute: kAXRoleAttribute) {
+        case kAXImageRole:
+            if let desc = copyStringAttribute(element, attribute: kAXDescriptionAttribute) {
+                imageDescriptions.append(desc)
+            }
+        case kAXStaticTextRole:
+            if let value = copyStringAttribute(element, attribute: kAXValueAttribute), !value.isEmpty {
+                texts.append(value)
+            }
+        default:
+            break
+        }
+        guard let children = copyElementArray(element, attribute: kAXChildrenAttribute) else { return }
+        for child in children {
+            collectContent(from: child, depth: depth + 1, imageDescriptions: &imageDescriptions, texts: &texts)
+        }
+    }
+
+    private static func copyStringAttribute(_ element: AXUIElement, attribute: String) -> String? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef) == .success else {
+            return nil
+        }
+        return valueRef as? String
+    }
+
+    private static func copyElementArray(_ element: AXUIElement, attribute: String) -> [AXUIElement]? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef) == .success,
+              let list = valueRef as? [AnyObject] else {
+            return nil
+        }
+        return list.compactMap { item in
+            guard CFGetTypeID(item) == AXUIElementGetTypeID() else { return nil }
+            return unsafeBitCast(item, to: AXUIElement.self)
+        }
+    }
+
+    private static func copyFrame(_ element: AXUIElement) -> CGRect? {
+        var positionRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionRef) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let positionRef, let sizeRef,
+              CFGetTypeID(positionRef) == AXValueGetTypeID(),
+              CFGetTypeID(sizeRef) == AXValueGetTypeID() else {
+            return nil
+        }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionRef as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(sizeRef as! AXValue, .cgSize, &size) else {
+            return nil
+        }
+        return CGRect(origin: origin, size: size)
+    }
+
+    /// Screen frames in Accessibility coordinates (origin at the top-left of the primary display).
+    private static func accessibilityScreenFrames() -> [CGRect] {
+        guard let primaryMaxY = NSScreen.screens.first?.frame.maxY else { return [] }
+        return NSScreen.screens.map { screen in
+            CGRect(
+                x: screen.frame.minX,
+                y: primaryMaxY - screen.frame.maxY,
+                width: screen.frame.width,
+                height: screen.frame.height
+            )
+        }
+    }
+
+    private static func isOnAnyScreen(_ frame: CGRect) -> Bool {
+        accessibilityScreenFrames().contains { $0.intersects(frame) }
+    }
+
+    /// A y coordinate above every display, whatever the arrangement.
+    private static func offscreenY(forHeight height: CGFloat) -> CGFloat {
+        let topMost = accessibilityScreenFrames().map(\.minY).min() ?? 0
+        return topMost - height - 2000
+    }
+
+    private static func loadConnectedLabels() -> Set<String> {
+        var labels: Set<String> = ["connected", "connectes"]
+        if let data = FileManager.default.contents(atPath: controlCenterSoundTablePath),
+           let table = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] {
+            for case let strings as [String: Any] in table.values {
+                if let label = strings["HEADPHONES_CONNECTED"] as? String {
+                    let norm = normalizeText(label)
+                    if !norm.isEmpty { labels.insert(norm) }
+                }
+            }
+        }
+        return labels
+    }
+
+    private static func normalizeText(_ text: String) -> String {
+        text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// Observes CoreAudio default output changes and triggers a Dynamic Island Live Activity
+/// whenever AirPods or Bluetooth audio devices connect.
+@MainActor
+final class BluetoothAudioLiveActivityManager: ObservableObject {
+    static let shared = BluetoothAudioLiveActivityManager()
+
+    @Published private(set) var currentDevice: BluetoothAudioDeviceInfo?
+    @Published private(set) var animationNonce = UUID()
+    @Published private(set) var canSuppressSystemBanner: Bool = AXIsProcessTrusted()
+    @Published private(set) var axGrantedPendingRestart: Bool = false
+
+    private var defaultOutputListenerBlock: AudioObjectPropertyListenerBlock?
+    private var activeBluetoothUID: String?
+    private var lastTriggerByUID: [String: Date] = [:]
+    private var bannerTriggerByUID: [String: Date] = [:]
+    private var telemetryTask: Task<Void, Never>?
+
+    private init() {
+        // Record initial device silently so launching the app does not flash a stale banner.
+        if let initial = Self.currentBluetoothOutputDevice() {
+            activeBluetoothUID = initial.uid
+            currentDevice = initial
+        }
+        installDefaultOutputListener()
+        refreshBannerSuppressorStatus()
+    }
+
+    func refreshBannerSuppressorStatus() {
+        BluetoothBannerSuppressor.shared.refreshMonitoringState()
+        let inProcessTrusted = AXIsProcessTrusted()
+        syncBannerSuppressorTrust(inProcessTrusted)
+        guard !inProcessTrusted else {
+            if axGrantedPendingRestart { axGrantedPendingRestart = false }
+            return
+        }
+        Task { [weak self] in
+            let freshTrusted = await Self.checkAXTrustedViaSubprocess()
+            guard let self else { return }
+            if !AXIsProcessTrusted() {
+                self.axGrantedPendingRestart = freshTrusted
+            }
+        }
+    }
+
+    func syncBannerSuppressorTrust(_ trusted: Bool) {
+        if canSuppressSystemBanner != trusted {
+            canSuppressSystemBanner = trusted
+        }
+        if trusted && axGrantedPendingRestart {
+            axGrantedPendingRestart = false
+        }
+    }
+
+    nonisolated private static func checkAXTrustedViaSubprocess() async -> Bool {
+        guard let execURL = Bundle.main.executableURL else { return AXIsProcessTrusted() }
+        return await withCheckedContinuation { continuation in
+            final class OnceGuard: @unchecked Sendable {
+                private let lock = NSLock()
+                private var resolved = false
+                func resolveOnce(_ action: () -> Void) {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !resolved else { return }
+                    resolved = true
+                    action()
+                }
+            }
+
+            let guardBox = OnceGuard()
+            let proc = Process()
+            proc.executableURL = execURL
+            proc.arguments = ["--check-ax"]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            proc.terminationHandler = { finished in
+                guardBox.resolveOnce {
+                    continuation.resume(returning: finished.terminationStatus == 0)
+                }
+            }
+
+            do {
+                try proc.run()
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.0) {
+                    guardBox.resolveOnce {
+                        if proc.isRunning { proc.terminate() }
+                        continuation.resume(returning: false)
+                    }
+                }
+            } catch {
+                guardBox.resolveOnce {
+                    continuation.resume(returning: AXIsProcessTrusted())
+                }
+            }
+        }
+    }
+
+    deinit {
+        telemetryTask?.cancel()
+        if let block = defaultOutputListenerBlock {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &addr,
+                DispatchQueue.main,
+                block
+            )
+        }
+    }
+
+    /// Shows a demo (or the currently active Bluetooth device) Live Activity from Settings.
+    func previewLiveActivity() {
+        telemetryTask?.cancel()
+        if let active = Self.currentBluetoothOutputDevice() {
+            presentConnection(for: active, ignoreCooldown: true, suppressSystemBanner: false)
+            return
+        }
+        let demo = BluetoothAudioDeviceInfo(
+            uid: "preview-airpods-pro",
+            name: "AirPods Pro",
+            modelKind: .airPodsPro,
+            leftBattery: 84,
+            rightBattery: 80,
+            caseBattery: 96,
+            mainBattery: nil
+        )
+        currentDevice = demo
+        animationNonce = UUID()
+        BoringViewCoordinator.shared.toggleExpandingView(status: true, type: .bluetoothAudio)
+    }
+
+    private func installDefaultOutputListener() {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.handleDefaultOutputChanged()
+        }
+        if AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &addr,
+            DispatchQueue.main,
+            block
+        ) == noErr {
+            defaultOutputListenerBlock = block
+        }
+    }
+
+    private func handleDefaultOutputChanged() {
+        guard let bluetoothDevice = Self.currentBluetoothOutputDevice() else {
+            activeBluetoothUID = nil
+            if BoringViewCoordinator.shared.expandingView.show,
+               BoringViewCoordinator.shared.expandingView.type == .bluetoothAudio {
+                BoringViewCoordinator.shared.toggleExpandingView(status: false, type: .bluetoothAudio)
+            }
+            return
+        }
+
+        // Ignore duplicate callbacks emitted while macOS negotiates HFP/A2DP profiles.
+        if activeBluetoothUID == bluetoothDevice.uid {
+            return
+        }
+        activeBluetoothUID = bluetoothDevice.uid
+
+        guard Defaults[.showBluetoothAudioLiveActivity] else { return }
+        // Already announced from the system banner (e.g. AirPods put in ear a few seconds later).
+        if let announced = bannerTriggerByUID[bluetoothDevice.uid],
+           Date().timeIntervalSince(announced) < 8 {
+            BluetoothBannerSuppressor.shared.scanSoon()
+            return
+        }
+        presentConnection(for: bluetoothDevice, ignoreCooldown: false, suppressSystemBanner: true)
+    }
+
+    /// macOS showed (and we hid) its Smart Routing "Connected" banner. CoreAudio does not always
+    /// switch output at that moment (AirPods still out of ear), so announce the connection here.
+    func systemBannerSuppressed(deviceName: String) {
+        guard Defaults[.showBluetoothAudioLiveActivity] else { return }
+        let target = Self.normalizeDeviceName(deviceName)
+        let device = Self.bluetoothAudioOutputDevices().first { Self.normalizeDeviceName($0.name) == target }
+            ?? BluetoothAudioDeviceInfo(
+                uid: "smart-routing:\(deviceName)",
+                name: deviceName,
+                modelKind: BluetoothAudioModelKind.resolve(vendorID: nil, productID: nil, minorType: nil, name: deviceName)
+            )
+        if let last = lastTriggerByUID[device.uid], Date().timeIntervalSince(last) < 8 {
+            return
+        }
+        bannerTriggerByUID[device.uid] = Date()
+        presentConnection(for: device, ignoreCooldown: false, suppressSystemBanner: false)
+    }
+
+    static func bluetoothAudioDeviceNames() -> [String] {
+        bluetoothAudioOutputDevices().map(\.name)
+    }
+
+    private static func bluetoothAudioOutputDevices() -> [BluetoothAudioDeviceInfo] {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr,
+              size > 0 else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else {
+            return []
+        }
+
+        return ids.compactMap { id in
+            var transport: UInt32 = 0
+            var tSize = UInt32(MemoryLayout<UInt32>.size)
+            var tAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            guard AudioObjectGetPropertyData(id, &tAddr, 0, nil, &tSize, &transport) == noErr,
+                  transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+            else { return nil }
+
+            var streamsAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreams,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var streamsSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(id, &streamsAddr, 0, nil, &streamsSize) == noErr, streamsSize > 0 else {
+                return nil
+            }
+
+            guard let name = copyStringProperty(deviceID: id, selector: kAudioObjectPropertyName) else { return nil }
+            let uid = copyStringProperty(deviceID: id, selector: kAudioDevicePropertyDeviceUID) ?? name
+            let model = BluetoothAudioModelKind.resolve(vendorID: nil, productID: nil, minorType: nil, name: name)
+            return BluetoothAudioDeviceInfo(uid: uid, name: name, modelKind: model)
+        }
+    }
+
+    private func presentConnection(
+        for device: BluetoothAudioDeviceInfo,
+        ignoreCooldown: Bool,
+        suppressSystemBanner: Bool
+    ) {
+        if !ignoreCooldown,
+           let last = lastTriggerByUID[device.uid],
+           Date().timeIntervalSince(last) < 2.0 {
+            return
+        }
+        lastTriggerByUID[device.uid] = Date()
+
+        currentDevice = device
+        animationNonce = UUID()
+        BoringViewCoordinator.shared.toggleExpandingView(status: true, type: .bluetoothAudio)
+
+        if suppressSystemBanner {
+            BluetoothBannerSuppressor.shared.scanSoon()
+        }
+
+        telemetryTask?.cancel()
+        telemetryTask = Task { [weak self] in
+            let enriched = await Self.fetchBluetoothTelemetry(for: device)
+            guard !Task.isCancelled, let self else { return }
+            if self.currentDevice?.uid == device.uid {
+                self.currentDevice = enriched
+            }
+
+            // macOS occasionally publishes Bluetooth battery levels slightly after CoreAudio switches.
+            if !enriched.hasAnyBattery {
+                try? await Task.sleep(for: .milliseconds(850))
+                guard !Task.isCancelled else { return }
+                let retried = await Self.fetchBluetoothTelemetry(for: enriched)
+                guard !Task.isCancelled else { return }
+                if self.currentDevice?.uid == device.uid, retried.hasAnyBattery {
+                    self.currentDevice = retried
+                }
+            }
+        }
+    }
+
+    private static func currentBluetoothOutputDevice() -> BluetoothAudioDeviceInfo? {
+        var defaultID = kAudioObjectUnknown
+        var defSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var defAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &defAddr, 0, nil, &defSize, &defaultID) == noErr,
+              defaultID != kAudioObjectUnknown
+        else { return nil }
+
+        var transport: UInt32 = 0
+        var tSize = UInt32(MemoryLayout<UInt32>.size)
+        var tAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(defaultID, &tAddr, 0, nil, &tSize, &transport) == noErr else {
+            return nil
+        }
+
+        let isBluetooth = (transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE)
+        guard isBluetooth else { return nil }
+
+        let name = copyStringProperty(deviceID: defaultID, selector: kAudioObjectPropertyName) ?? "AirPods"
+        let uid = copyStringProperty(deviceID: defaultID, selector: kAudioDevicePropertyDeviceUID) ?? name
+        let model = BluetoothAudioModelKind.resolve(vendorID: nil, productID: nil, minorType: nil, name: name)
+        return BluetoothAudioDeviceInfo(uid: uid, name: name, modelKind: model)
+    }
+
+    private static func copyStringProperty(deviceID: AudioObjectID, selector: AudioObjectPropertySelector) -> String? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var unmanaged: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &unmanaged) { ptr in
+            AudioObjectGetPropertyData(deviceID, &addr, 0, nil, &size, ptr)
+        }
+        guard status == noErr, let cfStr = unmanaged?.takeRetainedValue() else { return nil }
+        return cfStr as String
+    }
+
+    nonisolated private static func fetchBluetoothTelemetry(for base: BluetoothAudioDeviceInfo) async -> BluetoothAudioDeviceInfo {
+        await Task.detached(priority: .userInitiated) {
+            let proc = Process()
+            let pipe = Pipe()
+            proc.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+            proc.arguments = ["SPBluetoothDataType", "-json"]
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+
+            let timeoutItem = DispatchWorkItem {
+                if proc.isRunning { proc.terminate() }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.5, execute: timeoutItem)
+            defer { timeoutItem.cancel() }
+
+            do {
+                try proc.run()
+            } catch {
+                return base
+            }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0,
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let controllers = root["SPBluetoothDataType"] as? [[String: Any]],
+                  let first = controllers.first,
+                  let connectedEntries = first["device_connected"] as? [[String: Any]]
+            else {
+                return base
+            }
+
+            let targetNorm = normalizeDeviceName(base.name)
+            var audioCandidates: [(name: String, details: [String: Any])] = []
+
+            for entry in connectedEntries {
+                for (devName, rawDetails) in entry {
+                    guard let details = rawDetails as? [String: Any] else { continue }
+                    let minor = (details["device_minorType"] as? String)?.lowercased() ?? ""
+                    if minor.contains("headphone") || minor.contains("speaker") || minor.contains("audio")
+                        || normalizeDeviceName(devName) == targetNorm {
+                        audioCandidates.append((devName, details))
+                    }
+                }
+            }
+
+            let matched = audioCandidates.first(where: { normalizeDeviceName($0.name) == targetNorm })
+                ?? audioCandidates.first(where: {
+                    let cand = normalizeDeviceName($0.name)
+                    return !cand.isEmpty && (targetNorm.contains(cand) || cand.contains(targetNorm))
+                })
+                ?? (audioCandidates.count == 1 ? audioCandidates.first : nil)
+
+            guard let matched else { return base }
+            let d = matched.details
+            let vendorID = parseHexInt(d["device_vendorID"] as? String)
+            let productID = parseHexInt(d["device_productID"] as? String)
+            let minorType = d["device_minorType"] as? String
+            let model = BluetoothAudioModelKind.resolve(
+                vendorID: vendorID,
+                productID: productID,
+                minorType: minorType,
+                name: matched.name
+            )
+
+            return BluetoothAudioDeviceInfo(
+                uid: base.uid,
+                name: matched.name.isEmpty ? base.name : matched.name,
+                modelKind: model,
+                leftBattery: parseBatteryPercent(d["device_batteryLevelLeft"] as? String),
+                rightBattery: parseBatteryPercent(d["device_batteryLevelRight"] as? String),
+                caseBattery: parseBatteryPercent(d["device_batteryLevelCase"] as? String),
+                mainBattery: parseBatteryPercent(d["device_batteryLevelMain"] as? String)
+            )
+        }.value
+    }
+
+    nonisolated private static func normalizeDeviceName(_ name: String) -> String {
+        name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .replacingOccurrences(of: "’", with: "'")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated private static func parseHexInt(_ raw: String?) -> Int? {
+        guard let raw else { return nil }
+        let cleaned = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "0x", with: "")
+        return Int(cleaned, radix: 16)
+    }
+
+    nonisolated private static func parseBatteryPercent(_ raw: String?) -> Int? {
+        guard let raw else { return nil }
+        let digits = String(raw.unicodeScalars.filter { $0.isASCII && CharacterSet.decimalDigits.contains($0) })
+        guard let val = Int(digits), (0...100).contains(val) else { return nil }
+        return val
+    }
+}
+
+private struct BluetoothBatteryRingView: View {
+    let percentage: Int
+    var size: CGFloat = 24
+    @State private var animatedFraction: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var clampedFraction: CGFloat {
+        CGFloat(max(0, min(100, percentage))) / 100.0
+    }
+
+    private var ringColor: Color {
+        if percentage <= 15 { return Color(red: 1.0, green: 0.27, blue: 0.23) }
+        if percentage <= 35 { return Color(red: 1.0, green: 0.78, blue: 0.14) }
+        return Color(red: 0.16, green: 0.85, blue: 0.36)
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.20), lineWidth: 2.5)
+
+            Circle()
+                .trim(from: 0, to: animatedFraction)
+                .stroke(ringColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+
+            Text("\(percentage)")
+                .font(.system(size: max(8.5, round(size * 0.38)), weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .minimumScaleFactor(0.75)
+                .lineLimit(1)
+                .foregroundStyle(ringColor)
+                .contentTransition(.numericText())
+        }
+        .frame(width: size, height: size)
+        .onAppear {
+            if reduceMotion {
+                animatedFraction = clampedFraction
+            } else {
+                animatedFraction = 0
+                withAnimation(.spring(response: 0.58, dampingFraction: 0.84)) {
+                    animatedFraction = clampedFraction
+                }
+            }
+        }
+        .onChange(of: percentage) { _, _ in
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.86)) {
+                animatedFraction = clampedFraction
+            }
+        }
+    }
+}
+
+struct BluetoothAudioClosedNotchView: View {
+    @ObservedObject var manager = BluetoothAudioLiveActivityManager.shared
+    let closedHeight: CGFloat
+    let centerSpacerWidth: CGFloat
+    let isHovered: Bool
+
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var earHeight: CGFloat {
+        closedHeight > 0 ? max(28, closedHeight) : 34
+    }
+
+    private let wingWidth: CGFloat = 106
+
+    var body: some View {
+        let device = manager.currentDevice ?? BluetoothAudioDeviceInfo(
+            uid: "fallback",
+            name: "AirPods Pro",
+            modelKind: .airPodsPro
+        )
+        let accent = device.modelKind.accentColor
+        let breakdown = device.hoverBreakdownText
+        let showHoverBreakdown = isHovered && (breakdown != nil)
+
+        HStack(spacing: 0) {
+            // Left ear beside camera bezel: crisp hardware icon + Connected / device name
+            HStack(spacing: 7) {
+                Image(systemName: device.modelKind.symbolName)
+                    .font(.system(size: 18, weight: .regular))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.white)
+                    .frame(width: 20, height: 20, alignment: .center)
+                    .conditionalModifier(!reduceMotion) { view in
+                        view.symbolEffect(.bounce.up, value: manager.animationNonce)
+                    }
+
+                VStack(alignment: .leading, spacing: 0.5) {
+                    Text("Connected")
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.60))
+                        .lineLimit(1)
+
+                    Text(device.name)
+                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .padding(.leading, 2)
+            .frame(width: wingWidth, height: earHeight, alignment: .leading)
+            .offset(x: appeared || reduceMotion ? 0 : 12)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: closedHeight > 0 ? max(20, centerSpacerWidth) : 18)
+
+            // Right ear beside camera bezel: pure battery ring at rest, L/R/Case detail on hover only
+            HStack(spacing: 6) {
+                if showHoverBreakdown, let breakdown {
+                    Text(breakdown)
+                        .font(.system(size: 9.0, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.68))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.80)
+                        .transition(.opacity)
+                }
+
+                if let primary = device.primaryBatteryPercentage {
+                    BluetoothBatteryRingView(percentage: primary, size: min(24, max(20, earHeight - 8)))
+                } else {
+                    Image(systemName: "wave.3.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(accent)
+                        .conditionalModifier(!reduceMotion) { view in
+                            view.symbolEffect(.variableColor.iterative, value: appeared)
+                        }
+                }
+            }
+            .padding(.trailing, 2)
+            .frame(width: wingWidth, height: earHeight, alignment: .trailing)
+            .offset(x: appeared || reduceMotion ? 0 : -12)
+            .animation(.easeOut(duration: 0.16), value: showHoverBreakdown)
+        }
+        .frame(height: earHeight, alignment: .center)
+        .opacity(appeared ? 1.0 : 0.0)
+        .id(manager.animationNonce)
+        .onAppear {
+            if reduceMotion {
+                appeared = true
+            } else {
+                appeared = false
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                    appeared = true
+                }
+            }
+        }
     }
 }
 
@@ -1607,6 +2653,10 @@ final class AntigravityAgentMonitor: ObservableObject {
     @Published private(set) var activeAgentCount: Int = 0
     @Published private(set) var sessions: [AgentSessionSnapshot] = []
     @Published var selectedSessionID: String? = nil
+    @Published private(set) var completedPulseSessionID: String? = nil
+    @Published private(set) var completedPulseNonce = UUID()
+
+    private var completionPulseResetTask: Task<Void, Never>?
 
     // Backwards-compatible summary properties bound to selected (or latest) session
     @Published private(set) var conversationID: String = ""
@@ -1706,6 +2756,38 @@ final class AntigravityAgentMonitor: ObservableObject {
         selectedSessionID = id
         selectionPinnedUntil = Date().addingTimeInterval(120)
         syncSummaryProperties()
+    }
+
+    private func updateCompletionPulse(from previous: [AgentSessionSnapshot], to current: [AgentSessionSnapshot]) {
+        guard !previous.isEmpty else { return }
+
+        if let pulsedID = completedPulseSessionID,
+           let activeMatch = current.first(where: { $0.id == pulsedID }),
+           activeMatch.isWorkingNow {
+            completionPulseResetTask?.cancel()
+            completedPulseSessionID = nil
+        }
+
+        let previousByID = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for session in current {
+            guard let before = previousByID[session.id],
+                  before.isWorkingNow, !session.isWorkingNow,
+                  session.isActive, session.phase == .waiting else { continue }
+
+            completedPulseSessionID = session.id
+            completedPulseNonce = UUID()
+            completionPulseResetTask?.cancel()
+            completionPulseResetTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(4.0))
+                guard !Task.isCancelled, let self else { return }
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                    if self.completedPulseSessionID == session.id {
+                        self.completedPulseSessionID = nil
+                    }
+                }
+            }
+            return
+        }
     }
 
     private func syncSummaryProperties() {
@@ -2579,6 +3661,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 mon.cachedRunningProcesses = runningProcesses
 
                 AgentSpeechBubbleController.shared.announceTransitions(from: mon.sessions, to: trimmed)
+                mon.updateCompletionPulse(from: mon.sessions, to: trimmed)
                 if mon.sessions != trimmed { mon.sessions = trimmed }
                 if mon.isActive != anyActive { mon.isActive = anyActive }
                 if mon.isWorkingNow != anyWorking { mon.isWorkingNow = anyWorking }
@@ -2647,8 +3730,8 @@ struct AgentClosedNotchView: View {
     let closedHeight: CGFloat
     let centerSpacerWidth: CGFloat
 
-    private var wingHeight: CGFloat {
-        max(18, closedHeight - 8)
+    private var wingSpan: CGFloat {
+        closedHeight > 0 ? max(18, closedHeight - 12) : 20
     }
 
     private var brandColor: Color {
@@ -2663,64 +3746,240 @@ struct AgentClosedNotchView: View {
         let session = monitor.activeSession
         let phase = session?.phase ?? .thinking
         let working = session?.isWorkingNow ?? monitor.isWorkingNow
-        let pct = max(0, min(100, Int(round(monitor.contextPercentage))))
+        let rawPct = max(0, min(100, monitor.contextPercentage))
+        let ringFraction = min(working ? 0.80 : 1.0, max(working ? 0.28 : 0.16, rawPct / 100.0))
+        let showCompletedCheck = !working && monitor.completedPulseSessionID != nil
+        let rightBadgeSize = min(16.5, max(13.5, wingSpan - 3.5))
 
         HStack(spacing: 0) {
-            // Left ear: Pulsing Gravity orb + active phase/agent icon
-            HStack(spacing: 5) {
-                AgentPixelMascot(
-                    kind: monitor.activeKind,
-                    isWorking: working,
-                    isActive: session?.isActive ?? monitor.isActive,
-                    pixel: 1.5
-                )
-                Text(monitor.activeKind.shortLabel)
-                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 7)
-            .frame(width: 74, height: wingHeight, alignment: .center)
-            .background(
-                Capsule()
-                    .fill(brandColor.opacity(0.14))
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(brandColor.opacity(0.32), lineWidth: 0.75)
-                    )
+            AgentPixelMascot(
+                kind: monitor.activeKind,
+                isWorking: working,
+                isActive: session?.isActive ?? monitor.isActive,
+                pixel: 1.4
             )
+            .frame(width: wingSpan, height: wingSpan, alignment: .center)
 
             Rectangle()
                 .fill(.black)
                 .frame(width: max(20, centerSpacerWidth))
 
-            // Right ear: Waveform + Phase/Count/Context Gauge
-            HStack(spacing: 5) {
-                AgentCompactWaveform(
-                    isWorking: working,
-                    color: brandColor,
-                    secondaryColor: secondaryColor
-                )
-
-                Text(monitor.activeAgentCount > 1 ? "\(monitor.activeAgentCount)× · \(pct)%" : "\(pct)%")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .contentTransition(.numericText())
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 7)
-            .frame(width: 74, height: wingHeight, alignment: .center)
-            .background(
-                Capsule()
-                    .fill(Color.white.opacity(0.08))
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.75)
+            ZStack {
+                if showCompletedCheck {
+                    AgentCompletionCheckBadge(
+                        size: rightBadgeSize,
+                        initialFraction: ringFraction,
+                        fromColor: brandColor,
+                        pulseNonce: monitor.completedPulseNonce
                     )
-            )
+                    .transition(.identity)
+                } else {
+                    AgentClosedRingView(
+                        fraction: ringFraction,
+                        color: brandColor,
+                        secondaryColor: secondaryColor,
+                        isWorking: working,
+                        size: rightBadgeSize
+                    )
+                    .transition(.opacity.animation(.easeOut(duration: 0.20)))
+                }
+            }
+            .frame(width: wingSpan, height: wingSpan, alignment: .center)
         }
-        .frame(height: closedHeight, alignment: .center)
-        .help(String(localized: "\(monitor.activeKind.rawValue) (\(phase.localizedTitle)) - Click to inspect Agents"))
+        .frame(height: closedHeight > 0 ? closedHeight : wingSpan + 8, alignment: .center)
+        .help(String(localized: "\(monitor.activeKind.rawValue) (\(phase.localizedTitle)) · \(Int(round(rawPct)))% - Click to inspect Agents"))
+    }
+}
+
+private struct AgentClosedRingView: View {
+    let fraction: Double
+    let color: Color
+    let secondaryColor: Color
+    let isWorking: Bool
+    let size: CGFloat
+
+    @State private var rotationAngle: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(color.opacity(0.22), lineWidth: 1.9)
+
+            Circle()
+                .trim(from: 0, to: CGFloat(max(0.14, min(1.0, fraction))))
+                .stroke(
+                    AngularGradient(
+                        gradient: Gradient(colors: [
+                            color.opacity(0.45),
+                            color,
+                            secondaryColor
+                        ]),
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 2.0, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90 + (isWorking && !reduceMotion ? rotationAngle : 0)))
+                .shadow(color: color.opacity(isWorking ? 0.48 : 0.18), radius: isWorking ? 2.5 : 1.0)
+
+            if isWorking {
+                // Distinct Gravity orbital node gliding along the ring while active
+                Circle()
+                    .fill(secondaryColor)
+                    .frame(width: 2.8, height: 2.8)
+                    .shadow(color: secondaryColor.opacity(0.9), radius: 2)
+                    .offset(y: -size / 2)
+                    .rotationEffect(.degrees(reduceMotion ? 0 : rotationAngle))
+            } else {
+                // Calm Gravity core node when waiting/ready
+                Circle()
+                    .fill(color.opacity(0.85))
+                    .frame(width: max(3.0, size * 0.22), height: max(3.0, size * 0.22))
+            }
+        }
+        .frame(width: size, height: size)
+        .onAppear {
+            updateSpin(working: isWorking)
+        }
+        .onChange(of: isWorking) { _, working in
+            updateSpin(working: working)
+        }
+    }
+
+    private func updateSpin(working: Bool) {
+        if working && !reduceMotion {
+            rotationAngle = 0
+            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) {
+                rotationAngle = 360
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.25)) {
+                rotationAngle = 0
+            }
+        }
+    }
+}
+
+private struct AgentCompletionCheckBadge: View {
+    let size: CGFloat
+    let initialFraction: Double
+    let fromColor: Color
+    let pulseNonce: UUID
+
+    @State private var ringTrim: CGFloat = 0.30
+    @State private var ringRotation: Double = -90
+    @State private var isRingGreen: Bool = false
+    @State private var rippleScale: CGFloat = 1.0
+    @State private var rippleOpacity: Double = 0
+    @State private var checkProgress: CGFloat = 0
+    @State private var badgeScale: CGFloat = 1.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // Apple Face ID neon mint-emerald on dark background
+    private let faceIDMint = Color(red: 0.06, green: 0.92, blue: 0.67)
+
+    var body: some View {
+        let activeColor = isRingGreen ? faceIDMint : fromColor
+
+        ZStack {
+            Circle()
+                .stroke(faceIDMint.opacity(0.50), lineWidth: 1.4)
+                .scaleEffect(rippleScale)
+                .opacity(rippleOpacity)
+
+            Circle()
+                .stroke(activeColor.opacity(0.16), lineWidth: max(1.7, size * 0.115))
+
+            // Rotating hollow ring that spins and closes before the Face ID check draws
+            Circle()
+                .trim(from: 0, to: ringTrim)
+                .stroke(
+                    activeColor,
+                    style: StrokeStyle(lineWidth: max(1.85, size * 0.125), lineCap: .round)
+                )
+                .rotationEffect(.degrees(ringRotation))
+                .shadow(color: faceIDMint.opacity(isRingGreen ? 0.45 : 0.15), radius: isRingGreen ? 2.5 : 1.0)
+
+            FaceIDCheckmarkShape()
+                .trim(from: 0, to: checkProgress)
+                .stroke(
+                    faceIDMint,
+                    style: StrokeStyle(
+                        lineWidth: max(1.9, size * 0.135),
+                        lineCap: .square,
+                        lineJoin: .miter
+                    )
+                )
+                .shadow(color: faceIDMint.opacity(0.38), radius: 2)
+        }
+        .frame(width: size, height: size)
+        .scaleEffect(badgeScale)
+        .task(id: pulseNonce) {
+            if reduceMotion {
+                ringTrim = 1.0
+                ringRotation = 270
+                isRingGreen = true
+                checkProgress = 1.0
+                badgeScale = 1.0
+                rippleOpacity = 0
+                return
+            }
+
+            ringTrim = CGFloat(max(0.28, min(0.65, initialFraction)))
+            ringRotation = -90
+            isRingGreen = false
+            rippleScale = 1.0
+            rippleOpacity = 0
+            checkProgress = 0
+            badgeScale = 1.0
+
+            // Phase 1: Spin and seal the hollow mint ring
+            withAnimation(.timingCurve(0.35, 0.0, 0.20, 1.0, duration: 0.28)) {
+                ringTrim = 1.0
+                ringRotation = 270
+                isRingGreen = true
+            }
+
+            try? await Task.sleep(for: .milliseconds(190))
+            guard !Task.isCancelled else { return }
+
+            // Phase 2: Outward ripple + Face ID checkmark strokes in
+            rippleOpacity = 0.48
+            withAnimation(.easeOut(duration: 0.38)) {
+                rippleScale = 1.44
+                rippleOpacity = 0
+            }
+            withAnimation(.timingCurve(0.22, 1.0, 0.36, 1.0, duration: 0.24)) {
+                checkProgress = 1.0
+            }
+
+            try? await Task.sleep(for: .milliseconds(190))
+            guard !Task.isCancelled else { return }
+
+            // Phase 3: Crisp tactile "tic" settle
+            withAnimation(.spring(response: 0.17, dampingFraction: 0.52)) {
+                badgeScale = 1.15
+            }
+
+            try? await Task.sleep(for: .milliseconds(105))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.74)) {
+                badgeScale = 1.0
+            }
+        }
+    }
+}
+
+private struct FaceIDCheckmarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let w = rect.width
+        let h = rect.height
+        path.move(to: CGPoint(x: w * 0.28, y: h * 0.54))
+        path.addLine(to: CGPoint(x: w * 0.44, y: h * 0.70))
+        path.addLine(to: CGPoint(x: w * 0.73, y: h * 0.35))
+        return path
     }
 }
 
@@ -5132,42 +6391,36 @@ private struct AgentSpeechBubbleView: View {
     }
 
     var body: some View {
-        VStack(spacing: -1) {
-            // Tail pointing up at the notch
-            BubbleTail()
-                .fill(Color.black)
-                .frame(width: 16, height: 8)
+        HStack(spacing: 10) {
+            AgentPixelMascot(kind: bubble.kind, isWorking: false, isActive: true, pixel: 2.4)
+                .offset(y: bounce ? -1.5 : 1.5)
 
-            HStack(spacing: 10) {
-                AgentPixelMascot(kind: bubble.kind, isWorking: false, isActive: true, pixel: 2.4)
-                    .offset(y: bounce ? -1.5 : 1.5)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(bubble.message)
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text("\(bubble.kind.shortLabel) · \(bubble.detail)")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .lineLimit(1)
-                }
-
-                if bubble.reason != .finished {
-                    Image(systemName: bubble.reason == .question ? "questionmark.bubble.fill" : "hand.raised.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(accent)
-                }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(bubble.message)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text("\(bubble.kind.shortLabel) · \(bubble.detail)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(
-                Capsule()
-                    .fill(Color.black)
-                    .overlay(Capsule().strokeBorder(accent.opacity(0.55), lineWidth: 1))
-            )
-            .shadow(color: accent.opacity(0.35), radius: 10, y: 3)
+
+            if bubble.reason != .finished {
+                Image(systemName: bubble.reason == .question ? "questionmark.bubble.fill" : "hand.raised.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(accent)
+            }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(
+            Capsule()
+                .fill(Color.black)
+                .overlay(Capsule().strokeBorder(accent.opacity(0.55), lineWidth: 1))
+        )
+        .shadow(color: accent.opacity(0.35), radius: 10, y: 3)
+        .padding(.top, 8)
         .padding(.bottom, 14)
         .contentShape(Rectangle())
         .onAppear {
@@ -5175,17 +6428,6 @@ private struct AgentSpeechBubbleView: View {
                 bounce = true
             }
         }
-    }
-}
-
-private struct BubbleTail: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.closeSubpath()
-        return path
     }
 }
 

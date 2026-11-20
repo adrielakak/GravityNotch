@@ -496,8 +496,10 @@ struct HUD: View {
     @Default(.optionKeyAction) var optionKeyAction
     @Default(.hudReplacement) var hudReplacement
     @Default(.hudTapSafetyTimeout) var hudTapSafetyTimeout
+    @Default(.showBluetoothAudioLiveActivity) var showBluetoothAudioLiveActivity
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
+    @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
     @State private var accessibilityAuthorized = MediaKeyInterceptor.isTrustedFreshViaSubprocess()
     
     var body: some View {
@@ -670,14 +672,76 @@ struct HUD: View {
                 Text("Closed Notch")
             }
             .disabled(!Defaults[.hudReplacement])
+
+            Section {
+                Defaults.Toggle(key: .showBluetoothAudioLiveActivity) {
+                    Text("Show AirPods & Bluetooth Live Activity")
+                }
+                Button("Preview AirPods Animation") {
+                    BluetoothAudioLiveActivityManager.shared.previewLiveActivity()
+                }
+                .disabled(!showBluetoothAudioLiveActivity)
+
+                if showBluetoothAudioLiveActivity {
+                    if bluetoothAudioManager.canSuppressSystemBanner {
+                        Label("Automatic macOS banner dismissal active", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else if bluetoothAudioManager.axGrantedPendingRestart {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Accessibility granted for this build: restart to hide Apple's Bluetooth banner.", systemImage: "arrow.clockwise.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.blue)
+                            Button("Restart Now") {
+                                ApplicationRelauncher.restart()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                        .padding(.top, 2)
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Grant Accessibility access to automatically hide Apple's Bluetooth notification.", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Text("If GravityNotch is already enabled in System Settings, remove it with − and add this Debug app using Reveal in Finder.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                Button("Request Accessibility") {
+                                    mediaKeyInterceptor.requestAccessibilityAuthorization()
+                                    bluetoothAudioManager.refreshBannerSuppressorStatus()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                Button("Open System Settings") {
+                                    mediaKeyInterceptor.openAccessibilitySystemSettings()
+                                }
+                                Button("Reveal in Finder") {
+                                    NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+                                }
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+            } header: {
+                Text("AirPods & Bluetooth")
+            } footer: {
+                Text("Displays an animated Live Activity with battery rings in the notch when AirPods or Bluetooth headphones connect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .accentColor(.effectiveAccent)
         .navigationTitle("HUDs")
         .task {
             accessibilityAuthorized = await XPCHelperClient.shared.isAccessibilityAuthorized()
+            bluetoothAudioManager.refreshBannerSuppressorStatus()
         }
         .onAppear {
             XPCHelperClient.shared.startMonitoringAccessibilityAuthorization()
+            bluetoothAudioManager.refreshBannerSuppressorStatus()
         }
         .onDisappear {
             XPCHelperClient.shared.stopMonitoringAccessibilityAuthorization()
@@ -686,6 +750,7 @@ struct HUD: View {
             if let granted = notification.userInfo?["granted"] as? Bool {
                 accessibilityAuthorized = granted
             }
+            bluetoothAudioManager.refreshBannerSuppressorStatus()
         }
     }
 }

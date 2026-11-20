@@ -26830,6 +26830,214 @@
           }
         }
       }
+    },
+    "Connected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connected"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecté"
+          }
+        }
+      }
+    },
+    "L %lld%%": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L %lld%%"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "G %lld%%"
+          }
+        }
+      }
+    },
+    "R %lld%%": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "R %lld%%"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "D %lld%%"
+          }
+        }
+      }
+    },
+    "AirPods & Bluetooth": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AirPods & Bluetooth"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AirPods & Bluetooth"
+          }
+        }
+      }
+    },
+    "Show AirPods & Bluetooth Live Activity": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show AirPods & Bluetooth Live Activity"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher la Live Activity AirPods & Bluetooth"
+          }
+        }
+      }
+    },
+    "Automatic macOS banner dismissal active": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic macOS banner dismissal active"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fermeture automatique de la bannière macOS active"
+          }
+        }
+      }
+    },
+    "Grant Accessibility access to automatically hide Apple's Bluetooth notification.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grant Accessibility access to automatically hide Apple's Bluetooth notification."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autorisez l’Accessibilité pour masquer automatiquement la notification Bluetooth Apple."
+          }
+        }
+      }
+    },
+    "Accessibility granted for this build: restart to hide Apple's Bluetooth banner.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accessibility granted for this build: restart to hide Apple's Bluetooth banner."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accessibilité autorisée pour cette build : redémarrez pour masquer la bannière Apple."
+          }
+        }
+      }
+    },
+    "Restart Now": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restart Now"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Redémarrer"
+          }
+        }
+      }
+    },
+    "If GravityNotch is already enabled in System Settings, remove it with − and add this Debug app using Reveal in Finder.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If GravityNotch is already enabled in System Settings, remove it with − and add this Debug app using Reveal in Finder."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Si GravityNotch est déjà coché dans Réglages Système, retire-le avec « − » puis ajoute cette app Debug via Révéler dans le Finder."
+          }
+        }
+      }
+    },
+    "Reveal in Finder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reveal in Finder"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Révéler dans le Finder"
+          }
+        }
+      }
+    },
+    "Preview AirPods Animation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview AirPods Animation"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prévisualiser l’animation AirPods"
+          }
+        }
+      }
+    },
+    "Displays an animated Live Activity with battery rings in the notch when AirPods or Bluetooth headphones connect.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Displays an animated Live Activity with battery rings in the notch when AirPods or Bluetooth headphones connect."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affiche une Live Activity animée avec les jauges de batterie dans l’encoche lors de la connexion d’AirPods ou d’un casque Bluetooth."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

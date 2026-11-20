@@ -5,6 +5,7 @@
 //  Created by Harsh Vardhan  Goswami  on 02/08/24.
 //
 
+import ApplicationServices
 import AVFoundation
 import Combine
 import CoreGraphics
@@ -18,6 +19,9 @@ enum GravityNotchEntrypoint {
     static func main() {
         if CommandLine.arguments.contains("--check-post-event") {
             Darwin.exit(CGPreflightPostEventAccess() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--check-ax") {
+            Darwin.exit(AXIsProcessTrusted() ? 0 : 1)
         }
         DynamicNotchApp.main()
     }

@@ -124,9 +124,10 @@ The project landing page lives in [`docs/`](docs/) (static HTML/CSS/JS served vi
 
 ---
 
-## 🤝 Contributing
+## 🤝 Contributing & Roadmap
 
-Contributions are welcome, from first-timers too. Start with an issue labeled [`good first issue`](https://github.com/adrielakak/GravityNotch/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), and read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request (it explains one Xcode project quirk that will save you time).
+- See [`ROADMAP.md`](ROADMAP.md) for upcoming Live Activities, planned bugfix batches, and feature ideas.
+- Contributions are welcome, from first-timers too. Start with an issue labeled [`good first issue`](https://github.com/adrielakak/GravityNotch/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22), and read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request (it explains one Xcode project quirk that will save you time).
 
 ---
 

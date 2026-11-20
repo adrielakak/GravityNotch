@@ -18,6 +18,7 @@ enum SneakContentType {
     case mic
     case battery
     case download
+    case bluetoothAudio
 }
 
 struct sneakPeek {
@@ -157,6 +158,7 @@ class BoringViewCoordinator: ObservableObject {
 
         Task { @MainActor in
             helloAnimationRunning = firstLaunch
+            _ = BluetoothAudioLiveActivityManager.shared
 
             if Defaults[.hudReplacement] {
                 await MediaKeyInterceptor.shared.start(promptIfNeeded: false)
@@ -255,7 +257,10 @@ class BoringViewCoordinator: ObservableObject {
         browser: BrowserType = .chromium
     ) {
         Task { @MainActor in
-            withAnimation(.smooth) {
+            let anim: Animation = (type == .bluetoothAudio)
+                ? .spring(response: 0.40, dampingFraction: 0.84)
+                : .smooth
+            withAnimation(anim) {
                 self.expandingView.show = status
                 self.expandingView.type = type
                 self.expandingView.value = value
@@ -265,19 +270,45 @@ class BoringViewCoordinator: ObservableObject {
     }
 
     private var expandingViewTask: Task<Void, Never>?
+    private var isHoveringExpandingView = false
+
+    func setExpandingViewHover(_ hovering: Bool) {
+        isHoveringExpandingView = hovering
+        guard expandingView.show else { return }
+        if hovering {
+            expandingViewTask?.cancel()
+        } else {
+            scheduleExpandingHide(after: expandingView.type == .bluetoothAudio ? 1.8 : 1.4, type: expandingView.type)
+        }
+    }
+
+    private func scheduleExpandingHide(after duration: TimeInterval, type: SneakContentType) {
+        expandingViewTask?.cancel()
+        expandingViewTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard let self = self, !Task.isCancelled else { return }
+            self.toggleExpandingView(status: false, type: type)
+        }
+    }
 
     @Published var expandingView: ExpandedItem = .init() {
         didSet {
             if expandingView.show {
                 expandingViewTask?.cancel()
-                let duration: TimeInterval = (expandingView.type == .download ? 2 : 3)
-                let currentType = expandingView.type
-                expandingViewTask = Task { [weak self] in
-                    try? await Task.sleep(for: .seconds(duration))
-                    guard let self = self, !Task.isCancelled else { return }
-                    self.toggleExpandingView(status: false, type: currentType)
+                if !isHoveringExpandingView {
+                    let duration: TimeInterval
+                    switch expandingView.type {
+                    case .download:
+                        duration = 2
+                    case .bluetoothAudio:
+                        duration = 4.2
+                    default:
+                        duration = 3
+                    }
+                    scheduleExpandingHide(after: duration, type: expandingView.type)
                 }
             } else {
+                isHoveringExpandingView = false
                 expandingViewTask?.cancel()
             }
         }

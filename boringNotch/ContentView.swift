@@ -25,6 +25,7 @@ struct ContentView: View {
     @ObservedObject var volumeManager = VolumeManager.shared
     @ObservedObject var clipboardManager = ClipboardHistoryManager.shared
     @ObservedObject var agentMonitor = AntigravityAgentMonitor.shared
+    @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -85,6 +86,15 @@ struct ContentView: View {
         && !shouldShowAgentLiveActivity
     }
 
+    private var shouldShowBluetoothLiveActivity: Bool {
+        coordinator.expandingView.type == .bluetoothAudio
+            && coordinator.expandingView.show
+            && vm.notchState == .closed
+            && Defaults[.showBluetoothAudioLiveActivity]
+            && !coordinator.sneakPeek.show
+            && !vm.hideOnClosed
+    }
+
     private var computedChinWidth: CGFloat {
         var chinWidth: CGFloat = vm.closedNotchSize.width
 
@@ -92,8 +102,10 @@ struct ContentView: View {
             && vm.notchState == .closed && Defaults[.showPowerStatusNotifications]
         {
             chinWidth = 640
+        } else if shouldShowBluetoothLiveActivity {
+            chinWidth += 216
         } else if shouldShowAgentLiveActivity {
-            chinWidth += 148
+            chinWidth += (2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20)
         } else if shouldShowMusicLiveActivity
         {
             chinWidth += (2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20)
@@ -122,9 +134,8 @@ struct ContentView: View {
                     .padding(
                         .horizontal,
                         vm.notchState == .open
-                        ? Defaults[.cornerRadiusScaling]
-                        ? (cornerRadiusInsets.opened.top) : (cornerRadiusInsets.opened.bottom)
-                        : cornerRadiusInsets.closed.bottom
+                            ? (Defaults[.cornerRadiusScaling] ? cornerRadiusInsets.opened.top : cornerRadiusInsets.opened.bottom)
+                            : cornerRadiusInsets.closed.bottom
                     )
                     .padding([.horizontal, .bottom], vm.notchState == .open ? 12 : 0)
                     .background(.black)
@@ -149,9 +160,11 @@ struct ContentView: View {
                     .conditionalModifier(true) { view in
                         let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
                         let closeAnimation = Animation.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
+                        let bluetoothAnimation = Animation.spring(response: 0.40, dampingFraction: 0.84, blendDuration: 0)
                         
                         return view
                             .animation(vm.notchState == .open ? openAnimation : closeAnimation, value: vm.notchState)
+                            .animation(bluetoothAnimation, value: shouldShowBluetoothLiveActivity)
                             .animation(.smooth, value: gestureProgress)
                     }
                     .contentShape(Rectangle())
@@ -159,7 +172,10 @@ struct ContentView: View {
                         handleHover(hovering)
                     }
                     .onTapGesture {
-                        if shouldShowAgentLiveActivity {
+                        if shouldShowBluetoothLiveActivity {
+                            coordinator.toggleExpandingView(status: false, type: .bluetoothAudio)
+                            doOpen()
+                        } else if shouldShowAgentLiveActivity {
                             openAgentsTab()
                         } else {
                             doOpen()
@@ -321,10 +337,17 @@ struct ContentView: View {
                       } else if coordinator.sneakPeek.show && Defaults[.inlineHUD] && (coordinator.sneakPeek.type != .music) && (coordinator.sneakPeek.type != .battery) && vm.notchState == .closed {
                           InlineHUD(type: $coordinator.sneakPeek.type, value: $coordinator.sneakPeek.value, icon: $coordinator.sneakPeek.icon, hoverAnimation: $isHovering, gestureProgress: $gestureProgress)
                               .transition(.opacity)
+                      } else if shouldShowBluetoothLiveActivity {
+                          BluetoothAudioClosedNotchView(
+                              closedHeight: vm.effectiveClosedNotchHeight,
+                              centerSpacerWidth: vm.closedNotchSize.width,
+                              isHovered: isHovering
+                          )
+                          .transition(.opacity)
                       } else if shouldShowAgentLiveActivity {
                           AgentClosedNotchView(
                               closedHeight: vm.effectiveClosedNotchHeight,
-                              centerSpacerWidth: vm.closedNotchSize.width + 2
+                              centerSpacerWidth: vm.closedNotchSize.width + -cornerRadiusInsets.closed.top
                           )
                           .transition(.opacity.combined(with: .scale(scale: 0.95)))
                       } else if shouldShowMusicLiveActivity {
@@ -609,6 +632,10 @@ struct ContentView: View {
             withAnimation(animationSpring) {
                 isHovering = true
             }
+
+            if shouldShowBluetoothLiveActivity {
+                coordinator.setExpandingViewHover(true)
+            }
             
             if vm.notchState == .closed && Defaults[.enableHaptics] {
                 haptics.toggle()
@@ -616,6 +643,7 @@ struct ContentView: View {
             
             guard vm.notchState == .closed,
                   !coordinator.sneakPeek.show,
+                  !shouldShowBluetoothLiveActivity,
                   Defaults[.openNotchOnHover] else { return }
             
             hoverTask = Task {
@@ -625,12 +653,14 @@ struct ContentView: View {
                 await MainActor.run {
                     guard self.vm.notchState == .closed,
                           self.isHovering,
-                          !self.coordinator.sneakPeek.show else { return }
+                          !self.coordinator.sneakPeek.show,
+                          !self.shouldShowBluetoothLiveActivity else { return }
                     
                     self.doOpen()
                 }
             }
         } else {
+            coordinator.setExpandingViewHover(false)
             hoverTask = Task {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { return }
