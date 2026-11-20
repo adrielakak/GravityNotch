@@ -211,13 +211,24 @@ final class MediaKeyInterceptor: ObservableObject {
         }
     }
 
+    private var hasTapReference: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return eventTap != nil
+    }
+
+    private var hasValidActiveTap: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard let tap = eventTap else { return false }
+        return CFMachPortIsValid(tap)
+    }
+
     /// Runs on watchdogQueue so a busy or hung main thread can never delay the revocation response.
     /// Uses ultra-cheap POSIX stat() on the system TCC database (~2 us) to detect any TCC change
     /// (such as clicking "-" in Accessibility) in <= 100 ms, bypassing in-process TCC caching.
     private func checkTrustOnWatchdogQueue(force: Bool) {
-        stateLock.lock()
-        let tapActive = eventTap != nil
-        stateLock.unlock()
+        let tapActive = hasValidActiveTap
 
         let now = CFAbsoluteTimeGetCurrent()
         let currentStamp = Self.readTCCStamp()
@@ -290,7 +301,7 @@ final class MediaKeyInterceptor: ObservableObject {
         }
 
         if !trusted {
-            if eventTap != nil {
+            if hasTapReference {
                 Self.logger.error("Accessibility permission lost while tap active! Disabling and invalidating CGEventTap immediately.")
                 tearDownActiveTap(reason: "Accessibility permission revoked", enterSafetyHold: false)
             }
@@ -303,8 +314,15 @@ final class MediaKeyInterceptor: ObservableObject {
             return
         }
 
-        // Permission is granted: recreate active tap if HUD replacement is enabled and not held by safety timeout
-        if Defaults[.hudReplacement] && eventTap == nil && !isSafetyHoldActive {
+        // Permission is granted: recreate active tap if missing or invalidated (e.g. after a TCC change on another app)
+        if Defaults[.hudReplacement] && !hasValidActiveTap && !isSafetyHoldActive {
+            if hasTapReference {
+                tearDownActiveTap(
+                    reason: "Rebuilding invalidated CGEventTap after TCC probe",
+                    enterSafetyHold: false,
+                    installPassiveFallback: false
+                )
+            }
             Self.logger.notice("Accessibility permission available: installing active CGEventTap without app restart.")
             _ = installEventTapIfAuthorized(trustAlreadyVerified: freshVerified)
         }
@@ -377,7 +395,7 @@ final class MediaKeyInterceptor: ObservableObject {
     func updateSafetyDebugMode(_ enabled: Bool) {
         Self.logger.notice("Safety debug 30s auto-disable mode set to \(enabled, privacy: .public)")
         if enabled {
-            if eventTap != nil {
+            if hasValidActiveTap {
                 armSafetyTimerIfNeeded()
             }
         } else {
@@ -396,7 +414,7 @@ final class MediaKeyInterceptor: ObservableObject {
         cachedTrustForCallback = trusted
         guard trusted else {
             Self.logger.warning("installEventTapIfAuthorized aborted: CGPreflightPostEventAccess=false")
-            if eventTap != nil {
+            if hasTapReference {
                 tearDownActiveTap(reason: "Permission check failed", enterSafetyHold: false)
             }
             installPassiveMonitorsIfNeeded()
@@ -571,7 +589,11 @@ final class MediaKeyInterceptor: ObservableObject {
 
     /// Safely disables the active tap FIRST, invalidates the CFMachPort immediately so WindowServer
     /// drops the Mach port without blocking input, and tears down the dedicated RunLoop from its own thread.
-    private func tearDownActiveTap(reason: String, enterSafetyHold: Bool) {
+    private func tearDownActiveTap(
+        reason: String,
+        enterSafetyHold: Bool,
+        installPassiveFallback: Bool = true
+    ) {
         disarmSafetyTimer()
         if enterSafetyHold {
             isSafetyHoldActive = true
@@ -608,15 +630,17 @@ final class MediaKeyInterceptor: ObservableObject {
             Self.logger.notice("Active CGEventTap disabled and CFMachPort invalidated (reason: \(reason, privacy: .public))")
         }
 
-        if Defaults[.hudReplacement] {
+        if installPassiveFallback && Defaults[.hudReplacement] {
             installPassiveMonitorsIfNeeded()
         }
 
-        Task { @MainActor in
-            self.isTapActive = false
-            self.isDegradedMode = Defaults[.hudReplacement]
-            self.isDisabledBySafetyTimeout = enterSafetyHold
-            self.safetyRemainingSeconds = 0
+        if installPassiveFallback || enterSafetyHold {
+            Task { @MainActor in
+                self.isTapActive = false
+                self.isDegradedMode = Defaults[.hudReplacement]
+                self.isDisabledBySafetyTimeout = enterSafetyHold
+                self.safetyRemainingSeconds = 0
+            }
         }
     }
 
@@ -626,7 +650,7 @@ final class MediaKeyInterceptor: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.disarmSafetyTimer()
-            guard self.isSafetyDebugModeEnabled, self.eventTap != nil else { return }
+            guard self.isSafetyDebugModeEnabled, self.hasValidActiveTap else { return }
 
             let duration = Self.safetyTimeoutDuration
             let deadline = Date().addingTimeInterval(duration)
@@ -671,7 +695,7 @@ final class MediaKeyInterceptor: ObservableObject {
 
     private func installPassiveMonitorsIfNeeded() {
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.eventTap == nil else { return }
+            guard let self, !self.hasValidActiveTap else { return }
             if self.globalMonitor == nil {
                 self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { [weak self] event in
                     self?.handlePassiveSystemEvent(event)
