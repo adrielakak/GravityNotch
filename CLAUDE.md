@@ -24,7 +24,7 @@ Targets: `boringNotch` (app) and `BoringNotchXPCHelper` (XPC service embedded in
 
 Only `boringNotch/private/` and `BoringNotchXPCHelper/` are file-system synchronized groups. Every other folder is a classic `PBXGroup`: a new `.swift` file there is **not compiled** until it is registered in `boringNotch.xcodeproj/project.pbxproj` (PBXFileReference, PBXBuildFile, group child, and Sources build phase).
 
-Consequence in the current tree: most fork features live in one huge file, `boringNotch/helpers/AppIcons.swift` (~3400 lines), precisely because it is already in the target. `helpers/Clipboard+Content.swift` is **not** in the target; it contains duplicate copies of some of those types (`CaffeineManager`, `ClipboardHistoryManager`, `CapsLockHUDMonitor`, ...). Adding it to the target as-is would cause duplicate symbol errors. Edit the version in `AppIcons.swift`.
+Consequence in the current tree: most fork features live in one huge file, `boringNotch/helpers/AppIcons.swift` (~3400 lines), precisely because it is already in the target.
 
 ## Architecture
 

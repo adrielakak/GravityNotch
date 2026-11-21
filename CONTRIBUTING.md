@@ -47,7 +47,6 @@ Only `boringNotch/private/` and `BoringNotchXPCHelper/` are file-system synchron
 
 Also note:
 - Most GravityNotch-specific features (Clips, Agents, Caffeine, OCR, lock screen panel, Caps Lock HUD) currently live in `boringNotch/helpers/AppIcons.swift`.
-- `boringNotch/helpers/Clipboard+Content.swift` is **not** part of the target and contains outdated duplicates of some of those types. Edit the versions in `AppIcons.swift`, not that file.
 
 Quick map of the codebase:
 
