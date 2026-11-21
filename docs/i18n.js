@@ -57,6 +57,7 @@
     "step.2.d": "Open <b>System Settings</b> → <b>Privacy &amp; Security</b>, scroll <b>all the way down</b> and click <b>Open Anyway</b>.",
     "step.3.t": "Allow Accessibility",
     "step.3.d": "Follow the startup guide to enable Accessibility (required for the volume and brightness HUDs).",
+    "inst.brew": "# Or with Homebrew: launch the app once, then steps 2 and 3",
     "inst.comment": "# If the \"Open Anyway\" button doesn't appear",
     "inst.copy": "Copy",
     "faq.title": 'Frequently asked <span class="soft">questions</span>',

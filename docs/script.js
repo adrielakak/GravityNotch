@@ -358,9 +358,9 @@
     activate(0);
   }
 
-  const copyBtn = document.getElementById("copy");
-  const cmd = document.getElementById("cmd");
-  if (copyBtn && cmd) {
+  document.querySelectorAll(".copy[data-copy]").forEach((copyBtn) => {
+    const cmd = document.getElementById(copyBtn.dataset.copy);
+    if (!cmd) return;
     copyBtn.addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText(cmd.textContent.trim());
@@ -370,7 +370,7 @@
       }
       setTimeout(() => { copyBtn.textContent = t("inst.copy"); }, 1600);
     });
-  }
+  });
 
   const revealEls = document.querySelectorAll(".reveal");
   if ("IntersectionObserver" in window && !reduceMotion) {

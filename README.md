@@ -35,6 +35,12 @@
 
 **[Download GravityNotch.dmg](https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg)** (macOS 14 Sonoma or later · Apple Silicon and Intel)
 
+Or install with [Homebrew](https://brew.sh), launch the app once, then follow steps 2 and 3 below:
+
+```bash
+brew install --cask adrielakak/tap/gravitynotch
+```
+
 1. Open `GravityNotch.dmg`, drag **GravityNotch** into the **Applications** folder, launch it once, and dismiss the macOS warning (**Done**).
 2. Open **System Settings > Privacy & Security**, scroll **all the way down** to the **Security** section, click **Open Anyway**, and confirm.
 3. Follow the startup guide to grant **Accessibility** permission (required to display volume and brightness HUDs in the notch).

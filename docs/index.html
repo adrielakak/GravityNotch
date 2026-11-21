@@ -18,7 +18,7 @@
   <meta name="twitter:description" content="La Dynamic Island de votre Mac. Gratuite et open source.">
   <meta name="twitter:image" content="https://adrielakak.github.io/GravityNotch/assets/og-preview.jpg">
   <link rel="icon" type="image/png" href="assets/favicon.png">
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=11">
   <script>document.documentElement.classList.add("js", "at-hero");</script>
 </head>
 <body>
@@ -221,9 +221,18 @@
         <div class="terminal reveal">
           <div class="term-bar"><i></i><i></i><i></i><span>Terminal</span></div>
           <div class="term-body">
+            <p class="muted" data-i18n="inst.brew"># Ou avec Homebrew : lancez l'app une fois, puis étapes 2 et 3</p>
+            <p><span class="prompt">$</span> <span id="cmd-brew">brew install --cask adrielakak/tap/gravitynotch</span></p>
+            <button class="copy" type="button" data-copy="cmd-brew" data-i18n="inst.copy">Copier</button>
+          </div>
+        </div>
+
+        <div class="terminal reveal">
+          <div class="term-bar"><i></i><i></i><i></i><span>Terminal</span></div>
+          <div class="term-body">
             <p class="muted" data-i18n="inst.comment"># Si le bouton « Ouvrir quand même » n'apparaît pas</p>
             <p><span class="prompt">$</span> <span id="cmd">xattr -cr /Applications/GravityNotch.app</span></p>
-            <button class="copy" id="copy" type="button" data-i18n="inst.copy">Copier</button>
+            <button class="copy" id="copy" type="button" data-copy="cmd" data-i18n="inst.copy">Copier</button>
           </div>
         </div>
       </div>
@@ -286,7 +295,7 @@
     </div>
   </footer>
 
-  <script src="i18n.js?v=8"></script>
-  <script src="script.js?v=8"></script>
+  <script src="i18n.js?v=11"></script>
+  <script src="script.js?v=11"></script>
 </body>
 </html>

@@ -719,6 +719,7 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
   .term-body { padding: 16px 16px 18px; font-size: clamp(11.5px, 3vw, 13.5px); }
   .term-body p { padding-right: 0; }
   .term-body .muted { white-space: normal; margin-bottom: 6px; }
+  .term-body p:not(.muted) { white-space: normal; overflow-wrap: anywhere; padding-left: 1.2em; text-indent: -1.2em; }
   .copy { position: static; transform: none; display: block; width: 100%; margin-top: 16px; padding: 10px 16px; text-align: center; }
 }
 
