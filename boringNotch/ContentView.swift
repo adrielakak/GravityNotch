@@ -26,6 +26,7 @@ struct ContentView: View {
     @ObservedObject var clipboardManager = ClipboardHistoryManager.shared
     @ObservedObject var agentMonitor = AntigravityAgentMonitor.shared
     @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
+    @ObservedObject var notchTimer = NotchTimerManager.shared
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -75,6 +76,7 @@ struct ContentView: View {
             && enableAgentLiveActivity
             && agentMonitor.isActive
             && !vm.hideOnClosed
+            && !shouldShowTimerLiveActivity
     }
 
     private var shouldShowMusicLiveActivity: Bool {
@@ -84,6 +86,7 @@ struct ContentView: View {
         && coordinator.musicLiveActivityEnabled
         && !vm.hideOnClosed
         && !shouldShowAgentLiveActivity
+        && !shouldShowTimerLiveActivity
     }
 
     private var shouldShowBluetoothLiveActivity: Bool {
@@ -95,6 +98,13 @@ struct ContentView: View {
             && !vm.hideOnClosed
     }
 
+    private var shouldShowTimerLiveActivity: Bool {
+        notchTimer.isActive
+            && !coordinator.expandingView.show
+            && vm.notchState == .closed
+            && !vm.hideOnClosed
+    }
+
     private var computedChinWidth: CGFloat {
         var chinWidth: CGFloat = vm.closedNotchSize.width
 
@@ -103,7 +113,9 @@ struct ContentView: View {
         {
             chinWidth = 640
         } else if shouldShowBluetoothLiveActivity {
-            chinWidth += 216
+            chinWidth += 2 * BluetoothAudioClosedNotchView.compactWingWidth(closedHeight: vm.effectiveClosedNotchHeight)
+        } else if shouldShowTimerLiveActivity {
+            chinWidth += 2 * TimerClosedNotchView.wingWidth
         } else if shouldShowAgentLiveActivity {
             chinWidth += (2 * max(0, vm.effectiveClosedNotchHeight - 12) + 20)
         } else if shouldShowMusicLiveActivity
@@ -165,6 +177,7 @@ struct ContentView: View {
                         return view
                             .animation(vm.notchState == .open ? openAnimation : closeAnimation, value: vm.notchState)
                             .animation(bluetoothAnimation, value: shouldShowBluetoothLiveActivity)
+                            .animation(bluetoothAnimation, value: shouldShowTimerLiveActivity)
                             .animation(.smooth, value: gestureProgress)
                     }
                     .contentShape(Rectangle())
@@ -174,6 +187,9 @@ struct ContentView: View {
                     .onTapGesture {
                         if shouldShowBluetoothLiveActivity {
                             coordinator.toggleExpandingView(status: false, type: .bluetoothAudio)
+                            doOpen()
+                        } else if shouldShowTimerLiveActivity {
+                            coordinator.currentView = .timer
                             doOpen()
                         } else if shouldShowAgentLiveActivity {
                             openAgentsTab()
@@ -344,6 +360,12 @@ struct ContentView: View {
                               isHovered: isHovering
                           )
                           .transition(.opacity)
+                      } else if shouldShowTimerLiveActivity {
+                          TimerClosedNotchView(
+                              closedHeight: vm.effectiveClosedNotchHeight,
+                              centerSpacerWidth: vm.closedNotchSize.width
+                          )
+                          .transition(.opacity)
                       } else if shouldShowAgentLiveActivity {
                           AgentClosedNotchView(
                               closedHeight: vm.effectiveClosedNotchHeight,
@@ -455,6 +477,12 @@ struct ContentView: View {
             } else {
                 NotchHomeView(albumArtNamespace: albumArtNamespace)
             }
+        case .timer:
+            TimerPickerView()
+                .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .top)
+        case .caffeine:
+            CaffeinePickerView()
+                .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .top)
         }
     }
 
@@ -644,6 +672,7 @@ struct ContentView: View {
             guard vm.notchState == .closed,
                   !coordinator.sneakPeek.show,
                   !shouldShowBluetoothLiveActivity,
+                  !shouldShowTimerLiveActivity,
                   Defaults[.openNotchOnHover] else { return }
             
             hoverTask = Task {
@@ -654,7 +683,8 @@ struct ContentView: View {
                     guard self.vm.notchState == .closed,
                           self.isHovering,
                           !self.coordinator.sneakPeek.show,
-                          !self.shouldShowBluetoothLiveActivity else { return }
+                          !self.shouldShowBluetoothLiveActivity,
+                          !self.shouldShowTimerLiveActivity else { return }
                     
                     self.doOpen()
                 }

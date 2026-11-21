@@ -40,6 +40,8 @@ struct TabSelectionView: View {
                 return showClipboardTab
             case .agents:
                 return showAgentsTab
+            case .timer, .caffeine:
+                return false
             }
         }
     }

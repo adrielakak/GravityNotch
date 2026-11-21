@@ -1773,6 +1773,22 @@
         }
       }
     },
+    "Add 1 Minute": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add 1 Minute"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ajouter 1 minute"
+          }
+        }
+      }
+    },
     "Add manually": {
       "extractionState": "stale",
       "localizations": {
@@ -3946,6 +3962,38 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "Boring Notch"
+          }
+        }
+      }
+    },
+    "Break": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Break"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        }
+      }
+    },
+    "Cancel Timer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel Timer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Annuler le minuteur"
           }
         }
       }
@@ -9435,6 +9483,22 @@
         }
       }
     },
+    "Ends at %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ends at %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fin à %@"
+          }
+        }
+      }
+    },
     "Enhance your experience with HUDs": {
       "localizations": {
         "ar": {
@@ -10212,6 +10276,22 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "完成"
+          }
+        }
+      }
+    },
+    "Focus": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Focus"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Focus"
           }
         }
       }
@@ -12244,6 +12324,22 @@
         }
       }
     },
+    "In Progress": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In Progress"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En cours"
+          }
+        }
+      }
+    },
     "In This Playlist": {
       "localizations": {
         "en": {
@@ -12372,6 +12468,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Inactif"
+          }
+        }
+      }
+    },
+    "Indefinitely ∞": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indefinitely ∞"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sans limite ∞"
           }
         }
       }
@@ -12577,6 +12689,22 @@
         }
       }
     },
+    "Keep Awake": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep Awake"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Garder éveillé"
+          }
+        }
+      }
+    },
     "Keep Awake Indefinitely (∞)": {
       "localizations": {
         "en": {
@@ -12605,6 +12733,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Maintenir le Mac éveillé (Caffeine)"
+          }
+        }
+      }
+    },
+    "Keep your Mac awake": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep your Mac awake"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Garder le Mac éveillé"
           }
         }
       }
@@ -13085,6 +13229,22 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "低电量模式"
+          }
+        }
+      }
+    },
+    "Mac stays awake": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac stays awake"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac maintenu éveillé"
           }
         }
       }
@@ -17142,6 +17302,38 @@
         }
       }
     },
+    "Pause": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pause"
+          }
+        }
+      }
+    },
+    "Paused": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paused"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En pause"
+          }
+        }
+      }
+    },
     "Permission required": {
       "localizations": {
         "en": {
@@ -18842,6 +19034,22 @@
         }
       }
     },
+    "Repeat Timer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repeat Timer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relancer le minuteur"
+          }
+        }
+      }
+    },
     "Replace system HUD": {
       "localizations": {
         "ar": {
@@ -19455,6 +19663,38 @@
           "stringUnit": {
             "state": "translated",
             "value": "Relancez GravityNotch pour appliquer la nouvelle langue."
+          }
+        }
+      }
+    },
+    "Restart Timer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restart Timer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relancer"
+          }
+        }
+      }
+    },
+    "Resume": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resume"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reprendre"
           }
         }
       }
@@ -22216,6 +22456,38 @@
         }
       }
     },
+    "Sound Off": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sound Off"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son coupé"
+          }
+        }
+      }
+    },
+    "Sound On": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sound On"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Son activé"
+          }
+        }
+      }
+    },
     "Speech bubble when an agent finishes or needs you": {
       "localizations": {
         "en": {
@@ -22448,6 +22720,38 @@
         }
       }
     },
+    "Start a Timer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start a Timer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lancer un minuteur"
+          }
+        }
+      }
+    },
+    "Start Timer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start Timer"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lancer"
+          }
+        }
+      }
+    },
     "Step #%lld": {
       "localizations": {
         "en": {
@@ -22460,6 +22764,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Étape n°%lld"
+          }
+        }
+      }
+    },
+    "Stop": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrêter"
           }
         }
       }
@@ -23078,6 +23398,22 @@
         }
       }
     },
+    "Timer: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Timer: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Minuteur : %@"
+          }
+        }
+      }
+    },
     "Tint progress bar with accent color": {
       "localizations": {
         "ar": {
@@ -23390,6 +23726,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Agrandir ou réduire la pochette"
+          }
+        }
+      }
+    },
+    "Turn Off": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turn Off"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Désactiver"
           }
         }
       }

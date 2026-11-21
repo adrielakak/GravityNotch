@@ -14,6 +14,7 @@ struct BoringHeader: View {
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @StateObject var tvm = ShelfStateViewModel.shared
     @ObservedObject var caffeine = CaffeineManager.shared
+    @ObservedObject var notchTimer = NotchTimerManager.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
     @Default(.boringShelf) private var boringShelf
     @Default(.showClipboardTab) private var showClipboardTab
@@ -130,35 +131,39 @@ struct BoringHeader: View {
                             }
                         }
                         Button(action: {
-                            caffeine.toggle()
+                            toggleView(.caffeine)
                         }) {
                             Capsule()
                                 .fill(.black)
                                 .frame(width: 30, height: 30)
                                 .overlay {
                                     Image(systemName: caffeine.isActive ? "cup.and.saucer.fill" : "cup.and.saucer")
-                                        .foregroundColor(caffeine.isActive ? .orange : .white)
+                                        .foregroundColor(caffeine.isActive || coordinator.currentView == .caffeine ? CaffeinePickerView.accent : .white)
+                                        .padding()
+                                        .imageScale(.medium)
+                                }
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .help(String(localized: "Keep Mac Awake (Caffeine)"))
+                        Button(action: {
+                            toggleView(.timer)
+                        }) {
+                            Capsule()
+                                .fill(.black)
+                                .frame(width: 30, height: 30)
+                                .overlay {
+                                    Image(systemName: notchTimer.isActive ? "timer.circle.fill" : "timer")
+                                        .foregroundColor(notchTimer.isActive || coordinator.currentView == .timer ? NotchTimerManager.accent : .white)
                                         .padding()
                                         .imageScale(.medium)
                                 }
                         }
                         .buttonStyle(PlainButtonStyle())
                         .help(
-                            caffeine.isActive
-                                ? String(localized: "Caffeine Active (\(caffeine.remainingText)) - Right-click for timer")
-                                : String(localized: "Keep Mac Awake (Caffeine)")
+                            notchTimer.isActive
+                                ? String(localized: "Timer: \(notchTimer.remainingText)")
+                                : String(localized: "Start a Timer")
                         )
-                        .contextMenu {
-                            Button("Keep Awake Indefinitely (∞)") { caffeine.activate(durationMinutes: nil) }
-                            Button("15 Minutes") { caffeine.activate(durationMinutes: 15) }
-                            Button("30 Minutes") { caffeine.activate(durationMinutes: 30) }
-                            Button("1 Hour") { caffeine.activate(durationMinutes: 60) }
-                            Button("2 Hours") { caffeine.activate(durationMinutes: 120) }
-                            if caffeine.isActive {
-                                Divider()
-                                Button("Turn Off Caffeine") { caffeine.deactivate() }
-                            }
-                        }
                         if Defaults[.settingsIconInNotch] {
                             Button(action: {
                                 DispatchQueue.main.async {
@@ -201,6 +206,12 @@ struct BoringHeader: View {
         }
         .foregroundColor(.gray)
         .environmentObject(vm)
+    }
+
+    private func toggleView(_ view: NotchViews) {
+        withAnimation(.smooth) {
+            coordinator.currentView = coordinator.currentView == view ? .home : view
+        }
     }
 
     func isHUDType(_ type: SneakContentType) -> Bool {

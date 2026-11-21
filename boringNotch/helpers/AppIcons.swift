@@ -1059,6 +1059,7 @@ final class BluetoothAudioLiveActivityManager: ObservableObject {
 private struct BluetoothBatteryRingView: View {
     let percentage: Int
     var size: CGFloat = 24
+    var lineWidth: CGFloat = 2.5
     @State private var animatedFraction: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1075,11 +1076,11 @@ private struct BluetoothBatteryRingView: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.white.opacity(0.20), lineWidth: 2.5)
+                .stroke(Color.white.opacity(0.18), lineWidth: lineWidth)
 
             Circle()
                 .trim(from: 0, to: animatedFraction)
-                .stroke(ringColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .stroke(ringColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
 
             Text("\(percentage)")
@@ -1115,14 +1116,18 @@ struct BluetoothAudioClosedNotchView: View {
     let centerSpacerWidth: CGFloat
     let isHovered: Bool
 
+    static let expandedWingWidth: CGFloat = 112
+
+    static func compactWingWidth(closedHeight: CGFloat) -> CGFloat {
+        closedHeight > 0 ? max(24, closedHeight - 6) : 26
+    }
+
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var earHeight: CGFloat {
-        closedHeight > 0 ? max(28, closedHeight) : 34
+        closedHeight > 0 ? max(28, closedHeight) : 32
     }
-
-    private let wingWidth: CGFloat = 106
 
     var body: some View {
         let device = manager.currentDevice ?? BluetoothAudioDeviceInfo(
@@ -1132,82 +1137,906 @@ struct BluetoothAudioClosedNotchView: View {
         )
         let accent = device.modelKind.accentColor
         let breakdown = device.hoverBreakdownText
-        let showHoverBreakdown = isHovered && (breakdown != nil)
+        let expanded = isHovered
+        let wingWidth = expanded ? Self.expandedWingWidth : Self.compactWingWidth(closedHeight: closedHeight)
 
         HStack(spacing: 0) {
-            // Left ear beside camera bezel: crisp hardware icon + Connected / device name
             HStack(spacing: 7) {
                 Image(systemName: device.modelKind.symbolName)
-                    .font(.system(size: 18, weight: .regular))
+                    .font(.system(size: 16, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.white)
-                    .frame(width: 20, height: 20, alignment: .center)
+                    .frame(width: 18, height: 18, alignment: .center)
                     .conditionalModifier(!reduceMotion) { view in
                         view.symbolEffect(.bounce.up, value: manager.animationNonce)
                     }
 
-                VStack(alignment: .leading, spacing: 0.5) {
-                    Text("Connected")
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.60))
-                        .lineLimit(1)
-
+                if expanded {
                     Text(device.name)
-                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .tracking(-0.1)
                         .foregroundStyle(.white)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .truncationMode(.tail)
+                        .transition(.opacity.combined(with: .offset(x: -4)))
                 }
             }
-            .padding(.leading, 2)
+            .padding(.leading, 4)
             .frame(width: wingWidth, height: earHeight, alignment: .leading)
-            .offset(x: appeared || reduceMotion ? 0 : 12)
+            .clipped()
+            .offset(x: appeared || reduceMotion ? 0 : 4)
 
             Rectangle()
                 .fill(.black)
                 .frame(width: closedHeight > 0 ? max(20, centerSpacerWidth) : 18)
 
-            // Right ear beside camera bezel: pure battery ring at rest, L/R/Case detail on hover only
             HStack(spacing: 6) {
-                if showHoverBreakdown, let breakdown {
+                if expanded, let breakdown {
                     Text(breakdown)
-                        .font(.system(size: 9.0, weight: .medium, design: .rounded))
+                        .font(.system(size: 9, weight: .medium))
                         .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.68))
+                        .foregroundStyle(.white.opacity(0.62))
                         .lineLimit(1)
                         .minimumScaleFactor(0.80)
-                        .transition(.opacity)
+                        .transition(.opacity.combined(with: .offset(x: 4)))
                 }
 
                 if let primary = device.primaryBatteryPercentage {
-                    BluetoothBatteryRingView(percentage: primary, size: min(24, max(20, earHeight - 8)))
+                    BluetoothBatteryRingView(percentage: primary, size: min(20, max(17, earHeight - 12)), lineWidth: 2)
                 } else {
                     Image(systemName: "wave.3.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(accent)
                         .conditionalModifier(!reduceMotion) { view in
                             view.symbolEffect(.variableColor.iterative, value: appeared)
                         }
                 }
             }
-            .padding(.trailing, 2)
+            .padding(.trailing, 3)
             .frame(width: wingWidth, height: earHeight, alignment: .trailing)
-            .offset(x: appeared || reduceMotion ? 0 : -12)
-            .animation(.easeOut(duration: 0.16), value: showHoverBreakdown)
+            .clipped()
+            .offset(x: appeared || reduceMotion ? 0 : -4)
         }
         .frame(height: earHeight, alignment: .center)
         .opacity(appeared ? 1.0 : 0.0)
+        .animation(.spring(response: 0.36, dampingFraction: 0.86), value: expanded)
+        .help(device.name)
         .id(manager.animationNonce)
         .onAppear {
             if reduceMotion {
                 appeared = true
             } else {
                 appeared = false
-                withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
                     appeared = true
                 }
             }
         }
+    }
+}
+
+// MARK: - Notch Timer (Dynamic Island style countdown)
+
+@MainActor
+final class NotchTimerManager: ObservableObject {
+    static let shared = NotchTimerManager()
+
+    enum Phase: Equatable {
+        case idle
+        case running
+        case paused
+        case finished
+    }
+
+    static let accent = Color(red: 1.0, green: 0.62, blue: 0.04)
+
+    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var remaining: TimeInterval = 0
+    @Published private(set) var duration: TimeInterval = 0
+
+    private var endDate: Date?
+    private var ticker: Timer?
+    private var alarmTimer: Timer?
+    private var alarmStartedAt: Date?
+    private var finishedClearTask: Task<Void, Never>?
+
+    private static let alarmRingDuration: TimeInterval = 30
+    private static let finishedAutoClearDelay: TimeInterval = 60
+
+    private init() {}
+
+    var isActive: Bool { phase != .idle }
+
+    var scheduledEndDate: Date? { endDate }
+
+    var remainingText: String {
+        Self.format(phase == .finished ? 0 : remaining)
+    }
+
+    static func format(_ interval: TimeInterval) -> String {
+        let total = max(0, Int(interval.rounded(.up)))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    func start(minutes: Int) {
+        start(duration: TimeInterval(minutes * 60))
+    }
+
+    func start(duration newDuration: TimeInterval) {
+        guard newDuration > 0 else { return }
+        stopAlarm()
+        duration = newDuration
+        remaining = newDuration
+        endDate = Date().addingTimeInterval(newDuration)
+        phase = .running
+        startTicker()
+    }
+
+    func togglePause() {
+        switch phase {
+        case .running: pause()
+        case .paused: resume()
+        default: break
+        }
+    }
+
+    func pause() {
+        guard phase == .running, let endDate else { return }
+        remaining = max(0, endDate.timeIntervalSinceNow)
+        self.endDate = nil
+        phase = .paused
+        stopTicker()
+    }
+
+    func resume() {
+        guard phase == .paused else { return }
+        endDate = Date().addingTimeInterval(remaining)
+        phase = .running
+        startTicker()
+    }
+
+    func add(minutes: Int) {
+        let extra = TimeInterval(minutes * 60)
+        switch phase {
+        case .running:
+            endDate = endDate?.addingTimeInterval(extra)
+            duration += extra
+            remaining += extra
+        case .paused:
+            duration += extra
+            remaining += extra
+        case .finished, .idle:
+            start(duration: extra)
+        }
+    }
+
+    func repeatLast() {
+        start(duration: duration > 0 ? duration : 300)
+    }
+
+    func cancel() {
+        stopTicker()
+        stopAlarm()
+        endDate = nil
+        remaining = 0
+        duration = 0
+        phase = .idle
+    }
+
+    private func startTicker() {
+        stopTicker()
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.tick()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        ticker = timer
+    }
+
+    private func stopTicker() {
+        ticker?.invalidate()
+        ticker = nil
+    }
+
+    private func tick() {
+        guard phase == .running, let endDate else { return }
+        let left = endDate.timeIntervalSinceNow
+        if left <= 0 {
+            finish()
+        } else if Int(left.rounded(.up)) != Int(remaining.rounded(.up)) {
+            remaining = left
+        }
+    }
+
+    private func finish() {
+        stopTicker()
+        endDate = nil
+        remaining = 0
+        phase = .finished
+        startAlarm()
+        finishedClearTask?.cancel()
+        finishedClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.finishedAutoClearDelay))
+            guard !Task.isCancelled, let self, self.phase == .finished else { return }
+            self.cancel()
+        }
+    }
+
+    private func startAlarm() {
+        stopAlarm(keepClearTask: true)
+        alarmStartedAt = Date()
+        playAlarmSound()
+        let timer = Timer(timeInterval: 2.4, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let started = self.alarmStartedAt else { return }
+                if Date().timeIntervalSince(started) >= Self.alarmRingDuration {
+                    self.stopAlarm(keepClearTask: true)
+                } else {
+                    self.playAlarmSound()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        alarmTimer = timer
+    }
+
+    private func stopAlarm(keepClearTask: Bool = false) {
+        alarmTimer?.invalidate()
+        alarmTimer = nil
+        alarmStartedAt = nil
+        if !keepClearTask {
+            finishedClearTask?.cancel()
+            finishedClearTask = nil
+        }
+    }
+
+    private func playAlarmSound() {
+        guard Defaults[.timerSoundEnabled] else { return }
+        let sound = NSSound(named: NSSound.Name("Glass")) ?? NSSound(named: NSSound.Name("Ping"))
+        sound?.stop()
+        sound?.play()
+    }
+}
+
+private struct NotchPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
+private struct NotchRoundIconButton: View {
+    let systemName: String
+    let foreground: Color
+    let background: Color
+    var size: CGFloat = 34
+    let help: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: size * 0.4, weight: .bold))
+                .foregroundStyle(foreground)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: size, height: size)
+                .background(Circle().fill(background).brightness(isHovering ? 0.06 : 0))
+                .contentShape(Circle())
+        }
+        .buttonStyle(NotchPressStyle())
+        .help(help)
+        .onHover { isHovering = $0 }
+    }
+}
+
+private struct NotchPillButton: View {
+    let title: String
+    var systemImage: String? = nil
+    let accent: Color
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .bold))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(accent)
+            .padding(.horizontal, 18)
+            .frame(height: 34)
+            .background(Capsule().fill(accent.opacity(isHovering ? 0.28 : 0.2)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(NotchPressStyle())
+        .onHover { isHovering = $0 }
+    }
+}
+
+private struct NotchChip: View {
+    let title: String
+    let isSelected: Bool
+    let accent: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(isSelected ? accent : .white.opacity(0.5))
+                .padding(.horizontal, 12)
+                .frame(height: 24)
+                .background(Capsule().fill(isSelected ? accent.opacity(0.22) : .white.opacity(0.09)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(NotchPressStyle())
+        .animation(.easeOut(duration: 0.18), value: isSelected)
+    }
+}
+
+private struct NotchRulerTriangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Catches trackpad / mouse wheel scrolls while the pointer is over the ruler.
+@MainActor
+private final class NotchScrollWheelMonitor: ObservableObject {
+    var isHovering = false
+    var handler: ((NSEvent) -> Bool)?
+    private var monitor: Any?
+
+    func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, self.isHovering, let handler = self.handler else { return event }
+            return handler(event) ? nil : event
+        }
+    }
+
+    func stop() {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        monitor = nil
+    }
+}
+
+private struct NotchRulerCanvas: View, Animatable {
+    var value: Double
+    let range: ClosedRange<Int>
+    let labelEvery: Int
+    let label: (Int) -> String
+    let accent: Color
+    let tickSpacing: CGFloat
+
+    var animatableData: Double {
+        get { value }
+        set { value = newValue }
+    }
+
+    var body: some View {
+        Canvas { context, size in
+            let centerX = size.width / 2
+            let labelY: CGFloat = 7
+            let tickTop: CGFloat = 18
+            let tickBottom = size.height
+            let halfCount = Int(ceil(Double(centerX / tickSpacing))) + 1
+            let lower = max(range.lowerBound, Int(floor(value)) - halfCount)
+            let upper = min(range.upperBound, Int(ceil(value)) + halfCount)
+            guard lower <= upper else { return }
+            let selected = Int(value.rounded())
+            let highlight = Color(white: 0.97)
+
+            for tick in lower...upper {
+                let x = centerX + CGFloat(Double(tick) - value) * tickSpacing
+                let distance = abs(Double(tick) - value)
+                let isPast = Double(tick) <= value + 0.001
+                let opacity = isPast ? max(0.3, 1.0 - distance * 0.04) : 0.2
+                let isSelected = tick == selected
+                let isMajor = tick % labelEvery == 0
+
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: isMajor || isSelected ? tickTop : tickTop + 5))
+                path.addLine(to: CGPoint(x: x, y: tickBottom))
+                context.stroke(
+                    path,
+                    with: .color(isSelected ? highlight : accent.opacity(opacity)),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                )
+
+                if isMajor {
+                    let text = Text(label(tick))
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(isSelected ? highlight : accent.opacity(isPast ? max(0.45, opacity) : 0.32))
+                    context.draw(text, at: CGPoint(x: x, y: labelY), anchor: .center)
+                }
+            }
+        }
+    }
+}
+
+/// Horizontal tick ruler used to pick a duration (timer, caffeine). `value` is in ticks.
+private struct NotchDurationRuler: View {
+    @Binding var value: Double
+    let range: ClosedRange<Int>
+    let labelEvery: Int
+    let label: (Int) -> String
+    let accent: Color
+    var interactive: Bool = true
+    var tickSpacing: CGFloat = 10
+
+    @State private var dragStartValue: Double?
+    @State private var holdsNotchOpen = false
+    @State private var snapTask: Task<Void, Never>?
+    @StateObject private var wheel = NotchScrollWheelMonitor()
+
+    var body: some View {
+        VStack(spacing: 3) {
+            NotchRulerCanvas(
+                value: value,
+                range: range,
+                labelEvery: labelEvery,
+                label: label,
+                accent: accent,
+                tickSpacing: tickSpacing
+            )
+            .frame(height: 42)
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black, location: 0.14),
+                        .init(color: .black, location: 0.86),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+
+            NotchRulerTriangle()
+                .fill(accent)
+                .frame(width: 10, height: 6)
+                .opacity(interactive ? 1 : 0.5)
+        }
+        .contentShape(Rectangle())
+        .gesture(dragGesture, including: interactive ? .all : .none)
+        .onHover { wheel.isHovering = $0 }
+        .onAppear {
+            installWheelHandler()
+            wheel.start()
+        }
+        .onDisappear {
+            wheel.stop()
+            snapTask?.cancel()
+            releaseNotchHold()
+        }
+        .onChange(of: interactive) { _, _ in
+            installWheelHandler()
+        }
+        .onChange(of: Int(value.rounded())) { _, _ in
+            guard interactive else { return }
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { drag in
+                snapTask?.cancel()
+                let start = dragStartValue ?? value
+                if dragStartValue == nil { dragStartValue = start }
+                if !holdsNotchOpen {
+                    holdsNotchOpen = true
+                    SharingStateManager.shared.beginInteraction()
+                }
+                value = clamp(start - Double(drag.translation.width / tickSpacing))
+            }
+            .onEnded { drag in
+                let start = dragStartValue ?? value
+                dragStartValue = nil
+                let projected = clamp(start - Double(drag.predictedEndTranslation.width / tickSpacing))
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+                    value = projected.rounded()
+                }
+                releaseNotchHold()
+            }
+    }
+
+    /// Keeps the notch open while the ruler is dragged, even if the pointer overshoots the notch.
+    /// Releasing posts `.sharingDidFinish`, which closes the notch only if the pointer is outside.
+    private func releaseNotchHold() {
+        guard holdsNotchOpen else { return }
+        holdsNotchOpen = false
+        SharingStateManager.shared.endInteraction()
+    }
+
+    private func installWheelHandler() {
+        let binding = $value
+        let isInteractive = interactive
+        let spacing = tickSpacing
+        let bounds = range
+        wheel.handler = { event in
+            guard isInteractive else { return false }
+            let clampValue: (Double) -> Double = { min(Double(bounds.upperBound), max(Double(bounds.lowerBound), $0)) }
+            if event.hasPreciseScrollingDeltas {
+                guard abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) else { return false }
+                binding.wrappedValue = clampValue(binding.wrappedValue - Double(event.scrollingDeltaX / spacing))
+            } else {
+                let delta = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.scrollingDeltaX
+                guard delta != 0 else { return false }
+                binding.wrappedValue = clampValue(binding.wrappedValue.rounded() + (delta > 0 ? -1 : 1))
+            }
+            scheduleSnap(binding)
+            return true
+        }
+    }
+
+    private func scheduleSnap(_ binding: Binding<Double>) {
+        snapTask?.cancel()
+        snapTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(140))
+            guard !Task.isCancelled else { return }
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                binding.wrappedValue = binding.wrappedValue.rounded()
+            }
+        }
+    }
+
+    private func clamp(_ raw: Double) -> Double {
+        min(Double(range.upperBound), max(Double(range.lowerBound), raw))
+    }
+}
+
+// MARK: Closed notch (compact, notch height)
+
+struct TimerClosedNotchView: View {
+    @ObservedObject var timer = NotchTimerManager.shared
+    let closedHeight: CGFloat
+    let centerSpacerWidth: CGFloat
+
+    static let wingWidth: CGFloat = 64
+
+    @State private var appeared = false
+    @State private var finishedBlink = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var earHeight: CGFloat {
+        closedHeight > 0 ? max(28, closedHeight) : 32
+    }
+
+    var body: some View {
+        let accent = NotchTimerManager.accent
+        let isFinished = timer.phase == .finished
+        let isPaused = timer.phase == .paused
+        let buttonSize = min(21, max(18, earHeight - 11))
+
+        HStack(spacing: 0) {
+            HStack(spacing: 5) {
+                if isFinished {
+                    NotchRoundIconButton(
+                        systemName: "arrow.clockwise",
+                        foreground: accent,
+                        background: accent.opacity(0.24),
+                        size: buttonSize,
+                        help: String(localized: "Repeat Timer")
+                    ) {
+                        timer.repeatLast()
+                    }
+                } else {
+                    NotchRoundIconButton(
+                        systemName: isPaused ? "play.fill" : "pause.fill",
+                        foreground: accent,
+                        background: accent.opacity(0.24),
+                        size: buttonSize,
+                        help: isPaused ? String(localized: "Resume") : String(localized: "Pause")
+                    ) {
+                        timer.togglePause()
+                    }
+                }
+
+                NotchRoundIconButton(
+                    systemName: "xmark",
+                    foreground: .white.opacity(0.85),
+                    background: .white.opacity(0.15),
+                    size: buttonSize,
+                    help: isFinished ? String(localized: "Stop") : String(localized: "Cancel Timer")
+                ) {
+                    timer.cancel()
+                }
+            }
+            .padding(.leading, 4)
+            .frame(width: Self.wingWidth, height: earHeight, alignment: .leading)
+            .offset(x: appeared || reduceMotion ? 0 : 6)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: closedHeight > 0 ? max(20, centerSpacerWidth) : 18)
+
+            Text(timer.remainingText)
+                .font(.system(size: 14.5, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(accent.opacity(isPaused ? 0.55 : 1.0))
+                .opacity(isFinished && finishedBlink ? 0.35 : 1.0)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .contentTransition(.numericText(countsDown: true))
+                .animation(.smooth(duration: 0.3), value: timer.remainingText)
+                .animation(.easeInOut(duration: 0.2), value: isPaused)
+                .padding(.trailing, 4)
+                .frame(width: Self.wingWidth, height: earHeight, alignment: .trailing)
+                .offset(x: appeared || reduceMotion ? 0 : -6)
+        }
+        .frame(height: earHeight, alignment: .center)
+        .opacity(appeared ? 1.0 : 0.0)
+        .onAppear {
+            if reduceMotion {
+                appeared = true
+            } else {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
+                    appeared = true
+                }
+            }
+            updateBlink(isFinished: isFinished)
+        }
+        .onChange(of: isFinished) { _, finished in
+            updateBlink(isFinished: finished)
+        }
+    }
+
+    private func updateBlink(isFinished: Bool) {
+        guard isFinished, !reduceMotion else {
+            finishedBlink = false
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
+            finishedBlink = true
+        }
+    }
+}
+
+// MARK: Open notch pickers
+
+struct TimerPickerView: View {
+    @ObservedObject var timer = NotchTimerManager.shared
+    @Default(.timerLastMinutes) private var lastMinutes
+    @Default(.timerSoundEnabled) private var soundEnabled
+    @State private var selection: Double = 25
+
+    private static let focusMinutes = 25
+    private static let breakMinutes = 5
+
+    var body: some View {
+        let accent = NotchTimerManager.accent
+        let active = timer.isActive
+        let selectedMinutes = Int(selection.rounded())
+
+        VStack(spacing: 6) {
+            HStack {
+                if active {
+                    NotchChip(title: statusTitle, isSelected: true, accent: accent) {}
+                        .allowsHitTesting(false)
+                } else {
+                    NotchChip(title: String(localized: "Focus"), isSelected: selectedMinutes == Self.focusMinutes, accent: accent) {
+                        select(Self.focusMinutes)
+                    }
+                }
+                Spacer()
+                if active {
+                    if let end = timer.scheduledEndDate {
+                        Text(String(localized: "Ends at \(end.formatted(date: .omitted, time: .shortened))"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+                } else {
+                    NotchChip(title: String(localized: "Break"), isSelected: selectedMinutes == Self.breakMinutes, accent: accent) {
+                        select(Self.breakMinutes)
+                    }
+                }
+            }
+
+            NotchDurationRuler(
+                value: active ? .constant(timer.remaining / 60) : $selection,
+                range: 1...120,
+                labelEvery: 5,
+                label: { "\($0)" },
+                accent: accent,
+                interactive: !active
+            )
+            .animation(active ? .linear(duration: 0.9) : nil, value: timer.remaining)
+
+            HStack(spacing: 10) {
+                switch timer.phase {
+                case .idle:
+                    NotchPillButton(title: String(localized: "Start Timer"), accent: accent) {
+                        lastMinutes = selectedMinutes
+                        timer.start(minutes: selectedMinutes)
+                    }
+                case .running, .paused:
+                    let paused = timer.phase == .paused
+                    NotchPillButton(
+                        title: paused ? String(localized: "Resume") : String(localized: "Pause"),
+                        systemImage: paused ? "play.fill" : "pause.fill",
+                        accent: accent
+                    ) {
+                        timer.togglePause()
+                    }
+                    NotchRoundIconButton(systemName: "plus", foreground: accent, background: accent.opacity(0.2), help: String(localized: "Add 1 Minute")) {
+                        timer.add(minutes: 1)
+                    }
+                    NotchRoundIconButton(systemName: "xmark", foreground: .white.opacity(0.85), background: .white.opacity(0.14), help: String(localized: "Cancel Timer")) {
+                        timer.cancel()
+                    }
+                case .finished:
+                    NotchPillButton(title: String(localized: "Restart Timer"), systemImage: "arrow.clockwise", accent: accent) {
+                        timer.repeatLast()
+                    }
+                    NotchRoundIconButton(systemName: "xmark", foreground: .white.opacity(0.85), background: .white.opacity(0.14), help: String(localized: "Stop")) {
+                        timer.cancel()
+                    }
+                }
+
+                NotchRoundIconButton(
+                    systemName: soundEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                    foreground: soundEnabled ? accent : .white.opacity(0.5),
+                    background: soundEnabled ? accent.opacity(0.2) : .white.opacity(0.1),
+                    help: soundEnabled ? String(localized: "Sound On") : String(localized: "Sound Off")
+                ) {
+                    soundEnabled.toggle()
+                }
+
+                Spacer(minLength: 8)
+
+                Text(active ? timer.remainingText : NotchTimerManager.format(Double(selectedMinutes * 60)))
+                    .font(.system(size: 36, weight: .semibold))
+                    .monospacedDigit()
+                    .tracking(-0.6)
+                    .foregroundStyle(accent.opacity(timer.phase == .paused ? 0.55 : 1))
+                    .lineLimit(1)
+                    .contentTransition(.numericText(countsDown: active))
+                    .animation(.smooth(duration: 0.25), value: active ? timer.remainingText : "\(selectedMinutes)")
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 2)
+        .onAppear {
+            selection = Double(min(120, max(1, lastMinutes)))
+        }
+    }
+
+    private var statusTitle: String {
+        switch timer.phase {
+        case .paused: return String(localized: "Paused")
+        case .finished: return String(localized: "Done")
+        default: return String(localized: "In Progress")
+        }
+    }
+
+    private func select(_ minutes: Int) {
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.86)) {
+            selection = Double(minutes)
+        }
+    }
+}
+
+struct CaffeinePickerView: View {
+    @ObservedObject var caffeine = CaffeineManager.shared
+    @Default(.caffeineLastMinutes) private var lastMinutes
+    @State private var selection: Double = 12
+
+    static let accent = Color(red: 0.93, green: 0.69, blue: 0.43)
+    private static let minutesPerTick = 5
+    private static let tickRange = 1...96
+
+    static func durationText(minutes: Int) -> String {
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return rest == 0 ? "\(hours) h" : String(format: "%d h %02d", hours, rest)
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            content(now: context.date)
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 2)
+        .onAppear {
+            let ticks = max(1, lastMinutes / Self.minutesPerTick)
+            selection = Double(min(Self.tickRange.upperBound, ticks))
+        }
+    }
+
+    @ViewBuilder
+    private func content(now: Date) -> some View {
+        let accent = Self.accent
+        let active = caffeine.isActive
+        let indefinite = active && caffeine.expiresAt == nil
+        let remainingMinutes = caffeine.expiresAt.map { max(0, $0.timeIntervalSince(now) / 60) }
+        let selectedMinutes = Int(selection.rounded()) * Self.minutesPerTick
+
+        VStack(spacing: 6) {
+            HStack {
+                NotchChip(title: String(localized: "Indefinitely ∞"), isSelected: indefinite, accent: accent) {
+                    if indefinite {
+                        caffeine.deactivate()
+                    } else {
+                        caffeine.activate(durationMinutes: nil)
+                    }
+                }
+                Spacer()
+                Text(active ? String(localized: "Mac stays awake") : String(localized: "Keep your Mac awake"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(active ? accent.opacity(0.8) : .white.opacity(0.45))
+            }
+
+            NotchDurationRuler(
+                value: remainingMinutes.map { .constant($0 / Double(Self.minutesPerTick)) } ?? $selection,
+                range: Self.tickRange,
+                labelEvery: 6,
+                label: { Self.durationText(minutes: $0 * Self.minutesPerTick) },
+                accent: accent,
+                interactive: !active
+            )
+            .opacity(indefinite ? 0.4 : 1)
+            .animation(remainingMinutes != nil ? .linear(duration: 0.9) : nil, value: remainingMinutes ?? 0)
+
+            HStack(spacing: 10) {
+                if active {
+                    NotchPillButton(title: String(localized: "Turn Off"), systemImage: "cup.and.saucer", accent: accent) {
+                        caffeine.deactivate()
+                    }
+                } else {
+                    NotchPillButton(title: String(localized: "Keep Awake"), systemImage: "cup.and.saucer.fill", accent: accent) {
+                        lastMinutes = selectedMinutes
+                        caffeine.activate(durationMinutes: selectedMinutes)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                Text(bigText(indefinite: indefinite, remainingMinutes: remainingMinutes, selectedMinutes: selectedMinutes))
+                    .font(.system(size: 36, weight: .semibold))
+                    .monospacedDigit()
+                    .tracking(-0.6)
+                    .foregroundStyle(accent)
+                    .lineLimit(1)
+                    .contentTransition(.numericText())
+                    .animation(.smooth(duration: 0.25), value: selectedMinutes)
+            }
+        }
+    }
+
+    private func bigText(indefinite: Bool, remainingMinutes: Double?, selectedMinutes: Int) -> String {
+        if indefinite { return "∞" }
+        if let remainingMinutes { return Self.durationText(minutes: max(1, Int(remainingMinutes.rounded(.up)))) }
+        return Self.durationText(minutes: selectedMinutes)
     }
 }
 
@@ -2515,7 +3344,7 @@ enum AgentWorkPhase: String, Equatable {
         switch self {
         case .thinking: return String(localized: "Thinking")
         case .editing: return String(localized: "Editing")
-        case .running: return String(localized: "Running")
+        case .running: return String(localized: "In Progress")
         case .reading: return String(localized: "Reading")
         case .searching: return String(localized: "Searching")
         case .waiting: return String(localized: "Ready")

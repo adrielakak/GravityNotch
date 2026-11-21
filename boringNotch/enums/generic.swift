@@ -29,6 +29,8 @@ public enum NotchViews {
     case shelf
     case clipboard
     case agents
+    case timer
+    case caffeine
 }
 
 enum SettingsEnum {
