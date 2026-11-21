@@ -206,6 +206,7 @@ extension Defaults.Keys {
     // MARK: HUD
     static let hudReplacement = Key<Bool>("hudReplacement", default: true)
     static let hudTapSafetyTimeout = Key<Bool>("hudTapSafetyTimeout", default: false)
+    static let lastLaunchedBuild = Key<String>("lastLaunchedBuild", default: "")
     static let showBluetoothAudioLiveActivity = Key<Bool>("showBluetoothAudioLiveActivity", default: true)
     static let inlineHUD = Key<Bool>("inlineHUD", default: true)
     static let enableGradient = Key<Bool>("enableGradient", default: false)

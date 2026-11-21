@@ -4,7 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REQ_FILE="Configuration/dmg/requirements.txt"
-CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+# A stable identity keeps the macOS Accessibility grant across updates. Ad hoc signatures ("-")
+# are pinned to the cdhash, which changes on every build, so every update would revoke it.
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-GravityNotch Code Signing}"
 SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-gravitynotch}"
 UPDATE_APPCAST=1
 RELEASE_TAG=""
@@ -44,8 +46,18 @@ check_dmgbuild() {
   die "dmgbuild is missing. Install it with: python3 -m pip install --require-hashes -r $REQ_FILE"
 }
 
+check_codesign_identity() {
+  if [ "$CODESIGN_IDENTITY" = "-" ]; then
+    echo "Warning: ad hoc signing, users will have to grant Accessibility again after this update." >&2
+    return 0
+  fi
+  security find-identity -p codesigning | grep -Fq "\"$CODESIGN_IDENTITY\"" \
+    || die "Signing identity \"$CODESIGN_IDENTITY\" not found in the keychain. Import the release .p12, or set CODESIGN_IDENTITY=- to sign ad hoc."
+}
+
 cd "$REPO_ROOT"
 check_dmgbuild
+check_codesign_identity
 
 if [ ! -f "$SCRIPT_DIR/.background/background.tiff" ]; then
   echo "Generating DMG HiDPI background..."
