@@ -5331,15 +5331,51 @@ final class LockScreenMediaPanelManager: ObservableObject {
     /// The panel window currently covers the whole screen (stays true while the wallpaper fades out).
     @Published private(set) var isWindowExpanded: Bool = false
     @Published private(set) var cardBottomInset: CGFloat = 0
+    @Published private(set) var cardHorizontalOffset: CGFloat = 0
+    /// Skipping tracks quickly makes the player report no media for a split second. Closing and
+    /// recreating the SkyLight window on each of those blips left the notch in an inconsistent state.
+    private var pendingDismissTask: Task<Void, Never>?
+    private var positionObserver: AnyCancellable?
 
+    private init() {
+        positionObserver = Defaults.publisher(keys: .lockScreenMediaHorizontalPosition, .lockScreenMediaVerticalPosition)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.applyPanelPosition()
+                }
+            }
+    }
+
+    /// Both settings go from 0 to 1 across the whole area the player can occupy on the screen.
     private func compactFrame(on screen: NSScreen) -> NSRect {
         let envelopeWidth: CGFloat = 436
         let envelopeHeight: CGFloat = 390
-        let originX = screen.frame.midX - (envelopeWidth / 2)
-        // Center comfortably in the fractal area, lowered cleanly above the login avatar (~195pt) and well below the clock
-        let targetCenterY = screen.frame.origin.y + (screen.frame.height * 0.31)
-        let originY = max(screen.frame.origin.y + 60, targetCenterY - (envelopeHeight / 2))
+        let sideMargin: CGFloat = 20
+        let bottomMargin: CGFloat = 20
+        let topMargin: CGFloat = 40
+        let horizontal = min(max(Defaults[.lockScreenMediaHorizontalPosition], 0), 1)
+        let vertical = min(max(Defaults[.lockScreenMediaVerticalPosition], 0), 1)
+        let horizontalRange = max(0, screen.frame.width - envelopeWidth - 2 * sideMargin)
+        let verticalRange = max(0, screen.frame.height - envelopeHeight - bottomMargin - topMargin)
+        let originX = screen.frame.minX + sideMargin + horizontalRange * horizontal
+        let originY = screen.frame.minY + bottomMargin + verticalRange * vertical
         return NSRect(x: originX, y: originY, width: envelopeWidth, height: envelopeHeight)
+    }
+
+    private func updateExpandedCardPlacement(on screen: NSScreen) {
+        let frame = compactFrame(on: screen)
+        cardBottomInset = frame.minY - screen.frame.minY
+        cardHorizontalOffset = frame.midX - screen.frame.midX
+    }
+
+    private func applyPanelPosition() {
+        guard let window = panelWindow, window.isVisible, let screen = panelScreen else { return }
+        if isWindowExpanded {
+            updateExpandedCardPlacement(on: screen)
+        } else {
+            window.setFrame(compactFrame(on: screen), display: true)
+        }
     }
 
     func toggleWallpaperMode() {
@@ -5372,7 +5408,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
     private func enterWallpaperMode() {
         guard !isWallpaperMode, let window = panelWindow, let screen = panelScreen else { return }
         wallpaperTransitionID += 1
-        cardBottomInset = compactFrame(on: screen).minY - screen.frame.minY
+        updateExpandedCardPlacement(on: screen)
         isWindowExpanded = true
         window.setFrame(screen.frame, display: true)
         keepNotchAbovePanel()
@@ -5449,6 +5485,8 @@ final class LockScreenMediaPanelManager: ObservableObject {
     }
 
     private func dismissPanelWindow() {
+        pendingDismissTask?.cancel()
+        pendingDismissTask = nil
         resetWallpaperMode()
         guard let window = panelWindow else { return }
         window.disableSkyLight()
@@ -5474,11 +5512,19 @@ final class LockScreenMediaPanelManager: ObservableObject {
                 return
             }
             if Self.hasActiveMedia() {
+                self.pendingDismissTask?.cancel()
+                self.pendingDismissTask = nil
                 if self.panelWindow?.isVisible != true {
                     self.presentPanel(delegateToSkyLight: true)
                 }
-            } else if self.panelWindow?.isVisible == true {
-                self.dismissPanelWindow()
+            } else if self.panelWindow?.isVisible == true, self.pendingDismissTask == nil {
+                self.pendingDismissTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled, let self else { return }
+                    self.pendingDismissTask = nil
+                    guard self.isLockScreenActive, !self.isPreviewVisible, !Self.hasActiveMedia() else { return }
+                    self.dismissPanelWindow()
+                }
             }
         }
     }
@@ -5497,6 +5543,8 @@ final class LockScreenMediaPanelManager: ObservableObject {
 
     private func presentPanel(delegateToSkyLight: Bool) {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        pendingDismissTask?.cancel()
+        pendingDismissTask = nil
         resetWallpaperMode()
         // On every lock the wallpaper comes back by itself as soon as a track has an animated artwork;
         // tapping it away only lasts until the next lock
@@ -5605,6 +5653,10 @@ private struct LockScreenMediaCardContainer: View {
     @ObservedObject var musicManager = MusicManager.shared
     @ObservedObject private var panelManager = LockScreenMediaPanelManager.shared
     @Default(.lockScreenMediaAmbientGlow) private var ambientGlowEnabled
+    @Default(.lockScreenHideMissingLyrics) private var hideMissingLyrics
+    /// Outcome of the last finished lookup. While the next track's lyrics load, the card keeps that
+    /// state instead of opening on "Loading" and closing again when nothing is found.
+    @State private var lastLookupFoundLyrics = false
 
     let currentDate: Date
     let showLyricsCard: Bool
@@ -5616,6 +5668,17 @@ private struct LockScreenMediaCardContainer: View {
 
     private var hasMediaTrack: Bool {
         LockScreenMediaPanelManager.hasActiveMedia(musicManager)
+    }
+
+    private var lyricsFound: Bool {
+        !musicManager.syncedLyrics.isEmpty
+            || !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var showsLyricsCard: Bool {
+        guard hasMediaTrack && showLyricsCard else { return false }
+        guard hideMissingLyrics else { return true }
+        return musicManager.isFetchingLyrics ? lastLookupFoundLyrics : lyricsFound
     }
 
     private var albumAccent: Color {
@@ -5659,7 +5722,7 @@ private struct LockScreenMediaCardContainer: View {
                 onClosePreview: onClosePreview
             )
 
-            if hasMediaTrack && showLyricsCard {
+            if showsLyricsCard {
                 LockScreenSyncedLyricsCard(
                     elapsed: elapsed,
                     duration: musicManager.songDuration,
@@ -5707,8 +5770,13 @@ private struct LockScreenMediaCardContainer: View {
         .shadow(color: panelManager.isWallpaperMode ? .clear : .black.opacity(0.34), radius: 12, y: 6)
         .padding(.horizontal, 20)
         .padding(.vertical, 18)
-        .animation(.spring(response: 0.34, dampingFraction: 0.85), value: showLyricsCard)
+        .animation(.spring(response: 0.34, dampingFraction: 0.85), value: showsLyricsCard)
         .animation(.spring(response: 0.34, dampingFraction: 0.85), value: isArtworkExpanded)
+        .onChange(of: "\(musicManager.isFetchingLyrics)|\(lyricsFound)", initial: true) {
+            if !musicManager.isFetchingLyrics {
+                lastLookupFoundLyrics = lyricsFound
+            }
+        }
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: showAudioDrawer)
     }
 }
@@ -6363,6 +6431,7 @@ struct LockScreenPanelRootView: View {
 
             LockScreenMediaPanelView(onClosePreview: onClosePreview)
                 .padding(.bottom, manager.isWindowExpanded ? manager.cardBottomInset : 0)
+                .offset(x: manager.isWindowExpanded ? manager.cardHorizontalOffset : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .onChange(of: animatedArtworkURL, initial: true) { _, url in

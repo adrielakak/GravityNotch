@@ -136,8 +136,12 @@ extension Defaults.Keys {
     static let showOnLockScreen = Key<Bool>("showOnLockScreen", default: true)
     static let lockScreenMediaPlayer = Key<Bool>("lockScreenMediaPlayer", default: true)
     static let lockScreenShowLyrics = Key<Bool>("lockScreenShowLyrics", default: true)
+    static let lockScreenHideMissingLyrics = Key<Bool>("lockScreenHideMissingLyrics", default: true)
     static let lockScreenMediaAmbientGlow = Key<Bool>("lockScreenMediaAmbientGlow", default: true)
     static let lockScreenAnimatedArtwork = Key<Bool>("lockScreenAnimatedArtwork", default: true)
+    /// 0 = far left / bottom, 1 = far right / top of the area the lock screen player can occupy.
+    static let lockScreenMediaHorizontalPosition = Key<Double>("lockScreenMediaHorizontalPosition", default: 0.5)
+    static let lockScreenMediaVerticalPosition = Key<Double>("lockScreenMediaVerticalPosition", default: 0.16)
     static let hideFromScreenRecording = Key<Bool>("hideFromScreenRecording", default: false)
 
     // MARK: Coding Agents Live Activity

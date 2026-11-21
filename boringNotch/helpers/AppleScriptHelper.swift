@@ -8,10 +8,14 @@
 import Foundation
 
 class AppleScriptHelper {
+    /// NSAppleScript is not thread-safe: two scripts running at the same time crash inside AppleEvents
+    /// (seen when spamming next track). Every script of the app runs on this one serial queue.
+    static let queue = DispatchQueue(label: "gravitynotch.applescript", qos: .userInitiated)
+
     @discardableResult
     class func execute(_ scriptText: String) async throws -> NSAppleEventDescriptor? {
         try await withCheckedThrowingContinuation { continuation in
-            Task.detached(priority: .userInitiated) {
+            queue.async {
                 let script = NSAppleScript(source: scriptText)
                 var error: NSDictionary?
                 if let descriptor = script?.executeAndReturnError(&error) {
@@ -24,7 +28,7 @@ class AppleScriptHelper {
             }
         }
     }
-    
+
     class func executeVoid(_ scriptText: String) async throws {
         _ = try await execute(scriptText)
     }

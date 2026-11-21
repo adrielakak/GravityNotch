@@ -51,6 +51,8 @@ class MusicManager: ObservableObject {
     @Published var currentLyrics: String = ""
     @Published var isFetchingLyrics: Bool = false
     @Published var syncedLyrics: [(time: Double, text: String)] = []
+    /// Skipping tracks starts overlapping lookups: only the latest one may publish its result.
+    private var lyricsRequestID = 0
     @Published var canFavoriteTrack: Bool = false
     @Published var isFavoriteTrack: Bool = false
 
@@ -327,6 +329,8 @@ class MusicManager: ObservableObject {
     func setFavorite(_ favorite: Bool) {
         guard canFavoriteTrack else { return }
         guard let controller = activeController else { return }
+        // The player can take a moment to confirm, the heart answers the click right away
+        isFavoriteTrack = favorite
 
         Task { @MainActor in
             await controller.setFavorite(favorite)
@@ -353,6 +357,7 @@ class MusicManager: ObservableObject {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !Self.placeholderTitles.contains(trimmed) else {
             DispatchQueue.main.async {
+                self.lyricsRequestID &+= 1
                 self.isFetchingLyrics = false
                 self.currentLyrics = ""
                 self.syncedLyrics = []
@@ -361,12 +366,15 @@ class MusicManager: ObservableObject {
         }
 
         Task { @MainActor in
+            self.lyricsRequestID &+= 1
+            let requestID = self.lyricsRequestID
             self.isFetchingLyrics = true
             self.currentLyrics = ""
             self.syncedLyrics = []
 
             // 1. Try LRCLIB web lookup first to obtain time-synced lyrics ([mm:ss.xx])
-            await self.fetchLyricsFromWeb(title: title, artist: artist)
+            await self.fetchLyricsFromWeb(title: title, artist: artist, requestID: requestID)
+            guard requestID == self.lyricsRequestID else { return }
             if !self.syncedLyrics.isEmpty || !self.currentLyrics.isEmpty {
                 self.isFetchingLyrics = false
                 return
@@ -398,7 +406,9 @@ class MusicManager: ObservableObject {
                         end if
                     end tell
                     """
-                    if let result = try await AppleScriptHelper.execute(script),
+                    let result = try await AppleScriptHelper.execute(script)
+                    guard requestID == self.lyricsRequestID else { return }
+                    if let result,
                        let lyricsString = result.stringValue,
                        !lyricsString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         self.currentLyrics = lyricsString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -426,18 +436,19 @@ class MusicManager: ObservableObject {
     }
 
     @MainActor
-    private func fetchLyricsFromWeb(title: String, artist: String) async {
-        if await queryLRCLib(title: title, artist: artist) {
+    private func fetchLyricsFromWeb(title: String, artist: String, requestID: Int) async {
+        if await queryLRCLib(title: title, artist: artist, requestID: requestID) {
             return
         }
+        guard requestID == lyricsRequestID else { return }
         let cleaned = strippedSongTitle(title)
         if !cleaned.isEmpty && cleaned.lowercased() != title.lowercased() {
-            _ = await queryLRCLib(title: cleaned, artist: artist)
+            _ = await queryLRCLib(title: cleaned, artist: artist, requestID: requestID)
         }
     }
 
     @MainActor
-    private func queryLRCLib(title: String, artist: String) async -> Bool {
+    private func queryLRCLib(title: String, artist: String, requestID: Int) async -> Bool {
         let cleanTitle = normalizedQuery(title)
         let cleanArtist = normalizedQuery(artist)
         guard let encodedTitle = cleanTitle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -449,6 +460,7 @@ class MusicManager: ObservableObject {
         guard let url = URL(string: urlString) else { return false }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
+            guard requestID == lyricsRequestID else { return false }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                   !jsonArray.isEmpty else {

@@ -41,15 +41,14 @@ class SpotifyController: MediaControllerProtocol {
     init() {
         setupPlaybackStateChangeObserver()
         setupTerminationObserver()
-        Task {
-            if isActive() {
-                await updatePlaybackInfo()
-            }
+        Task { @MainActor [weak self] in
+            guard let self, self.isActive() else { return }
+            await self.updatePlaybackInfo()
         }
     }
     
     private func setupPlaybackStateChangeObserver() {
-        notificationTask = Task { @Sendable [weak self] in
+        notificationTask = Task { @MainActor [weak self] in
             let notifications = DistributedNotificationCenter.default().notifications(
                 named: NSNotification.Name("com.spotify.client.PlaybackStateChanged")
             )
@@ -73,10 +72,14 @@ class SpotifyController: MediaControllerProtocol {
         ) { [weak self] notification in
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   app.bundleIdentifier == "com.spotify.client" else { return }
-            self?.resetToIdleState()
+            MainActor.assumeIsolated {
+                self?.resetToIdleState()
+            }
         }
     }
 
+    // State and tasks are only touched on the main actor (concurrent mutation crashed the app).
+    @MainActor
     private func resetToIdleState() {
         artworkFetchTask?.cancel()
         artworkFetchTask = nil
@@ -122,9 +125,10 @@ class SpotifyController: MediaControllerProtocol {
     }
     
     func isActive() -> Bool {
-        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == playbackState.bundleIdentifier }
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.spotify.client" }
     }
     
+    @MainActor
     func updatePlaybackInfo() async {
         guard isActive() else {
             resetToIdleState()
@@ -164,7 +168,7 @@ class SpotifyController: MediaControllerProtocol {
             state.artwork = existingArtwork
         }
 
-    playbackState = state
+        playbackState = state
 
         if !artworkURL.isEmpty, let url = URL(string: artworkURL) {
             guard artworkURL != lastArtworkURL || state.artwork == nil else { return }

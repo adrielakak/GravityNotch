@@ -769,6 +769,8 @@ struct Media: View {
     @Default(.lockScreenMediaPlayer) var lockScreenMediaPlayer
     @Default(.lockScreenShowLyrics) var lockScreenShowLyrics
     @Default(.lockScreenMediaAmbientGlow) var lockScreenMediaAmbientGlow
+    @Default(.lockScreenMediaHorizontalPosition) var lockScreenMediaHorizontalPosition
+    @Default(.lockScreenMediaVerticalPosition) var lockScreenMediaVerticalPosition
 
     var body: some View {
         Form {
@@ -874,12 +876,40 @@ struct Media: View {
                     Text("Show interactive lyrics on lock screen")
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                Defaults.Toggle(key: .lockScreenHideMissingLyrics) {
+                    Text("Hide lyrics when none are found")
+                }
+                .disabled(!showOnLockScreen || !lockScreenMediaPlayer || !lockScreenShowLyrics)
                 Defaults.Toggle(key: .lockScreenMediaAmbientGlow) {
                     Text("Ambient album artwork glow")
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Defaults.Toggle(key: .lockScreenAnimatedArtwork) {
                     Text("Use animated artwork as lock screen wallpaper")
+                }
+                .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                Group {
+                    Slider(value: $lockScreenMediaHorizontalPosition, in: 0...1) {
+                        Text("Horizontal position")
+                    } minimumValueLabel: {
+                        Image(systemName: "arrow.left")
+                    } maximumValueLabel: {
+                        Image(systemName: "arrow.right")
+                    }
+                    Slider(value: $lockScreenMediaVerticalPosition, in: 0...1) {
+                        Text("Vertical position")
+                    } minimumValueLabel: {
+                        Image(systemName: "arrow.down")
+                    } maximumValueLabel: {
+                        Image(systemName: "arrow.up")
+                    }
+                    Button("Reset player position") {
+                        Defaults.reset(.lockScreenMediaHorizontalPosition, .lockScreenMediaVerticalPosition)
+                    }
+                    .disabled(
+                        lockScreenMediaHorizontalPosition == Defaults.Keys.lockScreenMediaHorizontalPosition.defaultValue
+                            && lockScreenMediaVerticalPosition == Defaults.Keys.lockScreenMediaVerticalPosition.defaultValue
+                    )
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Button {
@@ -895,9 +925,12 @@ struct Media: View {
             } header: {
                 Text("Lock Screen Music Player")
             } footer: {
-                Text("Customize the Liquid Glass player, tap-to-seek synced lyrics, and inline audio output controls shown on the lock screen.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Customize the Liquid Glass player, tap-to-seek synced lyrics, and inline audio output controls shown on the lock screen.")
+                    Text("Open the preview to watch the player move while you adjust its position.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .accentColor(.effectiveAccent)

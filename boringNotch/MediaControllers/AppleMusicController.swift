@@ -33,21 +33,29 @@ class AppleMusicController: MediaControllerProtocol {
     private var positionResyncTask: Task<Void, Never>?
     private var periodicSyncTask: Task<Void, Never>?
     private var artworkRetryTask: Task<Void, Never>?
+    // Spamming next track used to start dozens of overlapping refreshes. Only one runs at a time,
+    // later requests just ask it to run once more.
+    private var isRefreshing = false
+    private var refreshRequested = false
+    /// Favoriting a radio track adds it to the library in the background: until that copy exists,
+    /// Music still reports it as not favorited. Keep the requested value for a few seconds.
+    private var pendingFavorite: (title: String, value: Bool, until: Date)?
     
     // MARK: - Initialization
+    // The state and the tasks are only touched on the main actor: they used to be mutated from several
+    // cooperative threads at once, which crashed while releasing a replaced Task.
     init() {
         setupPlaybackStateChangeObserver()
         setupTerminationObserver()
         setupPeriodicSync()
-        Task {
-            if isActive() {
-                await updatePlaybackInfo()
-            }
+        Task { @MainActor [weak self] in
+            guard let self, self.isActive() else { return }
+            await self.updatePlaybackInfo()
         }
     }
     
     private func setupPlaybackStateChangeObserver() {
-        notificationTask = Task { @Sendable [weak self] in
+        notificationTask = Task { @MainActor [weak self] in
             let notifications = DistributedNotificationCenter.default().notifications(
                 named: NSNotification.Name("com.apple.Music.playerInfo")
             )
@@ -71,10 +79,13 @@ class AppleMusicController: MediaControllerProtocol {
         ) { [weak self] notification in
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   app.bundleIdentifier == "com.apple.Music" else { return }
-            self?.resetToIdleState()
+            MainActor.assumeIsolated {
+                self?.resetToIdleState()
+            }
         }
     }
 
+    @MainActor
     private func resetToIdleState() {
         positionResyncTask?.cancel()
         positionResyncTask = nil
@@ -96,7 +107,7 @@ class AppleMusicController: MediaControllerProtocol {
     // Music stays silent on seeks, restarts and some track changes (notably from the lock screen), so the
     // displayed position would keep running as if nothing happened. A light poll keeps it honest.
     private func setupPeriodicSync() {
-        periodicSyncTask = Task { [weak self] in
+        periodicSyncTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self else { return }
@@ -107,13 +118,12 @@ class AppleMusicController: MediaControllerProtocol {
     }
 
     // Compiling an AppleScript is far more expensive than running it, so the poll keeps one compiled
-    // script and always runs it on the same serial queue.
-    private let syncQueue = DispatchQueue(label: "gravitynotch.applemusic.sync", qos: .utility)
+    // script. It runs on the shared AppleScript queue: two scripts running at once crash AppleEvents.
     private var compiledSyncScript: NSAppleScript?
 
     private func runSyncScript() async -> NSAppleEventDescriptor? {
         await withCheckedContinuation { continuation in
-            syncQueue.async { [weak self] in
+            AppleScriptHelper.queue.async { [weak self] in
                 guard let self else {
                     continuation.resume(returning: nil)
                     return
@@ -139,6 +149,7 @@ class AppleMusicController: MediaControllerProtocol {
         }
     }
 
+    @MainActor
     private func syncWithPlayer() async {
         guard let descriptor = await runSyncScript(),
               descriptor.numberOfItems >= 3 else { return }
@@ -227,10 +238,27 @@ class AppleMusicController: MediaControllerProtocol {
     }
 
     func setFavorite(_ favorite: Bool) async {
+        await MainActor.run {
+            pendingFavorite = (playbackState.title, favorite, Date().addingTimeInterval(15))
+        }
+        // Radio and streamed tracks are URL tracks: setting them works, but their state is only
+        // readable on the library copy, so use that copy once it exists.
+        let value = favorite ? "true" : "false"
         let script = """
         tell application \"Music\"
             try
-                set favorited of current track to " + (favorite ? "true" : "false") + "
+                set t to current track
+                if class of t is URL track then
+                    -- A whose clause cannot reference another object's properties, copy them first
+                    set trackName to name of t
+                    set trackArtist to artist of t
+                    set libraryCopies to (every track of library playlist 1 whose name is trackName and artist is trackArtist)
+                    if (count of libraryCopies) > 0 then
+                        set favorited of item 1 of libraryCopies to \(value)
+                        return
+                    end if
+                end if
+                set favorited of t to \(value)
             end try
         end tell
         """
@@ -239,11 +267,26 @@ class AppleMusicController: MediaControllerProtocol {
         await updatePlaybackInfo()
     }
     
+    @MainActor
     func updatePlaybackInfo() async {
         guard isActive() else {
             resetToIdleState()
             return
         }
+        guard !isRefreshing else {
+            refreshRequested = true
+            return
+        }
+        isRefreshing = true
+        repeat {
+            refreshRequested = false
+            await refreshPlaybackInfo()
+        } while refreshRequested && isActive()
+        isRefreshing = false
+    }
+
+    @MainActor
+    private func refreshPlaybackInfo() async {
         guard let descriptor = try? await fetchPlaybackInfoAsync() else { return }
         guard descriptor.numberOfItems >= 11 else { return }
         var updatedState = self.playbackState
@@ -267,7 +310,14 @@ class AppleMusicController: MediaControllerProtocol {
         } else if !sameTrack {
             updatedState.artwork = nil
         }
-        let lovedState = descriptor.atIndex(11)?.booleanValue ?? false
+        var lovedState = descriptor.atIndex(11)?.booleanValue ?? false
+        if let pending = pendingFavorite {
+            if pending.title == updatedState.title, Date() < pending.until, lovedState != pending.value {
+                lovedState = pending.value
+            } else {
+                pendingFavorite = nil
+            }
+        }
         updatedState.isFavorite = lovedState
         updatedState.lastUpdated = Date()
         let needsPositionResync = updatedState.title != self.playbackState.title
@@ -291,6 +341,7 @@ class AppleMusicController: MediaControllerProtocol {
     // Streamed tracks are announced before Music has downloaded their cover, and nothing is sent once
     // it arrives. Ask again for a while until the artwork shows up. For some catalog tracks AppleScript
     // never exposes any artwork at all, while MediaRemote does have it, so ask both.
+    @MainActor
     private func scheduleArtworkRetry() {
         artworkRetryTask?.cancel()
         let title = playbackState.title
@@ -352,6 +403,7 @@ class AppleMusicController: MediaControllerProtocol {
 
     // Music announces a track as playing while it is still buffering, and sends nothing when the
     // audio really starts. Poll the player position for a few seconds and realign when it drifts.
+    @MainActor
     private func schedulePositionResync() {
         positionResyncTask?.cancel()
         let title = playbackState.title
@@ -416,6 +468,13 @@ class AppleMusicController: MediaControllerProtocol {
                 
                 set currentVolume to sound volume
                 set favoriteState to favorited of current track
+                -- Radio and streamed tracks always answer false: their state lives on the library copy
+                if class of current track is URL track then
+                    try
+                        set libraryCopies to (every track of library playlist 1 whose name is currentTrackName and artist is currentTrackArtist)
+                        if (count of libraryCopies) > 0 then set favoriteState to favorited of item 1 of libraryCopies
+                    end try
+                end if
                 return {playerState, currentTrackName, currentTrackArtist, currentTrackAlbum, trackPosition, trackDuration, shuffleState, repeatValue, currentVolume, artData, favoriteState}
             on error
                 return {false, "Not Playing", "Unknown", "Unknown", 0, 0, false, 0, 50, "", false}

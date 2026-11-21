@@ -1,6 +1,86 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Hide lyrics when none are found": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hide lyrics when none are found"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Masquer les paroles quand aucune n'est trouvée"
+          }
+        }
+      }
+    },
+    "Horizontal position": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Horizontal position"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Position horizontale"
+          }
+        }
+      }
+    },
+    "Open the preview to watch the player move while you adjust its position.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the preview to watch the player move while you adjust its position."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvrez l'aperçu pour voir le lecteur se déplacer pendant que vous ajustez sa position."
+          }
+        }
+      }
+    },
+    "Reset player position": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset player position"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réinitialiser la position du lecteur"
+          }
+        }
+      }
+    },
+    "Vertical position": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vertical position"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Position verticale"
+          }
+        }
+      }
+    },
     "": {
       "localizations": {
         "ar": {
