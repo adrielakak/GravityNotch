@@ -209,6 +209,8 @@ extension Defaults.Keys {
     static let lastLaunchedBuild = Key<String>("lastLaunchedBuild", default: "")
     static let showBluetoothAudioLiveActivity = Key<Bool>("showBluetoothAudioLiveActivity", default: true)
     static let timerSoundEnabled = Key<Bool>("timerSoundEnabled", default: true)
+    static let showTimerButton = Key<Bool>("showTimerButton", default: true)
+    static let showCaffeineButton = Key<Bool>("showCaffeineButton", default: true)
     static let timerLastMinutes = Key<Int>("timerLastMinutes", default: 25)
     static let caffeineLastMinutes = Key<Int>("caffeineLastMinutes", default: 60)
     static let inlineHUD = Key<Bool>("inlineHUD", default: true)

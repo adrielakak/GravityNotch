@@ -19,6 +19,8 @@ struct BoringHeader: View {
     @Default(.boringShelf) private var boringShelf
     @Default(.showClipboardTab) private var showClipboardTab
     @Default(.showAgentsTab) private var showAgentsTab
+    @Default(.showTimerButton) private var showTimerButton
+    @Default(.showCaffeineButton) private var showCaffeineButton
 
     private var hasExtraTabs: Bool {
         boringShelf || showClipboardTab || showAgentsTab
@@ -130,40 +132,44 @@ struct BoringHeader: View {
                                 AudioOutputRoutingMenu.shared.popUpAtMouseLocation()
                             }
                         }
-                        Button(action: {
-                            toggleView(.caffeine)
-                        }) {
-                            Capsule()
-                                .fill(.black)
-                                .frame(width: 30, height: 30)
-                                .overlay {
-                                    Image(systemName: caffeine.isActive ? "cup.and.saucer.fill" : "cup.and.saucer")
-                                        .foregroundColor(caffeine.isActive || coordinator.currentView == .caffeine ? CaffeinePickerView.accent : .white)
-                                        .padding()
-                                        .imageScale(.medium)
-                                }
+                        if showCaffeineButton {
+                            Button(action: {
+                                toggleView(.caffeine)
+                            }) {
+                                Capsule()
+                                    .fill(.black)
+                                    .frame(width: 30, height: 30)
+                                    .overlay {
+                                        Image(systemName: caffeine.isActive ? "cup.and.saucer.fill" : "cup.and.saucer")
+                                            .foregroundColor(caffeine.isActive || coordinator.currentView == .caffeine ? CaffeinePickerView.accent : .white)
+                                            .padding()
+                                            .imageScale(.medium)
+                                    }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .help(String(localized: "Keep Mac Awake (Caffeine)"))
                         }
-                        .buttonStyle(PlainButtonStyle())
-                        .help(String(localized: "Keep Mac Awake (Caffeine)"))
-                        Button(action: {
-                            toggleView(.timer)
-                        }) {
-                            Capsule()
-                                .fill(.black)
-                                .frame(width: 30, height: 30)
-                                .overlay {
-                                    Image(systemName: notchTimer.isActive ? "timer.circle.fill" : "timer")
-                                        .foregroundColor(notchTimer.isActive || coordinator.currentView == .timer ? NotchTimerManager.accent : .white)
-                                        .padding()
-                                        .imageScale(.medium)
-                                }
+                        if showTimerButton {
+                            Button(action: {
+                                toggleView(.timer)
+                            }) {
+                                Capsule()
+                                    .fill(.black)
+                                    .frame(width: 30, height: 30)
+                                    .overlay {
+                                        Image(systemName: notchTimer.isActive ? "timer.circle.fill" : "timer")
+                                            .foregroundColor(notchTimer.isActive || coordinator.currentView == .timer ? NotchTimerManager.accent : .white)
+                                            .padding()
+                                            .imageScale(.medium)
+                                    }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            .help(
+                                notchTimer.isActive
+                                    ? String(localized: "Timer: \(notchTimer.remainingText)")
+                                    : String(localized: "Start a Timer")
+                            )
                         }
-                        .buttonStyle(PlainButtonStyle())
-                        .help(
-                            notchTimer.isActive
-                                ? String(localized: "Timer: \(notchTimer.remainingText)")
-                                : String(localized: "Start a Timer")
-                        )
                         if Defaults[.settingsIconInNotch] {
                             Button(action: {
                                 DispatchQueue.main.async {

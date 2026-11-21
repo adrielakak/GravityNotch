@@ -20444,6 +20444,22 @@
         }
       }
     },
+    "Show Caffeine button in notch": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Caffeine button in notch"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le bouton Caféine dans l'encoche"
+          }
+        }
+      }
+    },
     "Show Gravity music player on lock screen": {
       "localizations": {
         "en": {
@@ -22020,6 +22036,22 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "Show sneak peek on playback changes"
+          }
+        }
+      }
+    },
+    "Show timer button in notch": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show timer button in notch"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher le bouton minuteur dans l'encoche"
           }
         }
       }

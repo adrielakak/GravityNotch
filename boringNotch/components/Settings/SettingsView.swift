@@ -1372,6 +1372,8 @@ struct Appearance: View {
     @Default(.customVisualizers) var customVisualizers
     @Default(.selectedVisualizer) var selectedVisualizer
     @Default(.enableAgentLiveActivity) var enableAgentLiveActivity
+    @Default(.showTimerButton) var showTimerButton
+    @Default(.showCaffeineButton) var showCaffeineButton
 
     let icons: [String] = ["logo2"]
     @State private var selectedIcon: String = "logo2"
@@ -1387,6 +1389,14 @@ struct Appearance: View {
                 Defaults.Toggle(key: .settingsIconInNotch) {
                     Text("Show settings icon in notch")
                 }
+                Toggle("Show timer button in notch", isOn: $showTimerButton)
+                    .onChange(of: showTimerButton) { _, enabled in
+                        if !enabled { NotchTimerManager.shared.cancel() }
+                    }
+                Toggle("Show Caffeine button in notch", isOn: $showCaffeineButton)
+                    .onChange(of: showCaffeineButton) { _, enabled in
+                        if !enabled { CaffeineManager.shared.deactivate() }
+                    }
 
             } header: {
                 Text("General")
