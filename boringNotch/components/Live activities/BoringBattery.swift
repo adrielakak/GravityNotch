@@ -76,6 +76,88 @@ struct BatteryView: View {
     }
 }
 
+/// Battery with its percentage drawn inside the body. Next to the icon, the number used to wrap
+/// onto two lines once every header button was enabled.
+struct BatteryPercentageView: View {
+    var levelBattery: Float
+    var isPluggedIn: Bool
+    var isCharging: Bool
+    var isInLowPowerMode: Bool
+    var batteryWidth: CGFloat = 30
+    var isForNotification: Bool
+
+    private var level: CGFloat { min(max(CGFloat(levelBattery), 0), 100) / 100 }
+    private var bodyWidth: CGFloat { batteryWidth - 3 }
+    private var bodyHeight: CGFloat { (batteryWidth * 0.45).rounded() }
+    private var inset: CGFloat { 1.5 }
+
+    private var fillColor: Color {
+        if isInLowPowerMode {
+            return .yellow
+        } else if levelBattery <= 20 && !isCharging && !isPluggedIn {
+            return .red
+        } else if isCharging || isPluggedIn || levelBattery == 100 {
+            return .green
+        } else {
+            return .white
+        }
+    }
+
+    private var statusSymbol: String? {
+        // "100" already fills the body, the green fill says it is plugged in
+        guard levelBattery < 99.5, isForNotification || Defaults[.showPowerStatusIcons] else { return nil }
+        if isCharging { return "bolt.fill" }
+        if isPluggedIn { return "powerplug.fill" }
+        return nil
+    }
+
+    private var fillWidth: CGFloat {
+        let available = bodyWidth - inset * 2
+        return level > 0 ? max(2, available * level) : 0
+    }
+
+    private var label: some View {
+        HStack(spacing: 0.5) {
+            Text("\(Int(levelBattery.rounded()))")
+            if let statusSymbol {
+                Image(systemName: statusSymbol)
+                    .font(.system(size: bodyHeight * 0.55, weight: .black))
+            }
+        }
+        .font(.system(size: bodyHeight * 0.72, weight: .bold, design: .rounded))
+        .monospacedDigit()
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
+        .padding(.horizontal, 1)
+        .frame(width: bodyWidth, height: bodyHeight)
+    }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: bodyHeight * 0.3, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.4), lineWidth: 1)
+
+                // Translucent fill so the white number stays readable over any level and color
+                RoundedRectangle(cornerRadius: bodyHeight * 0.3 - inset, style: .continuous)
+                    .fill(fillColor.opacity(fillColor == .white ? 0.32 : 0.6))
+                    .frame(width: fillWidth, height: bodyHeight - inset * 2)
+                    .padding(.leading, inset)
+
+                label
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.35), radius: 0.5)
+            }
+            .frame(width: bodyWidth, height: bodyHeight)
+
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(Color.white.opacity(0.4))
+                .frame(width: 1.5, height: bodyHeight * 0.38)
+        }
+        .animation(.easeInOut(duration: 0.3), value: levelBattery)
+    }
+}
+
 struct ScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -192,20 +274,26 @@ struct BoringBatteryView: View {
                 showPopupMenu.toggle()
             }
         }) {
-            HStack {
+            Group {
                 if Defaults[.showBatteryPercentage] {
-                    Text("\(Int32(levelBattery))%")
-                        .font(.callout)
-                        .foregroundStyle(.white)
+                    BatteryPercentageView(
+                        levelBattery: levelBattery,
+                        isPluggedIn: isPluggedIn,
+                        isCharging: isCharging,
+                        isInLowPowerMode: isInLowPowerMode,
+                        batteryWidth: batteryWidth,
+                        isForNotification: isForNotification
+                    )
+                } else {
+                    BatteryView(
+                        levelBattery: levelBattery,
+                        isPluggedIn: isPluggedIn,
+                        isCharging: isCharging,
+                        isInLowPowerMode: isInLowPowerMode,
+                        batteryWidth: batteryWidth,
+                        isForNotification: isForNotification
+                    )
                 }
-                BatteryView(
-                    levelBattery: levelBattery,
-                    isPluggedIn: isPluggedIn,
-                    isCharging: isCharging,
-                    isInLowPowerMode: isInLowPowerMode,
-                    batteryWidth: batteryWidth,
-                    isForNotification: isForNotification
-                )
             }
         }
         .buttonStyle(ScaleButtonStyle())
