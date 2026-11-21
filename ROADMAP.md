@@ -47,8 +47,8 @@ Ce document recense les évolutions en cours, les prochaines améliorations prod
   - Live Activity dédiée aux téléchargements navigateur (Safari / Chrome) en réactivant et fiabilisant l’onglet *Downloads*.
   - Indicateur discret Micro / Caméra / Partage d’écran actif dans l’encoche.
 - **Clips & Shelf**
-  - Prise en charge des images brutes copiées dans Clips (captures vers presse-papiers) et option de persistance chiffrée locale (issues [#10](https://github.com/adrielakak/GravityNotch/issues/10), [#16](https://github.com/adrielakak/GravityNotch/issues/16)).
-  - Nettoyage des fichiers morts (`Clipboard+Content.swift`, issue [#11](https://github.com/adrielakak/GravityNotch/issues/11)).
+  - Prise en charge des images brutes copiées dans Clips (captures vers presse-papiers).
+  - Chiffrement de l'historique Clips sauvegardé sur disque.
 - **Qualité & Internationalisation**
   - Ajout d’une cible de tests unitaires (`XCTest`) pour `ClipboardHistoryManager`, `VolumeManager`, `TemporaryFileStorageService` et le parsing des sessions Agents.
   - Complétion des traductions communautaires (issues [#12](https://github.com/adrielakak/GravityNotch/issues/12)–[#15](https://github.com/adrielakak/GravityNotch/issues/15)).

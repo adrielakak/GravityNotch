@@ -2125,8 +2125,8 @@ final class CaffeineManager: ObservableObject {
 
 // MARK: - Gravity Clipboard History Manager & Notch View
 
-struct ClipboardHistoryItem: Identifiable, Equatable {
-    enum Kind: String, Equatable {
+struct ClipboardHistoryItem: Identifiable, Equatable, Codable {
+    enum Kind: String, Equatable, Codable {
         case text
         case url
         case color
@@ -2173,7 +2173,11 @@ struct ClipboardHistoryItem: Identifiable, Equatable {
 final class ClipboardHistoryManager: ObservableObject {
     static let shared = ClipboardHistoryManager()
 
-    @Published private(set) var items: [ClipboardHistoryItem] = []
+    static let historyLimitOptions = [20, 40, 100, 200]
+
+    @Published private(set) var items: [ClipboardHistoryItem] = [] {
+        didSet { scheduleSave() }
+    }
     @Published var searchQuery: String = ""
     @Published var onlyPinned: Bool = false
     @Published var recentlyCopiedID: UUID? = nil
@@ -2181,10 +2185,54 @@ final class ClipboardHistoryManager: ObservableObject {
     private var lastChangeCount: Int = NSPasteboard.general.changeCount
     private var timer: Timer?
     private var deactivationObserver: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
+    private var settingsCancellables = Set<AnyCancellable>()
+    private var pendingSave: DispatchWorkItem?
+    private var isRestoring = false
+    private nonisolated static let saveQueue = DispatchQueue(label: "theboringteam.boringnotch.clipboard-history", qos: .utility)
+
+    private nonisolated static let historyFileURL: URL = {
+        let fm = FileManager.default
+        let support = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? fm.temporaryDirectory
+        return support
+            .appendingPathComponent("boringNotch", isDirectory: true)
+            .appendingPathComponent("Clips", isDirectory: true)
+            .appendingPathComponent("history.json")
+    }()
 
     private init() {
         CapsLockHUDMonitor.shared.start()
+        restoreHistory()
         captureCurrentPasteboard(initial: true)
+        Defaults.publisher(.clipboardHistoryLimit, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.items = Self.trimmed(self.items)
+            }
+            .store(in: &settingsCancellables)
+        Defaults.publisher(.persistClipboardHistory, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in
+                guard let self else { return }
+                if change.newValue {
+                    self.saveNow()
+                } else {
+                    self.pendingSave?.cancel()
+                    Self.saveQueue.async { try? FileManager.default.removeItem(at: Self.historyFileURL) }
+                }
+            }
+            .store(in: &settingsCancellables)
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.flushPendingSave()
+            }
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollPasteboard()
@@ -2207,6 +2255,75 @@ final class ClipboardHistoryManager: ObservableObject {
         if let deactivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(deactivationObserver)
         }
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
+    }
+
+    private func restoreHistory() {
+        guard Defaults[.persistClipboardHistory],
+              let data = try? Data(contentsOf: Self.historyFileURL),
+              let saved = try? JSONDecoder().decode([ClipboardHistoryItem].self, from: data) else { return }
+        let fm = FileManager.default
+        let existing = saved.filter { item in
+            guard item.kind == .file else { return true }
+            guard let fileURL = item.fileURL else { return false }
+            return fm.fileExists(atPath: fileURL.path)
+        }
+        isRestoring = true
+        items = Self.trimmed(existing)
+        isRestoring = false
+    }
+
+    private func scheduleSave() {
+        guard !isRestoring, Defaults[.persistClipboardHistory] else { return }
+        pendingSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.saveNow() }
+        }
+        pendingSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    private func flushPendingSave() {
+        guard let pendingSave, !pendingSave.isCancelled else {
+            Self.saveQueue.sync {}
+            return
+        }
+        pendingSave.cancel()
+        self.pendingSave = nil
+        guard Defaults[.persistClipboardHistory], let data = try? JSONEncoder().encode(items) else { return }
+        Self.saveQueue.sync { Self.write(data) }
+    }
+
+    private func saveNow() {
+        pendingSave?.cancel()
+        pendingSave = nil
+        guard Defaults[.persistClipboardHistory], let data = try? JSONEncoder().encode(items) else { return }
+        Self.saveQueue.async { Self.write(data) }
+    }
+
+    private nonisolated static func write(_ data: Data) {
+        let fm = FileManager.default
+        let dir = historyFileURL.deletingLastPathComponent()
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try data.write(to: historyFileURL, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: historyFileURL.path)
+        } catch {
+            Logger(subsystem: "theboringteam.boringnotch", category: "Clips")
+                .error("Failed to save clipboard history: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private static func trimmed(_ list: [ClipboardHistoryItem]) -> [ClipboardHistoryItem] {
+        let limit = max(1, Defaults[.clipboardHistoryLimit])
+        guard list.count > limit else { return list }
+        var result = list
+        while result.count > limit, let lastUnpinned = result.lastIndex(where: { !$0.isPinned }) {
+            result.remove(at: lastUnpinned)
+        }
+        return result
     }
 
     private func handleApplicationDidDeactivate(bundleID: String?) {
@@ -2351,12 +2468,9 @@ final class ClipboardHistoryManager: ObservableObject {
             sourceAppBundleID: bundleID,
             timestamp: Date()
         )
-        items.insert(newItem, at: 0)
-        if items.count > 40 {
-            if let lastUnpinned = items.lastIndex(where: { !$0.isPinned }) {
-                items.remove(at: lastUnpinned)
-            }
-        }
+        var updated = items
+        updated.insert(newItem, at: 0)
+        items = Self.trimmed(updated)
     }
 
     func copyToPasteboard(_ item: ClipboardHistoryItem) {

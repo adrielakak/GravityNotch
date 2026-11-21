@@ -27550,6 +27550,70 @@
           }
         }
       }
+    },
+    "Clipboard history size": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clipboard history size"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Taille de l'historique"
+          }
+        }
+      }
+    },
+    "%lld items": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld items"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld éléments"
+          }
+        }
+      }
+    },
+    "Keep Clips history after restart": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep Clips history after restart"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conserver l'historique Clips après un redémarrage"
+          }
+        }
+      }
+    },
+    "Pinned items are never removed. Passwords and other concealed items are never recorded.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pinned items are never removed. Passwords and other concealed items are never recorded."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les éléments épinglés ne sont jamais supprimés. Les mots de passe et autres contenus masqués ne sont jamais enregistrés."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

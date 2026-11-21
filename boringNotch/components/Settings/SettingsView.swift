@@ -1407,6 +1407,8 @@ struct Appearance: View {
     @Default(.enableAgentLiveActivity) var enableAgentLiveActivity
     @Default(.showTimerButton) var showTimerButton
     @Default(.showCaffeineButton) var showCaffeineButton
+    @Default(.showClipboardTab) var showClipboardTab
+    @Default(.clipboardHistoryLimit) var clipboardHistoryLimit
 
     let icons: [String] = ["logo2"]
     @State private var selectedIcon: String = "logo2"
@@ -1448,6 +1450,24 @@ struct Appearance: View {
             } header: {
                 Text("Notch Tabs")
             }
+
+            Section {
+                Picker("Clipboard history size", selection: $clipboardHistoryLimit) {
+                    ForEach(ClipboardHistoryManager.historyLimitOptions, id: \.self) { size in
+                        Text("\(size) items").tag(size)
+                    }
+                }
+                Defaults.Toggle(key: .persistClipboardHistory) {
+                    Text("Keep Clips history after restart")
+                }
+            } header: {
+                Text("Clips")
+            } footer: {
+                Text("Pinned items are never removed. Passwords and other concealed items are never recorded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .disabled(!showClipboardTab)
 
             Section {
                 Defaults.Toggle(key: .enableAgentLiveActivity) {

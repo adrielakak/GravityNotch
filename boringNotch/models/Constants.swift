@@ -154,6 +154,8 @@ extension Defaults.Keys {
     
     // MARK: Appearance
     static let showClipboardTab = Key<Bool>("showClipboardTab", default: true)
+    static let clipboardHistoryLimit = Key<Int>("clipboardHistoryLimit", default: 40)
+    static let persistClipboardHistory = Key<Bool>("persistClipboardHistory", default: true)
     static let showAgentsTab = Key<Bool>("showAgentsTab", default: true)
     static let showEmojis = Key<Bool>("showEmojis", default: false)
     //static let alwaysShowTabs = Key<Bool>("alwaysShowTabs", default: true)
