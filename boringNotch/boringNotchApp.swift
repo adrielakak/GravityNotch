@@ -103,9 +103,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         XPCHelperClient.shared.stopMonitoringAccessibilityAuthorization()
     }
 
+    /// When an update changes the code signature, macOS keeps the old Accessibility row: the switch
+    /// still looks on but the new build is not trusted, and users had to remove and re-add the app.
+    /// Once per new build, if the HUD needs Accessibility and the fresh check fails, drop that stale
+    /// row and show the system prompt, so turning the switch back on is enough.
+    private func resetStaleAccessibilityGrantAfterUpdate() {
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        let previousBuild = Defaults[.lastLaunchedBuild]
+        Defaults[.lastLaunchedBuild] = build
+        guard !coordinator.firstLaunch, !build.isEmpty, previousBuild != build,
+              Defaults[.hudReplacement], let bundleID = Bundle.main.bundleIdentifier else { return }
+
+        Task.detached(priority: .utility) {
+            guard !MediaKeyInterceptor.isTrustedFreshViaSubprocess() else { return }
+            let reset = Process()
+            reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            reset.arguments = ["reset", "Accessibility", bundleID]
+            reset.standardOutput = FileHandle.nullDevice
+            reset.standardError = FileHandle.nullDevice
+            do {
+                try reset.run()
+                reset.waitUntilExit()
+            } catch {
+                NSLog("GravityNotch: tccutil reset failed: \(error.localizedDescription)")
+                return
+            }
+            NSLog("GravityNotch: reset stale Accessibility grant after update to build \(build) (status \(reset.terminationStatus))")
+            await MainActor.run {
+                MediaKeyInterceptor.shared.requestAccessibilityAuthorization()
+            }
+        }
+    }
+
     @MainActor
     func onScreenLocked(_ notification: Notification) {
         isScreenLocked = true
+        coordinator.isScreenLocked = true
+        closeNotchTask?.cancel()
+        closeNotchTask = nil
+        vm.close()
+        viewModels.values.forEach { $0.close() }
         if !Defaults[.showOnLockScreen] {
             cleanupWindows()
         } else {
@@ -117,6 +154,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func onScreenUnlocked(_ notification: Notification) {
         isScreenLocked = false
+        coordinator.isScreenLocked = false
         LockScreenMediaPanelManager.shared.hideFromLockScreen()
         if !Defaults[.showOnLockScreen] {
             adjustWindowPosition(changeAlpha: true)
@@ -297,6 +335,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        resetStaleAccessibilityGrantAfterUpdate()
 
         NotificationCenter.default.addObserver(
             self,

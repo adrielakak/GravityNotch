@@ -53,6 +53,9 @@ class BoringViewCoordinator: ObservableObject {
 
     @Published var currentView: NotchViews = .home
     @Published var helloAnimationRunning: Bool = false
+    /// While the session is locked the notch must not open: its tabs expose clipboard history,
+    /// shelf files, agent sessions and calendar events to whoever is in front of the Mac.
+    @Published var isScreenLocked: Bool = false
     private var sneakPeekDispatch: DispatchWorkItem?
     private var expandingViewDispatch: DispatchWorkItem?
     private var hudEnableTask: Task<Void, Never>?

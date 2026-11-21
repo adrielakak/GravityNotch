@@ -190,6 +190,7 @@ class BoringViewModel: NSObject, ObservableObject {
     }
 
     func open() {
+        guard !coordinator.isScreenLocked else { return }
         self.notchSize = openNotchSize
         self.notchState = .open
         
