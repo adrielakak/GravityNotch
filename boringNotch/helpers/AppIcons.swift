@@ -4546,6 +4546,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
         cardBottomInset = compactFrame(on: screen).minY - screen.frame.minY
         isWindowExpanded = true
         window.setFrame(screen.frame, display: true)
+        keepNotchAbovePanel()
         withAnimation(.easeInOut(duration: 0.45)) {
             isWallpaperMode = true
         }
@@ -4715,6 +4716,18 @@ final class LockScreenMediaPanelManager: ObservableObject {
             window.disableSkyLight()
         }
         window.orderFrontRegardless()
+        keepNotchAbovePanel()
+    }
+
+    /// The panel and the notch windows share the same window class and level, so the panel (shown last)
+    /// used to cover the notch. Once the animated artwork fills the screen, volume and brightness HUDs
+    /// became invisible on the lock screen. Keep the panel one level below and re-raise the notch.
+    private func keepNotchAbovePanel() {
+        guard let panelWindow else { return }
+        panelWindow.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
+        for notchWindow in NotchSpaceManager.shared.notchSpace.windows where notchWindow !== panelWindow {
+            notchWindow.orderFrontRegardless()
+        }
     }
 }
 
