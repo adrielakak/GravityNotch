@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import Defaults
 import SwiftUI
 
 class AppleMusicController: MediaControllerProtocol {
@@ -238,9 +239,14 @@ class AppleMusicController: MediaControllerProtocol {
     }
 
     func setFavorite(_ favorite: Bool) async {
-        await MainActor.run {
+        let (title, artist) = await MainActor.run { () -> (String, String) in
             pendingFavorite = (playbackState.title, favorite, Date().addingTimeInterval(15))
+            return (playbackState.title, playbackState.artist)
         }
+        // Favoriting a radio track adds it to the library. Taking the heart back from here removes
+        // it again, but only for songs this heart added: songs already in the library stay.
+        let trackKey = "\(title)|\(artist)"
+        let removeFromLibrary = !favorite && Defaults[.heartAddedLibraryTracks][trackKey] != nil
         // Radio and streamed tracks are URL tracks: setting them works, but their state is only
         // readable on the library copy, so use that copy once it exists.
         let value = favorite ? "true" : "false"
@@ -254,15 +260,27 @@ class AppleMusicController: MediaControllerProtocol {
                     set trackArtist to artist of t
                     set libraryCopies to (every track of library playlist 1 whose name is trackName and artist is trackArtist)
                     if (count of libraryCopies) > 0 then
-                        set favorited of item 1 of libraryCopies to \(value)
-                        return
+                        set libraryCopy to item 1 of libraryCopies
+                        set favorited of libraryCopy to \(value)
+                        if \(removeFromLibrary ? "true" : "false") then delete libraryCopy
+                        return "library"
                     end if
+                    set favorited of t to \(value)
+                    return "added"
                 end if
                 set favorited of t to \(value)
+                return "track"
+            on error
+                return "error"
             end try
         end tell
         """
-        try? await AppleScriptHelper.executeVoid(script)
+        let outcome = (try? await AppleScriptHelper.execute(script))?.stringValue
+        if favorite && outcome == "added" {
+            Defaults[.heartAddedLibraryTracks][trackKey] = Date()
+        } else if !favorite && outcome == "library" {
+            Defaults[.heartAddedLibraryTracks][trackKey] = nil
+        }
         try? await Task.sleep(for: .milliseconds(150))
         await updatePlaybackInfo()
     }

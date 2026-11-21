@@ -142,6 +142,9 @@ extension Defaults.Keys {
     /// 0 = far left / bottom, 1 = far right / top of the area the lock screen player can occupy.
     static let lockScreenMediaHorizontalPosition = Key<Double>("lockScreenMediaHorizontalPosition", default: 0.5)
     static let lockScreenMediaVerticalPosition = Key<Double>("lockScreenMediaVerticalPosition", default: 0.16)
+    /// Apple Music radio songs that the notch heart added to the library ("title|artist" -> date),
+    /// so removing the heart from the notch can take them out again.
+    static let heartAddedLibraryTracks = Key<[String: Date]>("heartAddedLibraryTracks", default: [:])
     static let hideFromScreenRecording = Key<Bool>("hideFromScreenRecording", default: false)
 
     // MARK: Coding Agents Live Activity
