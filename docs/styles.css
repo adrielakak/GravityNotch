@@ -685,8 +685,17 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .tile-icon svg { width: 26px; height: 26px; }
 .tile h3 { margin: 24px 0 6px; font-family: var(--font-display); font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
 .tile p { margin: 0; color: var(--ink-2); }
+.tile-wide { grid-column: 1 / -1; display: flex; align-items: center; gap: 28px; }
+.tile-wide .tile-icon { flex: none; }
+.tile-wide h3 { margin-top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.tile-wide p { max-width: 62ch; }
+.tile-new { padding: 4px 10px; border-radius: 999px; background: var(--ultra); color: #fff; font-size: 13px; font-weight: 600; letter-spacing: 0; }
 @media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+@media (max-width: 600px) {
+  .grid { grid-template-columns: 1fr; }
+  .tile-wide { flex-direction: column; align-items: flex-start; gap: 0; }
+  .tile-wide h3 { margin-top: 24px; }
+}
 
 /* ---------- Install ---------- */
 .steps { list-style: none; padding: 0; margin: 56px 0 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
