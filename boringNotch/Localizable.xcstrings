@@ -1,6 +1,54 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "GravityNotch %@ is ready. Click to restart and install it.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch %@ is ready. Click to restart and install it."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GravityNotch %@ est prête. Cliquez pour redémarrer et l'installer."
+          }
+        }
+      }
+    },
+    "Install when GravityNotch quits": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install when GravityNotch quits"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installer à la fermeture de GravityNotch"
+          }
+        }
+      }
+    },
+    "Update ready": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update ready"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mise à jour prête"
+          }
+        }
+      }
+    },
     "Hide lyrics when none are found": {
       "localizations": {
         "en": {

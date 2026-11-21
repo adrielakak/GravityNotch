@@ -37,7 +37,10 @@ struct DynamicNotchApp: App {
     init() {
         // Sparkle auto-updater pointed at https://adrielakak.github.io/GravityNotch/appcast.xml
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+            startingUpdater: true, updaterDelegate: UpdateReadyManager.shared, userDriverDelegate: nil)
+        #if DEBUG
+        UpdateReadyManager.shared.simulateIfRequested()
+        #endif
 
         // Initialize the settings window controller with the updater controller
         SettingsWindowController.shared.setUpdaterController(updaterController)

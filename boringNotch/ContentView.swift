@@ -112,6 +112,10 @@ struct ContentView: View {
             && vm.notchState == .closed && Defaults[.showPowerStatusNotifications]
         {
             chinWidth = 640
+        } else if coordinator.expandingView.type == .updateReady && coordinator.expandingView.show
+            && vm.notchState == .closed
+        {
+            chinWidth = vm.closedNotchSize.width + 10 + 2 * UpdateReadyClosedView.wingWidth
         } else if shouldShowBluetoothLiveActivity {
             chinWidth += 2 * BluetoothAudioClosedNotchView.compactWingWidth(closedHeight: vm.effectiveClosedNotchHeight)
         } else if shouldShowTimerLiveActivity {
@@ -350,6 +354,13 @@ struct ContentView: View {
                             .frame(width: 76, alignment: .trailing)
                         }
                         .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
+                      } else if coordinator.expandingView.type == .updateReady && coordinator.expandingView.show
+                                    && vm.notchState == .closed {
+                          UpdateReadyClosedView(
+                              notchWidth: vm.closedNotchSize.width,
+                              height: vm.effectiveClosedNotchHeight
+                          )
+                          .transition(.opacity)
                       } else if coordinator.sneakPeek.show && Defaults[.inlineHUD] && (coordinator.sneakPeek.type != .music) && (coordinator.sneakPeek.type != .battery) && vm.notchState == .closed {
                           InlineHUD(type: $coordinator.sneakPeek.type, value: $coordinator.sneakPeek.value, icon: $coordinator.sneakPeek.icon, hoverAnimation: $isHovering, gestureProgress: $gestureProgress)
                               .transition(.opacity)

@@ -14,6 +14,7 @@ import CoreAudio
 import Defaults
 import IOKit.pwr_mgt
 import OSLog
+import Sparkle
 
 struct AppIcons {
     
@@ -7496,5 +7497,138 @@ actor AppleMusicWebCatalog {
             .map { $0.replacingOccurrences(of: #"/\d+x\d+[a-z]*\.(jpg|png)$"#, with: "/2000x2000bb.jpg", options: .regularExpression) }
             .flatMap { URL(string: $0) }
         return Album(pageURL: pageURL, name: name, artworkURL: artworkURL, tracks: tracks)
+    }
+}
+
+// MARK: - Update ready notice (Sparkle)
+
+/// Sparkle downloads updates silently and installs them when the app quits, but a notch app is
+/// rarely quit, so updates waited for the next reboot. Once one is ready, the notch announces it
+/// and offers to restart right away. Sparkle still installs it on quit if the user ignores it.
+@MainActor
+final class UpdateReadyManager: NSObject, ObservableObject, SPUUpdaterDelegate {
+    static let shared = UpdateReadyManager()
+
+    @Published private(set) var readyVersion: String?
+    @Published private(set) var isNoticeHidden = false
+    private var installHandler: (() -> Void)?
+
+    var showsNotice: Bool { readyVersion != nil && !isNoticeHidden }
+
+    // Sparkle calls its delegate on the main thread
+    nonisolated func updater(
+        _ updater: SPUUpdater,
+        willInstallUpdateOnQuit item: SUAppcastItem,
+        immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
+    ) -> Bool {
+        let version = item.displayVersionString
+        MainActor.assumeIsolated {
+            announce(version: version, installHandler: immediateInstallHandler)
+        }
+        // Keep the install handler: the update is installed when the user clicks, or on quit
+        return true
+    }
+
+    func announce(version: String, installHandler: @escaping () -> Void) {
+        let isNewVersion = readyVersion != version
+        readyVersion = version
+        self.installHandler = installHandler
+        guard isNewVersion else { return }
+        isNoticeHidden = false
+        BoringViewCoordinator.shared.toggleExpandingView(status: true, type: .updateReady)
+    }
+
+    func installNow() {
+        installHandler?()
+    }
+
+    func hideNotice() {
+        isNoticeHidden = true
+    }
+
+    #if DEBUG
+    /// Debug builds only: GRAVITYNOTCH_SIMULATE_UPDATE=1.9.9 shows the notice a few seconds after launch.
+    func simulateIfRequested() {
+        guard let version = ProcessInfo.processInfo.environment["GRAVITYNOTCH_SIMULATE_UPDATE"] else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            announce(version: version) {
+                NSLog("GravityNotch: simulated update install for \(version)")
+            }
+        }
+    }
+    #endif
+}
+
+/// Shown for a few seconds around the closed notch when an update has just been downloaded.
+/// Both wings share one width: the block is centered as a whole, so uneven wings pushed the
+/// text under the physical notch.
+struct UpdateReadyClosedView: View {
+    @ObservedObject private var manager = UpdateReadyManager.shared
+    let notchWidth: CGFloat
+    let height: CGFloat
+
+    static let wingWidth: CGFloat = 150
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .foregroundStyle(.green)
+                Text("Update ready")
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .font(.subheadline)
+            .padding(.leading, 10)
+            .frame(width: Self.wingWidth, alignment: .leading)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: notchWidth + 10)
+
+            Text(manager.readyVersion ?? "")
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.7))
+                .lineLimit(1)
+                .padding(.trailing, 10)
+                .frame(width: Self.wingWidth, alignment: .trailing)
+        }
+        .frame(height: height, alignment: .center)
+    }
+}
+
+/// Header button of the open notch: one click restarts GravityNotch on the new version.
+struct UpdateReadyPill: View {
+    @ObservedObject private var manager = UpdateReadyManager.shared
+
+    var body: some View {
+        Button {
+            manager.installNow()
+        } label: {
+            // Same capsule, size and inherited font as the other header buttons, only the color differs
+            Capsule()
+                .fill(.black)
+                .frame(width: 30, height: 30)
+                .overlay {
+                    Image(systemName: "arrow.down")
+                        .foregroundColor(.green)
+                        .padding()
+                        .imageScale(.medium)
+                }
+        }
+        .buttonStyle(PlainButtonStyle())
+        .help(String(localized: "GravityNotch \(manager.readyVersion ?? "") is ready. Click to restart and install it."))
+        .contextMenu {
+            Button("Install when GravityNotch quits") {
+                manager.hideNotice()
+            }
+            Button("Settings") {
+                DispatchQueue.main.async {
+                    SettingsWindowController.shared.showWindow()
+                }
+            }
+        }
     }
 }

@@ -16,6 +16,7 @@ struct BoringHeader: View {
     @ObservedObject var caffeine = CaffeineManager.shared
     @ObservedObject var notchTimer = NotchTimerManager.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
+    @ObservedObject var updateReady = UpdateReadyManager.shared
     @Default(.boringShelf) private var boringShelf
     @Default(.showClipboardTab) private var showClipboardTab
     @Default(.showAgentsTab) private var showAgentsTab
@@ -170,7 +171,12 @@ struct BoringHeader: View {
                                     : String(localized: "Start a Timer")
                             )
                         }
-                        if Defaults[.settingsIconInNotch] {
+                        // No free room is left in the header: a ready update takes the settings
+                        // button's place until it is installed (settings stay in its right-click menu)
+                        if updateReady.showsNotice {
+                            UpdateReadyPill()
+                                .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        } else if Defaults[.settingsIconInNotch] {
                             Button(action: {
                                 DispatchQueue.main.async {
                                     SettingsWindowController.shared.showWindow()
