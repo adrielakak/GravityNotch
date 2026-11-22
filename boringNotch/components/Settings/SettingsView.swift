@@ -497,6 +497,7 @@ struct HUD: View {
     @Default(.hudReplacement) var hudReplacement
     @Default(.hudTapSafetyTimeout) var hudTapSafetyTimeout
     @Default(.showBluetoothAudioLiveActivity) var showBluetoothAudioLiveActivity
+    @Default(.showListeningModeLiveActivity) var showListeningModeLiveActivity
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
     @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
@@ -677,6 +678,13 @@ struct HUD: View {
                 Defaults.Toggle(key: .showBluetoothAudioLiveActivity) {
                     Text("Show AirPods & Bluetooth Live Activity")
                 }
+                Defaults.Toggle(key: .showListeningModeLiveActivity) {
+                    Text("Show AirPods listening mode changes")
+                }
+                Button("Preview Listening Mode Animation") {
+                    AirPodsListeningModeMonitor.shared.preview()
+                }
+                .disabled(!showListeningModeLiveActivity)
                 Button("Preview AirPods Animation") {
                     BluetoothAudioLiveActivityManager.shared.previewLiveActivity()
                 }

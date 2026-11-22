@@ -578,6 +578,55 @@ private final class BluetoothBannerSuppressor {
         BluetoothAudioLiveActivityManager.shared.systemBannerSuppressed(deviceName: deviceName)
     }
 
+    // MARK: Listening mode banner
+
+    private var listeningBannerTask: Task<Void, Never>?
+
+    /// ControlCenter's listening mode banner exposes no text through AX and reuses its window (no AXCreated),
+    /// so it is matched by shape right after ControlCenter logged that it shows it: a small system dialog
+    /// under the menu bar that is not the Smart Routing banner. The log line can precede the window by a few
+    /// frames, hence the repeated scans. The window goes back to its place once the banner has faded, so a
+    /// later banner reusing it is never hidden by mistake.
+    func hideListeningModeBannerSoon() {
+        guard AXIsProcessTrusted(),
+              let pid = NSRunningApplication
+                .runningApplications(withBundleIdentifier: Self.controlCenterBundleID)
+                .first?.processIdentifier else { return }
+        listeningBannerTask?.cancel()
+        listeningBannerTask = Task { [weak self] in
+            var moved: [(window: AXUIElement, origin: CGPoint)] = []
+            for pause in [0, 30, 60, 120, 200, 350] {
+                if pause > 0 { try? await Task.sleep(for: .milliseconds(pause)) }
+                guard !Task.isCancelled, let self else { return }
+                moved += self.moveListeningModeBannerOffscreen(pid: pid)
+            }
+            try? await Task.sleep(for: .seconds(4))
+            for entry in moved {
+                var origin = entry.origin
+                if let value = AXValueCreate(.cgPoint, &origin) {
+                    AXUIElementSetAttributeValue(Self.bounded(entry.window), kAXPositionAttribute as CFString, value)
+                }
+            }
+        }
+    }
+
+    private func moveListeningModeBannerOffscreen(pid: pid_t) -> [(window: AXUIElement, origin: CGPoint)] {
+        let app = Self.bounded(AXUIElementCreateApplication(pid))
+        guard let windows = Self.copyElementArray(app, attribute: kAXWindowsAttribute) else { return [] }
+        var moved: [(window: AXUIElement, origin: CGPoint)] = []
+        for window in windows where Self.copyStringAttribute(window, attribute: kAXSubroleAttribute) == "AXSystemDialog" {
+            guard let frame = Self.copyFrame(window), Self.isOnAnyScreen(frame),
+                  frame.width <= 420, frame.height <= 200,
+                  matchSmartRoutingConnectedBanner(window) == nil else { continue }
+            var target = CGPoint(x: frame.origin.x, y: Self.offscreenY(forHeight: frame.height))
+            guard let value = AXValueCreate(.cgPoint, &target) else { continue }
+            let result = AXUIElementSetAttributeValue(Self.bounded(window), kAXPositionAttribute as CFString, value)
+            Self.logger.notice("Listening mode banner moved off screen result=\(result.rawValue, privacy: .public)")
+            if result == .success { moved.append((window, frame.origin)) }
+        }
+        return moved
+    }
+
     // MARK: AX helpers
 
     private static func collectContent(
@@ -1285,6 +1334,292 @@ struct BluetoothAudioClosedNotchView: View {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
                     appeared = true
                 }
+            }
+        }
+    }
+}
+
+// MARK: - AirPods listening mode (noise cancellation, transparency, adaptive)
+
+/// macOS gives an unentitled app no way to read the AirPods listening mode: the private IOBluetooth and
+/// AVOutputDevice getters return nothing. System processes log every change publicly, so a filtered
+/// `log stream` is the trigger. Three lines, each covering cases the others miss:
+/// - ControlCenter `sound`: "listening mode active-noise-cancellation -> audio-transparency, in ear: …" (stem
+///   presses, even when the AirPods are not the Mac's output and Apple shows no banner)
+/// - heard: "Changed listening mode 3" (changes made from Control Center, including Adaptive)
+/// - ControlCenter `system-banners`: "Showing listening mode banner with mode: …" (Apple's banner is up: hide it)
+@MainActor
+final class AirPodsListeningModeMonitor: ObservableObject {
+    static let shared = AirPodsListeningModeMonitor()
+
+    enum Mode: Equatable {
+        case noiseCancellation
+        case transparency
+        case adaptive
+        case off
+
+        /// heard's numbering, the same as the private IOBluetooth / AVOutputDevice enums
+        init?(heardNumber: Int) {
+            switch heardNumber {
+            case 1: self = .off
+            case 2: self = .noiseCancellation
+            case 3: self = .transparency
+            case 4: self = .adaptive
+            default: return nil
+            }
+        }
+
+        init?(controlCenterName: String) {
+            switch controlCenterName {
+            case "active-noise-cancellation": self = .noiseCancellation
+            case "audio-transparency": self = .transparency
+            case "automatic", "adaptive": self = .adaptive
+            case "normal", "off": self = .off
+            default: return nil
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .noiseCancellation: return String(localized: "Noise Cancellation")
+            case .transparency: return String(localized: "Transparency")
+            case .adaptive: return String(localized: "Adaptive")
+            case .off: return String(localized: "Listening Mode Off")
+            }
+        }
+
+        var symbolName: String {
+            switch self {
+            case .noiseCancellation: return "person.crop.circle.fill"
+            case .transparency: return "person.wave.2.fill"
+            case .adaptive: return "person.and.background.dotted"
+            case .off: return "circle.dashed"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .noiseCancellation: return Color(red: 0.45, green: 0.66, blue: 1.0)
+            case .transparency: return Color(red: 1.0, green: 0.8, blue: 0.36)
+            case .adaptive: return Color(red: 0.78, green: 0.62, blue: 1.0)
+            case .off: return .white.opacity(0.7)
+            }
+        }
+    }
+
+    @Published private(set) var mode: Mode = .noiseCancellation
+    @Published private(set) var animationNonce = UUID()
+
+    private static let logger = Logger(subsystem: "theboringteam.boringnotch", category: "ListeningMode")
+    private static let bannerMarker = "listening mode banner with mode: "
+    private static let heardMarker = "Changed listening mode "
+    private static let transition = try? NSRegularExpression(pattern: #"listening mode (\S+) -> ([A-Za-z-]+)"#)
+
+    /// Every source reports the same change, a few hundred ms apart: only a new mode animates
+    private var lastKnownMode: Mode?
+
+    private var process: Process?
+    private var pending = Data()
+    private var cancellables = Set<AnyCancellable>()
+    private var started = false
+    private var quickExits = 0
+    private var launchedAt = Date.distantPast
+    private var restartTask: Task<Void, Never>?
+
+    private init() {}
+
+    func start() {
+        guard !started else { return }
+        started = true
+        Defaults.publisher(.showListeningModeLiveActivity)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in
+                if change.newValue { self?.launchStream() } else { self?.stopStream() }
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .sink { [weak self] _ in self?.stopStream() }
+            .store(in: &cancellables)
+    }
+
+    func preview() {
+        let next: Mode = mode == .noiseCancellation ? .transparency : .noiseCancellation
+        present(next, hideSystemBanner: false)
+    }
+
+    private func launchStream() {
+        guard process == nil else { return }
+        restartTask?.cancel()
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+        proc.arguments = [
+            "stream", "--style", "ndjson", "--level", "default",
+            "--predicate",
+            #"(process == "ControlCenter" AND (category == "sound" OR category == "system-banners") AND eventMessage CONTAINS "listening mode") OR (process == "heard" AND eventMessage BEGINSWITH "Changed listening mode ")"#
+        ]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            Task { @MainActor in self?.consume(data) }
+        }
+        proc.terminationHandler = { [weak self] ended in
+            Task { @MainActor in self?.streamEnded(ended) }
+        }
+        do {
+            try proc.run()
+            process = proc
+            launchedAt = Date()
+        } catch {
+            Self.logger.error("Could not start log stream: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func stopStream() {
+        restartTask?.cancel()
+        guard let proc = process else { return }
+        process = nil
+        (proc.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+        if proc.isRunning { proc.terminate() }
+    }
+
+    /// `log stream` can exit (logd restart, sleep): start it again, but give up if it keeps dying at launch,
+    /// which is what happens on a non-admin account.
+    private func streamEnded(_ ended: Process) {
+        guard ended === process else { return }
+        process = nil
+        pending.removeAll()
+        guard Defaults[.showListeningModeLiveActivity] else { return }
+        quickExits = Date().timeIntervalSince(launchedAt) < 5 ? quickExits + 1 : 0
+        guard quickExits < 5 else {
+            Self.logger.error("log stream keeps exiting (status \(ended.terminationStatus, privacy: .public)), listening mode detection disabled")
+            return
+        }
+        restartTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Double(2 << min(self?.quickExits ?? 0, 4))))
+            guard !Task.isCancelled else { return }
+            self?.launchStream()
+        }
+    }
+
+    private func consume(_ data: Data) {
+        pending.append(data)
+        while let newline = pending.firstIndex(of: 0x0A) {
+            let line = pending[pending.startIndex..<newline]
+            pending.removeSubrange(pending.startIndex...newline)
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let message = object["eventMessage"] as? String,
+                  let (mode, appleBannerShown) = Self.parse(message) else { continue }
+            if appleBannerShown && BoringViewModel.openNotchCount == 0 && Defaults[.showListeningModeLiveActivity] {
+                BluetoothBannerSuppressor.shared.hideListeningModeBannerSoon()
+            }
+            guard mode != lastKnownMode else { continue }
+            lastKnownMode = mode
+            present(mode, hideSystemBanner: false)
+        }
+    }
+
+    private static func parse(_ message: String) -> (mode: Mode, appleBannerShown: Bool)? {
+        if let range = message.range(of: bannerMarker) {
+            let name = message[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            return Mode(controlCenterName: name).map { ($0, true) } ?? unknown(name)
+        }
+        if let range = message.range(of: heardMarker) {
+            let digits = message[range.upperBound...].prefix { $0.isNumber }
+            guard let number = Int(digits) else { return nil }
+            return Mode(heardNumber: number).map { ($0, false) } ?? unknown("heard \(number)")
+        }
+        let ns = message as NSString
+        if let match = transition?.firstMatch(in: message, range: NSRange(location: 0, length: ns.length)) {
+            let name = ns.substring(with: match.range(at: 2))
+            return Mode(controlCenterName: name).map { ($0, false) } ?? unknown(name)
+        }
+        return nil
+    }
+
+    private static func unknown(_ name: String) -> (mode: Mode, appleBannerShown: Bool)? {
+        logger.notice("Unknown listening mode \(name, privacy: .public)")
+        return nil
+    }
+
+    private func present(_ newMode: Mode, hideSystemBanner: Bool) {
+        guard Defaults[.showListeningModeLiveActivity] else { return }
+        mode = newMode
+        animationNonce = UUID()
+        BoringViewCoordinator.shared.toggleExpandingView(status: true, type: .listeningMode)
+        // The animation only shows on a closed notch: with the notch open, Apple's banner stays the feedback
+        if hideSystemBanner && BoringViewModel.openNotchCount == 0 {
+            BluetoothBannerSuppressor.shared.hideListeningModeBannerSoon()
+        }
+    }
+}
+
+struct ListeningModeClosedNotchView: View {
+    @ObservedObject var monitor = AirPodsListeningModeMonitor.shared
+    @ObservedObject var bluetooth = BluetoothAudioLiveActivityManager.shared
+    let closedHeight: CGFloat
+    let centerSpacerWidth: CGFloat
+
+    static let wingWidth: CGFloat = 122
+
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var earHeight: CGFloat {
+        closedHeight > 0 ? max(28, closedHeight) : 32
+    }
+
+    var body: some View {
+        let mode = monitor.mode
+        HStack(spacing: 0) {
+            Image(systemName: bluetooth.currentDevice?.modelKind.symbolName ?? "airpodspro")
+                .font(.system(size: 16, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .padding(.leading, 6)
+                .frame(width: Self.wingWidth, height: earHeight, alignment: .leading)
+                .offset(x: appeared || reduceMotion ? 0 : 4)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: closedHeight > 0 ? max(20, centerSpacerWidth) : 18)
+
+            HStack(spacing: 6) {
+                Text(mode.title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .tracking(-0.1)
+                    .foregroundStyle(mode.tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Image(systemName: mode.symbolName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(mode.tint)
+                    .frame(width: 18, height: 18)
+                    .contentTransition(.symbolEffect(.replace))
+                    .conditionalModifier(!reduceMotion) { view in
+                        view.symbolEffect(.bounce, value: monitor.animationNonce)
+                    }
+            }
+            .padding(.trailing, 6)
+            .frame(width: Self.wingWidth, height: earHeight, alignment: .trailing)
+            .offset(x: appeared || reduceMotion ? 0 : -4)
+        }
+        .frame(height: earHeight, alignment: .center)
+        .opacity(appeared ? 1 : 0)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: mode)
+        .onAppear {
+            guard !reduceMotion else {
+                appeared = true
+                return
+            }
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
+                appeared = true
             }
         }
     }

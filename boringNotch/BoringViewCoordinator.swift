@@ -19,6 +19,7 @@ enum SneakContentType {
     case battery
     case download
     case bluetoothAudio
+    case listeningMode
     case updateReady
 }
 
@@ -163,6 +164,7 @@ class BoringViewCoordinator: ObservableObject {
         Task { @MainActor in
             helloAnimationRunning = firstLaunch
             _ = BluetoothAudioLiveActivityManager.shared
+            AirPodsListeningModeMonitor.shared.start()
 
             if Defaults[.hudReplacement] {
                 await MediaKeyInterceptor.shared.start(promptIfNeeded: false)
@@ -268,7 +270,7 @@ class BoringViewCoordinator: ObservableObject {
         browser: BrowserType = .chromium
     ) {
         Task { @MainActor in
-            let anim: Animation = (type == .bluetoothAudio)
+            let anim: Animation = (type == .bluetoothAudio || type == .listeningMode)
                 ? .spring(response: 0.40, dampingFraction: 0.84)
                 : .smooth
             withAnimation(anim) {
@@ -313,6 +315,8 @@ class BoringViewCoordinator: ObservableObject {
                         duration = 2
                     case .bluetoothAudio:
                         duration = 4.2
+                    case .listeningMode:
+                        duration = 2.4
                     case .updateReady:
                         duration = 5
                     default:

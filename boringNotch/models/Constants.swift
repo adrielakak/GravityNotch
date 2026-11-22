@@ -217,6 +217,7 @@ extension Defaults.Keys {
     static let hudTapSafetyTimeout = Key<Bool>("hudTapSafetyTimeout", default: false)
     static let lastLaunchedBuild = Key<String>("lastLaunchedBuild", default: "")
     static let showBluetoothAudioLiveActivity = Key<Bool>("showBluetoothAudioLiveActivity", default: true)
+    static let showListeningModeLiveActivity = Key<Bool>("showListeningModeLiveActivity", default: true)
     static let timerSoundEnabled = Key<Bool>("timerSoundEnabled", default: true)
     static let showTimerButton = Key<Bool>("showTimerButton", default: true)
     static let showCaffeineButton = Key<Bool>("showCaffeineButton", default: true)

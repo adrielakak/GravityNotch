@@ -26,6 +26,7 @@ struct ContentView: View {
     @ObservedObject var clipboardManager = ClipboardHistoryManager.shared
     @ObservedObject var agentMonitor = AntigravityAgentMonitor.shared
     @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
+    @ObservedObject var listeningModeMonitor = AirPodsListeningModeMonitor.shared
     @ObservedObject var notchTimer = NotchTimerManager.shared
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
@@ -99,6 +100,15 @@ struct ContentView: View {
             && !vm.hideOnClosed
     }
 
+    private var shouldShowListeningModeLiveActivity: Bool {
+        coordinator.expandingView.type == .listeningMode
+            && coordinator.expandingView.show
+            && vm.notchState == .closed
+            && Defaults[.showListeningModeLiveActivity]
+            && !coordinator.sneakPeek.show
+            && !vm.hideOnClosed
+    }
+
     private var shouldShowTimerLiveActivity: Bool {
         notchTimer.isActive
             && !coordinator.expandingView.show
@@ -119,6 +129,8 @@ struct ContentView: View {
             chinWidth = vm.closedNotchSize.width + 10 + 2 * UpdateReadyClosedView.wingWidth
         } else if shouldShowBluetoothLiveActivity {
             chinWidth += 2 * BluetoothAudioClosedNotchView.compactWingWidth(closedHeight: vm.effectiveClosedNotchHeight)
+        } else if shouldShowListeningModeLiveActivity {
+            chinWidth += 2 * ListeningModeClosedNotchView.wingWidth
         } else if shouldShowTimerLiveActivity {
             chinWidth += 2 * TimerClosedNotchView.wingWidth
         } else if shouldShowAgentLiveActivity {
@@ -182,6 +194,7 @@ struct ContentView: View {
                         return view
                             .animation(vm.notchState == .open ? openAnimation : closeAnimation, value: vm.notchState)
                             .animation(bluetoothAnimation, value: shouldShowBluetoothLiveActivity)
+                            .animation(bluetoothAnimation, value: shouldShowListeningModeLiveActivity)
                             .animation(bluetoothAnimation, value: shouldShowTimerLiveActivity)
                             .animation(.smooth, value: gestureProgress)
                     }
@@ -192,6 +205,9 @@ struct ContentView: View {
                     .onTapGesture {
                         if shouldShowBluetoothLiveActivity {
                             coordinator.toggleExpandingView(status: false, type: .bluetoothAudio)
+                            doOpen()
+                        } else if shouldShowListeningModeLiveActivity {
+                            coordinator.toggleExpandingView(status: false, type: .listeningMode)
                             doOpen()
                         } else if shouldShowTimerLiveActivity {
                             coordinator.currentView = .timer
@@ -373,6 +389,12 @@ struct ContentView: View {
                               closedHeight: vm.effectiveClosedNotchHeight,
                               centerSpacerWidth: vm.closedNotchSize.width,
                               isHovered: isHovering
+                          )
+                          .transition(.opacity)
+                      } else if shouldShowListeningModeLiveActivity {
+                          ListeningModeClosedNotchView(
+                              closedHeight: vm.effectiveClosedNotchHeight,
+                              centerSpacerWidth: vm.closedNotchSize.width
                           )
                           .transition(.opacity)
                       } else if shouldShowTimerLiveActivity {

@@ -27614,6 +27614,102 @@
           }
         }
       }
+    },
+    "Noise Cancellation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Noise Cancellation"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Réduction du bruit"
+          }
+        }
+      }
+    },
+    "Transparency": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transparency"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transparence"
+          }
+        }
+      }
+    },
+    "Adaptive": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adaptive"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adaptatif"
+          }
+        }
+      }
+    },
+    "Listening Mode Off": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listening Mode Off"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mode d’écoute désactivé"
+          }
+        }
+      }
+    },
+    "Show AirPods listening mode changes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show AirPods listening mode changes"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les changements de mode d’écoute des AirPods"
+          }
+        }
+      }
+    },
+    "Preview Listening Mode Animation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview Listening Mode Animation"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aperçu de l’animation du mode d’écoute"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

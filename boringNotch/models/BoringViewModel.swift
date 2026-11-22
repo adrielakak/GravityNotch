@@ -189,8 +189,12 @@ class BoringViewModel: NSObject, ObservableObject {
         return false
     }
 
+    /// Number of notch windows currently open (one per screen at most)
+    nonisolated(unsafe) static private(set) var openNotchCount = 0
+
     func open() {
         guard !coordinator.isScreenLocked else { return }
+        if notchState != .open { Self.openNotchCount += 1 }
         self.notchSize = openNotchSize
         self.notchState = .open
         MainActor.assumeIsolated { AgentSpeechBubbleController.shared.notchDidOpen(self) }
@@ -206,6 +210,7 @@ class BoringViewModel: NSObject, ObservableObject {
         if SharingStateManager.shared.preventNotchClose {
             return
         }
+        if notchState == .open { Self.openNotchCount = max(0, Self.openNotchCount - 1) }
         self.notchSize = getClosedNotchSize(screenUUID: self.screenUUID)
         self.closedNotchSize = self.notchSize
         self.notchState = .closed
