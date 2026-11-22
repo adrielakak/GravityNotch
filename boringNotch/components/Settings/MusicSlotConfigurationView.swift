@@ -14,11 +14,11 @@ struct MusicSlotConfigurationView: View {
     @ObservedObject private var musicManager = MusicManager.shared
     @State private var draggedSlot: MusicControlButton?
 
-    private let fixedSlotCount: Int = 5
+    private let fixedSlotCount: Int = MusicControlButton.maxSlotCount
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Slot configuration (fixed 5)
+            // Slot configuration (fixed count)
             slotConfigurationSection
 
             // Reset button

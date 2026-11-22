@@ -112,6 +112,7 @@ struct AlbumArtView: View {
 struct MusicControlsView: View {
     @ObservedObject var musicManager = MusicManager.shared
     @ObservedObject var playingNext = PlayingNextManager.shared
+    @ObservedObject var audioRouting = AudioOutputRoutingMenu.shared
         @EnvironmentObject var vm: BoringViewModel
         @ObservedObject var webcamManager = WebcamManager.shared
     @State private var sliderValue: Double = 0
@@ -213,7 +214,8 @@ struct MusicControlsView: View {
 
     private var slotToolbar: some View {
         let slots = activeSlots
-        return HStack(spacing: 6) {
+        // Six 30 pt buttons only fit the text column with tighter spacing
+        return HStack(spacing: slots.count > 5 ? 1 : 6) {
             ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
                 slotView(for: slot)
                     .frame(alignment: .center)
@@ -266,8 +268,8 @@ struct MusicControlsView: View {
         case .favorite:
             FavoriteControlButton()
         case .audioOutput:
-            HoverButton(icon: "airplayaudio", scale: .medium) {
-                AudioOutputRoutingMenu.shared.popUpAtMouseLocation()
+            HoverButton(icon: "airplayaudio", iconColor: audioRouting.showPanelInHome ? .effectiveAccent : .primary, scale: .medium) {
+                audioRouting.togglePanel()
             }
         case .playingNext:
             HoverButton(icon: "music.note.list", iconColor: playingNext.showQueueInHome ? .effectiveAccent : .primary, scale: .medium) {
@@ -433,6 +435,7 @@ struct NotchHomeView: View {
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var playingNext = PlayingNextManager.shared
+    @ObservedObject var audioRouting = AudioOutputRoutingMenu.shared
     let albumArtNamespace: Namespace.ID
 
     var body: some View {
@@ -450,10 +453,17 @@ struct NotchHomeView: View {
     }
 
     private var mainContent: some View {
-        HStack(alignment: .top, spacing: (shouldShowCamera && (Defaults[.showCalendar] || playingNext.showQueueInHome)) ? 10 : 15) {
+        HStack(alignment: .top, spacing: (shouldShowCamera && (Defaults[.showCalendar] || playingNext.showQueueInHome || audioRouting.showPanelInHome)) ? 10 : 15) {
             MusicPlayerView(albumArtNamespace: albumArtNamespace)
 
-            if playingNext.showQueueInHome {
+            if audioRouting.showPanelInHome {
+                AudioOutputPanelView()
+                    .frame(width: shouldShowCamera ? 170 : 215)
+                    .onHover { isHovering in
+                        vm.isHoveringCalendar = isHovering
+                    }
+                    .transition(.opacity)
+            } else if playingNext.showQueueInHome {
                 PlayingNextView()
                     .frame(width: shouldShowCamera ? 170 : 215)
                     .onHover { isHovering in

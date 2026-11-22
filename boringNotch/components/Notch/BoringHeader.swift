@@ -130,7 +130,10 @@ struct BoringHeader: View {
                             }
                             Divider()
                             Button("Switch Audio Output…") {
-                                AudioOutputRoutingMenu.shared.popUpAtMouseLocation()
+                                coordinator.currentView = .home
+                                if !AudioOutputRoutingMenu.shared.showPanelInHome {
+                                    AudioOutputRoutingMenu.shared.togglePanel()
+                                }
                             }
                         }
                         if showCaffeineButton {

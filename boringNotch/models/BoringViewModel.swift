@@ -209,7 +209,10 @@ class BoringViewModel: NSObject, ObservableObject {
         self.notchSize = getClosedNotchSize(screenUUID: self.screenUUID)
         self.closedNotchSize = self.notchSize
         self.notchState = .closed
-        MainActor.assumeIsolated { AgentSpeechBubbleController.shared.notchDidClose(self) }
+        MainActor.assumeIsolated {
+            AgentSpeechBubbleController.shared.notchDidClose(self)
+            AudioOutputRoutingMenu.shared.showPanelInHome = false
+        }
         self.isBatteryPopoverActive = false
         self.coordinator.sneakPeek.show = false
         self.edgeAutoOpenActive = false

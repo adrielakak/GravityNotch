@@ -70,13 +70,78 @@ func AppIconAsNSImage(for bundleID: String) -> NSImage? {
 // MARK: - CoreAudio Output Device Switcher (Gravity Audio Routing)
 
 @MainActor
-final class AudioOutputRoutingMenu: NSObject {
+final class AudioOutputRoutingMenu: NSObject, ObservableObject {
     static let shared = AudioOutputRoutingMenu()
 
     struct OutputDevice {
         let id: AudioDeviceID
         let name: String
         let isDefault: Bool
+        var transportType: UInt32 = 0
+
+        var symbolName: String {
+            let lower = name.lowercased()
+            if lower.contains("airpods max") { return "airpodsmax" }
+            if lower.contains("airpods pro") { return "airpodspro" }
+            if lower.contains("airpod") { return "airpods" }
+            if lower.contains("beats") || lower.contains("headphone") || lower.contains("casque") { return "headphones" }
+            switch transportType {
+            case kAudioDeviceTransportTypeBuiltIn: return "laptopcomputer"
+            case kAudioDeviceTransportTypeAirPlay: return "airplayaudio"
+            case kAudioDeviceTransportTypeHDMI, kAudioDeviceTransportTypeDisplayPort: return "tv"
+            case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return "headphones"
+            case kAudioDeviceTransportTypeVirtual, kAudioDeviceTransportTypeAggregate: return "waveform"
+            default: return "hifispeaker.fill"
+            }
+        }
+    }
+
+    /// Shown in place of the calendar on the home tab, like the Playing Next queue
+    @Published var showPanelInHome = false
+    @Published private(set) var devices: [OutputDevice] = []
+    private var deviceListener: AudioObjectPropertyListenerBlock?
+
+    func togglePanel() {
+        withAnimation(.smooth(duration: 0.22)) {
+            showPanelInHome.toggle()
+            if showPanelInHome { PlayingNextManager.shared.showQueueInHome = false }
+        }
+    }
+
+    func hidePanel() {
+        guard showPanelInHome else { return }
+        withAnimation(.smooth(duration: 0.22)) { showPanelInHome = false }
+    }
+
+    /// Keeps `devices` current while the panel is visible (AirPods connecting, output changed elsewhere)
+    func startObservingDevices() {
+        devices = availableOutputDevices()
+        guard deviceListener == nil else { return }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.devices = self?.availableOutputDevices() ?? [] }
+        }
+        deviceListener = listener
+        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener)
+        }
+    }
+
+    func stopObservingDevices() {
+        guard let listener = deviceListener else { return }
+        for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultOutputDevice] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener)
+        }
+        deviceListener = nil
     }
 
     func availableOutputDevices() -> [OutputDevice] {
@@ -112,6 +177,19 @@ final class AudioOutputRoutingMenu: NSObject {
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: kAudioObjectPropertyElementMain
             )
+            // Skips app-private virtual devices (Microsoft Teams Audio) and the AirPods hands-free twin:
+            // macOS itself never offers them as the system output
+            var canBeDefault: UInt32 = 1
+            var canBeDefaultSize = UInt32(MemoryLayout<UInt32>.size)
+            var canBeDefaultAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceCanBeDefaultDevice,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            if AudioObjectGetPropertyData(id, &canBeDefaultAddr, 0, nil, &canBeDefaultSize, &canBeDefault) == noErr,
+               canBeDefault == 0 {
+                continue
+            }
             if AudioObjectGetPropertyDataSize(id, &streamAddr, 0, nil, &streamSize) == noErr, streamSize > 0 {
                 var cfName: CFString = "" as CFString
                 var nameSize = UInt32(MemoryLayout<CFString>.size)
@@ -124,7 +202,15 @@ final class AudioOutputRoutingMenu: NSObject {
                     AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, ptr)
                 }
                 if status == noErr {
-                    outputs.append(OutputDevice(id: id, name: cfName as String, isDefault: id == defaultID))
+                    var transport: UInt32 = 0
+                    var transportSize = UInt32(MemoryLayout<UInt32>.size)
+                    var transportAddr = AudioObjectPropertyAddress(
+                        mSelector: kAudioDevicePropertyTransportType,
+                        mScope: kAudioObjectPropertyScopeGlobal,
+                        mElement: kAudioObjectPropertyElementMain
+                    )
+                    AudioObjectGetPropertyData(id, &transportAddr, 0, nil, &transportSize, &transport)
+                    outputs.append(OutputDevice(id: id, name: cfName as String, isDefault: id == defaultID, transportType: transport))
                 }
             }
         }
@@ -140,31 +226,6 @@ final class AudioOutputRoutingMenu: NSObject {
             mElement: kAudioObjectPropertyElementMain
         )
         AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, size, &id)
-    }
-
-    func popUpAtMouseLocation() {
-        let menu = NSMenu(title: String(localized: "Audio Output"))
-        let header = NSMenuItem(title: String(localized: "Audio Output Device"), action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        menu.addItem(.separator())
-
-        let devices = availableOutputDevices()
-        for dev in devices {
-            let item = NSMenuItem(title: dev.name, action: #selector(selectDevice(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = Int(dev.id)
-            item.state = dev.isDefault ? .on : .off
-            let lower = dev.name.lowercased()
-            let symbol = lower.contains("airpod") ? "airpodspro" : (lower.contains("headphone") ? "headphones" : "hifispeaker.fill")
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: dev.name)
-            menu.addItem(item)
-        }
-        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-    }
-
-    @objc private func selectDevice(_ sender: NSMenuItem) {
-        setOutputDevice(AudioDeviceID(sender.tag))
     }
 }
 
@@ -3246,6 +3307,7 @@ final class PlayingNextManager: ObservableObject {
     func toggleQueueView() {
         withAnimation(.smooth(duration: 0.22)) {
             showQueueInHome.toggle()
+            if showQueueInHome { AudioOutputRoutingMenu.shared.showPanelInHome = false }
         }
         if showQueueInHome {
             Task { await refreshQueue() }
@@ -3435,6 +3497,146 @@ final class PlayingNextManager: ObservableObject {
         guard generation == refreshGeneration else { return }
         self.isShuffleOn = shuffleOn
         self.tracks = fetched
+    }
+}
+
+/// Home tab panel (in place of the calendar): system volume and every output device, one tap to switch
+struct AudioOutputPanelView: View {
+    @ObservedObject var routing = AudioOutputRoutingMenu.shared
+    @ObservedObject var volumeManager = VolumeManager.shared
+    @State private var dragVolume: Float?
+
+    private var volume: Float {
+        dragVolume ?? (volumeManager.isMuted ? 0 : volumeManager.rawVolume)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "airplayaudio")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text("Audio Output")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Spacer()
+                Button {
+                    routing.togglePanel()
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 10))
+                        Text("Calendar")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.white.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+            }
+
+            volumeRow
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 4) {
+                    ForEach(routing.devices, id: \.id) { device in
+                        deviceRow(device)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+        .onAppear {
+            routing.startObservingDevices()
+            volumeManager.refresh()
+        }
+        .onDisappear { routing.stopObservingDevices() }
+    }
+
+    private var volumeRow: some View {
+        HStack(spacing: 7) {
+            Button {
+                volumeManager.toggleMuteAction()
+            } label: {
+                Image(systemName: volume <= 0.01 ? "speaker.slash.fill" : (volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.3.fill"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: 16)
+            }
+            .buttonStyle(.plain)
+
+            GeometryReader { geo in
+                let width = max(1, geo.size.width)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.14))
+                    Capsule()
+                        .fill(Color.white.opacity(0.9))
+                        .frame(width: max(5, width * CGFloat(volume)))
+                }
+                .frame(height: 5)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let ratio = Float(min(1, max(0, value.location.x / width)))
+                            dragVolume = ratio
+                            volumeManager.setAbsolute(ratio)
+                        }
+                        .onEnded { _ in dragVolume = nil }
+                )
+            }
+            .frame(height: 14)
+
+            Text("\(Int(round(volume * 100)))%")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.gray)
+                .frame(width: 28, alignment: .trailing)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+    }
+
+    private func deviceRow(_ device: AudioOutputRoutingMenu.OutputDevice) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: device.symbolName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(device.isDefault ? Color.accentColor : .white.opacity(0.75))
+                .frame(width: 16)
+            Text(device.name)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Spacer(minLength: 2)
+            if device.isDefault {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(device.isDefault ? Color.accentColor.opacity(0.16) : Color.white.opacity(0.05))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 7))
+        .onTapGesture {
+            guard !device.isDefault else { return }
+            routing.setOutputDevice(device.id)
+            volumeManager.refresh()
+        }
     }
 }
 
@@ -6712,7 +6914,7 @@ private struct LockScreenAudioDrawer: View {
                                 volumeManager.refresh()
                             } label: {
                                 HStack(spacing: 5) {
-                                    Image(systemName: outputSymbol(for: dev.name))
+                                    Image(systemName: dev.symbolName)
                                         .font(.system(size: 10, weight: .semibold))
                                     Text(dev.name)
                                         .font(.system(size: 10, weight: .medium))
@@ -6752,12 +6954,6 @@ private struct LockScreenAudioDrawer: View {
         }
     }
 
-    private func outputSymbol(for name: String) -> String {
-        let lower = name.lowercased()
-        if lower.contains("airpod") { return "airpodspro" }
-        if lower.contains("headphone") || lower.contains("beats") || lower.contains("sony") { return "headphones" }
-        return "hifispeaker.fill"
-    }
 }
 
 
