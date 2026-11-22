@@ -38,6 +38,14 @@ struct DynamicNotchApp: App {
         // Sparkle auto-updater pointed at https://adrielakak.github.io/GravityNotch/appcast.xml
         updaterController = SPUStandardUpdaterController(
             startingUpdater: true, updaterDelegate: UpdateReadyManager.shared, userDriverDelegate: nil)
+        // Sparkle only checks once its interval has elapsed since the last check, even across relaunches,
+        // so with the default 24 h a fresh release could wait a whole day. Also check shortly after launch.
+        let updater = updaterController.updater
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+            if updater.automaticallyChecksForUpdates && updater.canCheckForUpdates {
+                updater.checkForUpdatesInBackground()
+            }
+        }
         #if DEBUG
         UpdateReadyManager.shared.simulateIfRequested()
         #endif
