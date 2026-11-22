@@ -244,9 +244,13 @@ class BoringViewCoordinator: ObservableObject {
         }
     }
 
+    /// When the current sneak peek appeared: it widens the closed notch, which can slide under a resting cursor
+    private(set) var sneakPeekShownAt: Date = .distantPast
+
     @Published var sneakPeek: sneakPeek = .init() {
         didSet {
             if sneakPeek.show {
+                if !oldValue.show { sneakPeekShownAt = Date() }
                 scheduleSneakPeekHide(after: sneakPeekDuration)
             } else {
                 sneakPeekTask?.cancel()

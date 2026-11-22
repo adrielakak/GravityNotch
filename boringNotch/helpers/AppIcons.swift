@@ -503,7 +503,7 @@ private final class BluetoothBannerSuppressor {
     private func hide(_ window: AXUIElement, frame: CGRect, deviceName: String) {
         var target = CGPoint(x: frame.origin.x, y: Self.offscreenY(forHeight: frame.height))
         guard let value = AXValueCreate(.cgPoint, &target) else { return }
-        let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+        let result = AXUIElementSetAttributeValue(Self.bounded(window), kAXPositionAttribute as CFString, value)
         guard result == .success else {
             Self.logger.error("Failed to move Smart Routing banner err=\(result.rawValue, privacy: .public)")
             return
@@ -544,8 +544,18 @@ private final class BluetoothBannerSuppressor {
         }
     }
 
+    /// These calls run on the main thread. A busy ControlCenter (Space or app switches) would otherwise
+    /// block it for the default 6 s AX timeout, freezing the notch: it could not even close on hover exit.
+    private static let messagingTimeout: Float = 0.25
+
+    private static func bounded(_ element: AXUIElement) -> AXUIElement {
+        AXUIElementSetMessagingTimeout(element, messagingTimeout)
+        return element
+    }
+
     private static func copyStringAttribute(_ element: AXUIElement, attribute: String) -> String? {
         var valueRef: CFTypeRef?
+        _ = bounded(element)
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef) == .success else {
             return nil
         }
@@ -554,6 +564,7 @@ private final class BluetoothBannerSuppressor {
 
     private static func copyElementArray(_ element: AXUIElement, attribute: String) -> [AXUIElement]? {
         var valueRef: CFTypeRef?
+        _ = bounded(element)
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef) == .success,
               let list = valueRef as? [AnyObject] else {
             return nil
@@ -567,6 +578,7 @@ private final class BluetoothBannerSuppressor {
     private static func copyFrame(_ element: AXUIElement) -> CGRect? {
         var positionRef: CFTypeRef?
         var sizeRef: CFTypeRef?
+        _ = bounded(element)
         guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionRef) == .success,
               AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
               let positionRef, let sizeRef,

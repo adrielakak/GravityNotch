@@ -29,6 +29,7 @@ struct ContentView: View {
     @ObservedObject var notchTimer = NotchTimerManager.shared
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
+    @State private var missedExitWatchdog = MissedHoverExitWatchdog()
     @State private var anyDropDebounceTask: Task<Void, Never>?
     @State private var headerDropTargeting: Bool = false
     @State private var nonShelfDropTargeting: Bool = false
@@ -226,6 +227,9 @@ struct ContentView: View {
                                 }
                             }
                         }
+                    }
+                    .onReceive(MissedHoverExitWatchdog.ticks) { _ in
+                        checkMissedHoverExit()
                     }
                     .onChange(of: vm.notchState) { _, newState in
                         if newState == .closed && isHovering {
@@ -680,8 +684,11 @@ struct ContentView: View {
                 haptics.toggle()
             }
             
+            // A HUD no longer blocks hover-to-open, except when its own expansion put the notch under the cursor
+            let hoverCausedBySneakPeek = coordinator.sneakPeek.show
+                && Date().timeIntervalSince(coordinator.sneakPeekShownAt) < 0.4
             guard vm.notchState == .closed,
-                  !coordinator.sneakPeek.show,
+                  !hoverCausedBySneakPeek,
                   !shouldShowBluetoothLiveActivity,
                   !shouldShowTimerLiveActivity,
                   Defaults[.openNotchOnHover] else { return }
@@ -693,7 +700,6 @@ struct ContentView: View {
                 await MainActor.run {
                     guard self.vm.notchState == .closed,
                           self.isHovering,
-                          !self.coordinator.sneakPeek.show,
                           !self.shouldShowBluetoothLiveActivity,
                           !self.shouldShowTimerLiveActivity else { return }
                     
@@ -717,6 +723,33 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    /// AppKit sometimes never delivers the hover exit (app or window switch, Space change), so the open
+    /// notch stayed open until the next click. Two ticks with the pointer outside count as a missed exit.
+    private func checkMissedHoverExit() {
+        guard vm.notchState == .open, isHovering,
+              NSEvent.pressedMouseButtons == 0,
+              !vm.anyDropZoneTargeting,
+              !vm.isBatteryPopoverActive,
+              !SharingStateManager.shared.preventNotchClose,
+              isPointerOutsideOpenNotch() else {
+            missedExitWatchdog.outsideTicks = 0
+            return
+        }
+        missedExitWatchdog.outsideTicks += 1
+        guard missedExitWatchdog.outsideTicks >= 2 else { return }
+        missedExitWatchdog.outsideTicks = 0
+        handleHover(false)
+    }
+
+    private func isPointerOutsideOpenNotch() -> Bool {
+        guard let screen = getScreenFrame(vm.screenUUID) else { return false }
+        let margin: CGFloat = 8
+        let width = vm.notchSize.width + margin * 2
+        let height = vm.notchSize.height + vm.chinHeight + margin
+        let area = NSRect(x: screen.midX - width / 2, y: screen.maxY - height, width: width, height: height + margin)
+        return !area.contains(NSEvent.mouseLocation)
     }
 
     // MARK: - Gesture Handling
@@ -819,4 +852,11 @@ struct GeneralDropTargetDelegate: DropDelegate {
     return ContentView()
         .environmentObject(vm)
         .frame(width: vm.notchSize.width, height: vm.notchSize.height)
+}
+
+/// Reference box: counting ticks must not invalidate the view body several times a second
+final class MissedHoverExitWatchdog {
+    /// `.default` run loop mode: it pauses while a menu is tracking, so an open menu never closes the notch
+    static let ticks = Timer.publish(every: 0.3, on: .main, in: .default).autoconnect()
+    var outsideTicks = 0
 }
