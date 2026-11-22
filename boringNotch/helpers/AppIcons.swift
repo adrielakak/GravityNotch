@@ -3051,7 +3051,7 @@ enum MusicQueuePanelReader {
         }
 
         /// Breadth first, the queue sits a few levels under the window. It starts with section header rows
-        /// carrying a "Clear" button identified as "action"; only the first rows of a table are checked
+        /// (a "Clear" button identified as "action", or a "title" text for Autoplay); only the first rows are checked
         mutating func findQueueTable(in window: AXUIElement) -> AXUIElement? {
             var level = children(window)
             for _ in 0..<10 where !level.isEmpty && !failed {
@@ -3079,6 +3079,8 @@ enum MusicQueuePanelReader {
                         if let text = attribute(element, kAXValueAttribute) as? String, !text.isEmpty {
                             texts.append(text)
                         }
+                        // The Autoplay header has no Clear button, only "title"/"subtitle" texts; track rows have no identifiers
+                        if attribute(element, kAXIdentifierAttribute) as? String == "title" { isHeader = true }
                     case kAXButtonRole:
                         if attribute(element, kAXIdentifierAttribute) as? String == "action" { isHeader = true }
                     default:
@@ -3122,9 +3124,11 @@ enum MusicQueuePanelReader {
         }
 
         private func track(from texts: [String]) -> Track? {
-            guard let title = texts.first else { return nil }
+            // Real tracks always carry a subtitle; a lone title is a placeholder ("AutoPlay" while Music reloads)
+            guard texts.count > 1 else { return nil }
+            let title = texts[0]
             // Subtitle reads "Artist <em dash> Album"
-            let subtitle = texts.count > 1 ? texts[1] : ""
+            let subtitle = texts[1]
             let artist = subtitle.components(separatedBy: " \u{2014} ").first ?? subtitle
             return Track(title: title, artist: artist)
         }
@@ -3217,6 +3221,16 @@ final class PlayingNextManager: ObservableObject {
         }
     }
 
+    /// Music fills its Autoplay list seconds after a track starts, or when the user edits the queue, without any
+    /// notification: re-read it while the queue is on screen. Runs only for the lifetime of the visible view
+    func watchMusicQueueWhileVisible() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled, MusicManager.shared.bundleIdentifier == "com.apple.Music" else { continue }
+            await refreshQueue(liveOnly: true)
+        }
+    }
+
     func toggleQueueView() {
         withAnimation(.smooth(duration: 0.22)) {
             showQueueInHome.toggle()
@@ -3273,7 +3287,8 @@ final class PlayingNextManager: ObservableObject {
         }
     }
 
-    func refreshQueue() async {
+    /// `liveOnly`: only apply a successful read of Music's queue panel, never the AppleScript fallback
+    func refreshQueue(liveOnly: Bool = false) async {
         refreshGeneration += 1
         let generation = refreshGeneration
         isLoading = true
@@ -3283,7 +3298,16 @@ final class PlayingNextManager: ObservableObject {
             var result = await Task.detached(priority: .utility) {
                 MusicQueuePanelReader.upcomingTracks()
             }.value
-            if case .failed = result {
+            // Music rebuilds the queue table on each track change: a hidden panel right after a live read
+            // is usually that rebuild, not the user closing the panel
+            var shouldRetry: Bool {
+                switch result {
+                case .failed: return true
+                case .panelHidden: return isLiveMusicQueue
+                case .queue: return false
+                }
+            }
+            if shouldRetry {
                 try? await Task.sleep(for: .milliseconds(800))
                 guard generation == refreshGeneration else { return }
                 result = await Task.detached(priority: .utility) {
@@ -3291,12 +3315,15 @@ final class PlayingNextManager: ObservableObject {
                 }.value
             }
             guard generation == refreshGeneration else { return }
+            if liveOnly {
+                guard case .queue = result else { return }
+            }
             switch result {
             case .queue(let live):
                 musicQueuePanelHidden = false
                 isLiveMusicQueue = true
                 isShuffleOn = false
-                tracks = live.enumerated().map { offset, track in
+                let items = live.enumerated().map { offset, track in
                     UpNextTrackItem(
                         id: "live-\(offset)-\(track.title)",
                         playlistIndex: -(offset + 1),
@@ -3305,6 +3332,7 @@ final class PlayingNextManager: ObservableObject {
                         duration: 0
                     )
                 }
+                if items != tracks { tracks = items }
                 return
             case .failed where isLiveMusicQueue:
                 // Music is still busy: keep the live list rather than fall back to a guessed album order
@@ -3537,6 +3565,7 @@ struct PlayingNextView: View {
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
                 )
         )
+        .task { await manager.watchMusicQueueWhileVisible() }
     }
 }
 
