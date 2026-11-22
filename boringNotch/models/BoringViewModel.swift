@@ -193,7 +193,8 @@ class BoringViewModel: NSObject, ObservableObject {
         guard !coordinator.isScreenLocked else { return }
         self.notchSize = openNotchSize
         self.notchState = .open
-        
+        MainActor.assumeIsolated { AgentSpeechBubbleController.shared.notchDidOpen(self) }
+
         // Force music information update when notch is opened
         MusicManager.shared.forceUpdate()
     }
@@ -206,6 +207,7 @@ class BoringViewModel: NSObject, ObservableObject {
         self.notchSize = getClosedNotchSize(screenUUID: self.screenUUID)
         self.closedNotchSize = self.notchSize
         self.notchState = .closed
+        MainActor.assumeIsolated { AgentSpeechBubbleController.shared.notchDidClose(self) }
         self.isBatteryPopoverActive = false
         self.coordinator.sneakPeek.show = false
         self.edgeAutoOpenActive = false

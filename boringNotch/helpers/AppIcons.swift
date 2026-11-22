@@ -7301,6 +7301,19 @@ final class AgentSpeechBubbleController: ObservableObject {
 
     private static let windowSize = NSSize(width: 300, height: 84)
     private static let visibleDuration: Double = 7
+    /// Open notch windows (one per screen). The bubble sits right under the notch, exactly where the open
+    /// notch expands, so it would cover its content: hide it on open and stay quiet while open.
+    /// Weak, so a notch window torn down while open (screen change) does not silence bubbles forever
+    private let openNotches = NSHashTable<AnyObject>.weakObjects()
+
+    func notchDidOpen(_ notch: AnyObject) {
+        openNotches.add(notch)
+        if bubble != nil { dismiss() }
+    }
+
+    func notchDidClose(_ notch: AnyObject) {
+        openNotches.remove(notch)
+    }
 
     /// Compares two refreshes of the agent monitor and announces sessions that just stopped working.
     func announceTransitions(from previous: [AgentSessionSnapshot], to current: [AgentSessionSnapshot]) {
@@ -7333,6 +7346,7 @@ final class AgentSpeechBubbleController: ObservableObject {
     }
 
     func show(kind: AgentKind, reason: AgentSpeechBubble.Reason, detail: String) {
+        guard openNotches.allObjects.isEmpty else { return }
         let message: String
         switch reason {
         case .finished:
