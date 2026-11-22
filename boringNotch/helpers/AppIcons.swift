@@ -5752,7 +5752,7 @@ struct LockScreenMediaPanelView: View {
                 onClosePreview: onClosePreview
             )
         }
-        .frame(width: 436, height: 390, alignment: .center)
+        .frame(width: 436, height: 390, alignment: Alignment(horizontal: .center, vertical: .lockScreenTransportControls))
         .onAppear {
             if LockScreenMediaPanelManager.hasActiveMedia(musicManager)
                 && musicManager.currentLyrics.isEmpty
@@ -5762,6 +5762,20 @@ struct LockScreenMediaPanelView: View {
             }
         }
     }
+}
+
+/// Pins the transport row at a fixed height in the panel envelope, so the card grows or shrinks around it
+/// (lyrics card above, audio drawer below) and the buttons stay under the cursor when skipping tracks.
+/// 115 pt leaves room below for the open audio drawer; the tallest stack above (expanded artwork + lyrics)
+/// still fits in the remaining 275 pt.
+private extension VerticalAlignment {
+    enum LockScreenTransportControls: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat {
+            context.height - 115
+        }
+    }
+
+    static let lockScreenTransportControls = VerticalAlignment(LockScreenTransportControls.self)
 }
 
 private struct LockScreenMediaCardContainer: View {
@@ -5863,6 +5877,7 @@ private struct LockScreenMediaCardContainer: View {
                     if $0 { isArtworkExpanded = false }
                 }
             )
+            .alignmentGuide(.lockScreenTransportControls) { $0[.bottom] }
 
             if showAudioDrawer {
                 LockScreenAudioDrawer(accentColor: albumAccent)
