@@ -2975,13 +2975,191 @@ final class CapsLockHUDMonitor {
 
 // MARK: - Playing Next Queue Manager & View (Gravity Playing Next Feature)
 
+/// Reads the real Up Next queue (user "Play Next" items + Autoplay) from Music's queue panel through
+/// Accessibility. AppleScript and MediaRemote only expose the current playlist, never Autoplay.
+/// Music builds that table only while the queue panel is shown, hence the `panelHidden` result.
+enum MusicQueuePanelReader {
+    struct Track {
+        let title: String
+        let artist: String
+    }
+
+    enum Result {
+        case queue([Track])
+        /// Music answered but shows no queue panel
+        case panelHidden
+        /// Music did not answer in time (busy while switching tracks): try again rather than guess
+        case failed
+    }
+
+    /// Section titles of the played-tracks list, taken from Music's own strings so any language works
+    private static let historyTitles: Set<String> = {
+        var titles: Set<String> = ["History", "Historique"]
+        if let bundle = Bundle(path: "/System/Applications/Music.app") {
+            for key in ["vxxu3gurm3", "akewa5jr45", "vt9ur4r256"] {
+                let value = bundle.localizedString(forKey: key, value: nil, table: "Localizable")
+                if value != key { titles.insert(value) }
+            }
+        }
+        return titles
+    }()
+
+    /// Subtrees that never hold the queue: sidebar, album grids, toolbars
+    private static let skippedRoles: Set<String> = [
+        kAXListRole, kAXOutlineRole, kAXToolbarRole, kAXMenuBarRole, "AXWebArea"
+    ]
+
+    static func upcomingTracks(limit: Int = 10) -> Result {
+        guard AXIsProcessTrusted(),
+              let music = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Music").first
+        else { return .panelHidden }
+        let app = AXUIElementCreateApplication(music.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 1.0)
+        var reader = Walker()
+        guard let windows = reader.attribute(app, kAXWindowsAttribute) as? [AXUIElement] else {
+            return reader.failed ? .failed : .panelHidden
+        }
+        for window in windows {
+            if let table = reader.findQueueTable(in: window) {
+                let tracks = reader.parse(table, limit: limit)
+                return reader.failed ? .failed : .queue(tracks)
+            }
+        }
+        return reader.failed ? .failed : .panelHidden
+    }
+
+    private struct Walker {
+        var failed = false
+
+        mutating func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+            var value: AnyObject?
+            let error = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+            if error == .cannotComplete { failed = true }
+            return error == .success ? value : nil
+        }
+
+        mutating func children(_ element: AXUIElement) -> [AXUIElement] {
+            attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+        }
+
+        mutating func rows(_ table: AXUIElement) -> [AXUIElement] {
+            attribute(table, kAXRowsAttribute) as? [AXUIElement] ?? children(table)
+        }
+
+        mutating func role(_ element: AXUIElement) -> String {
+            attribute(element, kAXRoleAttribute) as? String ?? ""
+        }
+
+        /// Breadth first, the queue sits a few levels under the window. It starts with section header rows
+        /// carrying a "Clear" button identified as "action"; only the first rows of a table are checked
+        mutating func findQueueTable(in window: AXUIElement) -> AXUIElement? {
+            var level = children(window)
+            for _ in 0..<10 where !level.isEmpty && !failed {
+                var next: [AXUIElement] = []
+                for element in level {
+                    let elementRole = role(element)
+                    if elementRole == kAXTableRole {
+                        if rows(element).prefix(3).contains(where: { parseRow($0).isHeader }) { return element }
+                    } else if !skippedRoles.contains(elementRole) {
+                        next.append(contentsOf: children(element))
+                    }
+                }
+                level = next
+            }
+            return nil
+        }
+
+        mutating func parseRow(_ row: AXUIElement) -> (texts: [String], isHeader: Bool) {
+            var texts: [String] = []
+            var isHeader = false
+            for cell in children(row) {
+                for element in children(cell) {
+                    switch role(element) {
+                    case kAXStaticTextRole:
+                        if let text = attribute(element, kAXValueAttribute) as? String, !text.isEmpty {
+                            texts.append(text)
+                        }
+                    case kAXButtonRole:
+                        if attribute(element, kAXIdentifierAttribute) as? String == "action" { isHeader = true }
+                    default:
+                        break
+                    }
+                }
+            }
+            return (texts, isHeader)
+        }
+
+        /// Upcoming sections follow History, so read from the bottom up to the History header
+        /// instead of walking hundreds of played tracks
+        /// Music keeps the queue scrolled so the played tracks sit above the visible area: the first visible
+        /// section header gives the start of the upcoming tracks without reading the whole history
+        /// (often 200+ rows, a few ms per Accessibility call)
+        mutating func parse(_ table: AXUIElement, limit: Int) -> [Track] {
+            let all = rows(table)
+            guard let visible = attribute(table, kAXVisibleRowsAttribute) as? [AXUIElement],
+                  let start = upcomingStart(in: all, visible: visible)
+            else { return parseFromBottom(all, limit: limit) }
+            var tracks: [Track] = []
+            for row in all[start...] where tracks.count < limit {
+                let (texts, isHeader) = parseRow(row)
+                if !isHeader, let track = track(from: texts) { tracks.append(track) }
+            }
+            return tracks
+        }
+
+        private mutating func upcomingStart(in all: [AXUIElement], visible: [AXUIElement]) -> Int? {
+            for row in visible {
+                let (texts, isHeader) = parseRow(row)
+                guard isHeader, let index = all.firstIndex(of: row) else { continue }
+                guard let title = texts.first, historyTitles.contains(title) else { return index + 1 }
+                // Scrolled up to the History header: the upcoming tracks start after the next header
+                for next in (index + 1)..<all.count where parseRow(all[next]).isHeader {
+                    return next + 1
+                }
+                return all.count
+            }
+            return nil
+        }
+
+        private func track(from texts: [String]) -> Track? {
+            guard let title = texts.first else { return nil }
+            // Subtitle reads "Artist <em dash> Album"
+            let subtitle = texts.count > 1 ? texts[1] : ""
+            let artist = subtitle.components(separatedBy: " \u{2014} ").first ?? subtitle
+            return Track(title: title, artist: artist)
+        }
+
+        private mutating func parseFromBottom(_ all: [AXUIElement], limit: Int) -> [Track] {
+            // Walking backwards, a section's rows are read before its header
+            var upcoming: [Track] = []
+            var section: [Track] = []
+            var reachedHistory = false
+            for row in all.reversed() {
+                let (texts, isHeader) = parseRow(row)
+                if isHeader {
+                    if let title = texts.first, historyTitles.contains(title) {
+                        reachedHistory = true
+                        break
+                    }
+                    upcoming = section.reversed() + upcoming
+                    section = []
+                    continue
+                }
+                if let track = track(from: texts) { section.append(track) }
+            }
+            // Rows above any header only count when there is no History section
+            if !reachedHistory { upcoming = section.reversed() + upcoming }
+            return Array(upcoming.prefix(limit))
+        }
+    }
+}
+
 struct UpNextTrackItem: Identifiable, Equatable {
     let id: String
     let playlistIndex: Int
     let title: String
     let artist: String
     let duration: Double
-    var isPromoted: Bool = false
 
     var formattedDuration: String {
         guard duration > 0 else { return "" }
@@ -2998,17 +3176,32 @@ final class PlayingNextManager: ObservableObject {
     @Published private(set) var tracks: [UpNextTrackItem] = []
     @Published private(set) var isLoading: Bool = false
     /// Music does not expose its shuffled Up Next order, so the playlist order is not the real queue while shuffling.
+    /// Stays false when the list comes from Music's queue panel, which already shows the real order.
     @Published private(set) var isShuffleOn: Bool = false
-    private var promotedIDs: [String] = []
+    /// The list was read from Music's queue panel (Playing Next + Autoplay), in the real playback order.
+    @Published private(set) var isLiveMusicQueue: Bool = false
+    /// Music is the player but its queue panel is hidden, so Autoplay tracks cannot be read.
+    @Published private(set) var musicQueuePanelHidden: Bool = false
     private var cancellable: AnyCancellable?
     private var shuffleCancellable: AnyCancellable?
+    /// Overlapping refreshes (track change, shuffle, button) finish in any order: only the latest one applies
+    private var refreshGeneration = 0
+    private var settleTask: Task<Void, Never>?
 
     private init() {
         cancellable = MusicManager.shared.$songTitle
             .removeDuplicates()
             .sink { [weak self] _ in
                 Task { @MainActor in
-                    await self?.refreshQueue()
+                    guard let self else { return }
+                    await self.refreshQueue()
+                    // Music updates its queue panel a moment after the track changes
+                    self.settleTask?.cancel()
+                    self.settleTask = Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(1.5))
+                        guard !Task.isCancelled else { return }
+                        await self?.refreshQueue()
+                    }
                 }
             }
         shuffleCancellable = MusicManager.shared.$isShuffled
@@ -3033,33 +3226,10 @@ final class PlayingNextManager: ObservableObject {
         }
     }
 
-    func promoteToTop(_ item: UpNextTrackItem) {
-        promotedIDs.removeAll { $0 == item.id }
-        promotedIDs.insert(item.id, at: 0)
-        applyPromotedOrder()
-    }
-
-    private func applyPromotedOrder() {
-        var promoted: [UpNextTrackItem] = []
-        var rest: [UpNextTrackItem] = []
-        for var t in tracks {
-            if promotedIDs.contains(t.id) {
-                t.isPromoted = true
-                promoted.append(t)
-            } else {
-                t.isPromoted = false
-                rest.append(t)
-            }
-        }
-        promoted.sort { (promotedIDs.firstIndex(of: $0.id) ?? 999) < (promotedIDs.firstIndex(of: $1.id) ?? 999) }
-        tracks = promoted + rest
-    }
-
     func playTrack(_ item: UpNextTrackItem) {
         let targetIndex = item.playlistIndex
-        // Negative index: catalog queue, reached by skipping forward (only reliable without shuffle)
-        if targetIndex < 0 && isShuffleOn { return }
-        promotedIDs.removeAll { $0 == item.id }
+        // Negative index: reached by skipping forward, only reliable when the list is the real order
+        if targetIndex < 0 && isShuffleOn && !isLiveMusicQueue { return }
         Task.detached(priority: .userInitiated) {
             let script = targetIndex < 0 ? """
             tell application "Music"
@@ -3104,8 +3274,48 @@ final class PlayingNextManager: ObservableObject {
     }
 
     func refreshQueue() async {
+        refreshGeneration += 1
+        let generation = refreshGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer { if generation == refreshGeneration { isLoading = false } }
+
+        if MusicManager.shared.bundleIdentifier == "com.apple.Music" {
+            var result = await Task.detached(priority: .utility) {
+                MusicQueuePanelReader.upcomingTracks()
+            }.value
+            if case .failed = result {
+                try? await Task.sleep(for: .milliseconds(800))
+                guard generation == refreshGeneration else { return }
+                result = await Task.detached(priority: .utility) {
+                    MusicQueuePanelReader.upcomingTracks()
+                }.value
+            }
+            guard generation == refreshGeneration else { return }
+            switch result {
+            case .queue(let live):
+                musicQueuePanelHidden = false
+                isLiveMusicQueue = true
+                isShuffleOn = false
+                tracks = live.enumerated().map { offset, track in
+                    UpNextTrackItem(
+                        id: "live-\(offset)-\(track.title)",
+                        playlistIndex: -(offset + 1),
+                        title: track.title,
+                        artist: track.artist,
+                        duration: 0
+                    )
+                }
+                return
+            case .failed where isLiveMusicQueue:
+                // Music is still busy: keep the live list rather than fall back to a guessed album order
+                return
+            case .failed, .panelHidden:
+                musicQueuePanelHidden = true
+            }
+        } else {
+            musicQueuePanelHidden = false
+        }
+        isLiveMusicQueue = false
 
         let (fetched, shuffleOn): ([UpNextTrackItem], Bool) = await Task.detached(priority: .utility) {
             let script = """
@@ -3182,9 +3392,9 @@ final class PlayingNextManager: ObservableObject {
             }
         }.value
 
+        guard generation == refreshGeneration else { return }
         self.isShuffleOn = shuffleOn
         self.tracks = fetched
-        applyPromotedOrder()
     }
 }
 
@@ -3266,9 +3476,12 @@ struct PlayingNextView: View {
                     Text(manager.isLoading ? String(localized: "Loading queue…") : String(localized: "No upcoming tracks"))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.gray)
-                    Text("Start a playlist or album in Music")
+                    Text(manager.musicQueuePanelHidden
+                        ? String(localized: "Show the queue in Music to see Autoplay tracks")
+                        : String(localized: "Start a playlist or album in Music"))
                         .font(.system(size: 9))
                         .foregroundStyle(.gray.opacity(0.7))
+                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
                 Spacer()
@@ -3279,7 +3492,7 @@ struct PlayingNextView: View {
                             HStack(spacing: 6) {
                                 Text(manager.isShuffleOn ? "·" : "\(index + 1)")
                                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(track.isPromoted ? Color.accentColor : .gray)
+                                    .foregroundStyle(.gray)
                                     .frame(width: 14, alignment: .leading)
 
                                 VStack(alignment: .leading, spacing: 1) {
@@ -3295,20 +3508,6 @@ struct PlayingNextView: View {
 
                                 Spacer(minLength: 2)
 
-                                if index > 0 && !manager.isShuffleOn {
-                                    Button {
-                                        withAnimation(.smooth) {
-                                            manager.promoteToTop(track)
-                                        }
-                                    } label: {
-                                        Image(systemName: "arrow.up.to.line")
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .foregroundStyle(.gray)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Move to top of Playing Next")
-                                }
-
                                 Text(track.formattedDuration)
                                     .font(.system(size: 9, design: .monospaced))
                                     .foregroundStyle(.gray.opacity(0.8))
@@ -3317,7 +3516,7 @@ struct PlayingNextView: View {
                             .padding(.vertical, 4)
                             .background(
                                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(Color.white.opacity(track.isPromoted ? 0.12 : 0.05))
+                                    .fill(Color.white.opacity(0.05))
                             )
                             .contentShape(RoundedRectangle(cornerRadius: 7))
                             .onTapGesture {

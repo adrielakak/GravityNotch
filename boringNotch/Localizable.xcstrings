@@ -15109,22 +15109,6 @@
         }
       }
     },
-    "Move to top of Playing Next": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Move to top of Playing Next"
-          }
-        },
-        "fr": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Placer en haut de À suivre"
-          }
-        }
-      }
-    },
     "Music": {
       "localizations": {
         "en": {
@@ -22860,6 +22844,22 @@
           "stringUnit": {
             "state": "needs_review",
             "value": "方形"
+          }
+        }
+      }
+    },
+    "Show the queue in Music to see Autoplay tracks": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show the queue in Music to see Autoplay tracks"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Affichez la file d’attente dans Musique pour voir la lecture automatique"
           }
         }
       }
