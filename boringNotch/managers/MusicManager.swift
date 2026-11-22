@@ -53,6 +53,12 @@ class MusicManager: ObservableObject {
     @Published var syncedLyrics: [(time: Double, text: String)] = []
     /// Skipping tracks starts overlapping lookups: only the latest one may publish its result.
     private var lyricsRequestID = 0
+    /// Track whose lyrics are loaded or being looked up, so the same track is never searched twice.
+    private var lyricsTrackKey: String?
+    /// Finished lookups, including the ones that found nothing, so going back to a track is instant.
+    private var lyricsCache: [String: (plain: String, synced: [(time: Double, text: String)])] = [:]
+    /// Set when LRCLIB could not be reached: that outcome is not cached, the next lookup tries again.
+    private var lyricsLookupFailed = false
     @Published var canFavoriteTrack: Bool = false
     @Published var isFavoriteTrack: Bool = false
 
@@ -221,13 +227,13 @@ class MusicManager: ObservableObject {
             }
             self.artworkData = state.artwork
 
-            if artworkChanged || state.artwork == nil {
-                // Update last artwork change values
-                self.lastArtworkTitle = state.title
-                self.lastArtworkArtist = state.artist
-                self.lastArtworkAlbum = state.album
-                self.lastArtworkBundleIdentifier = state.bundleIdentifier
-            }
+            // Always record the track, even when its cover is byte-identical to the previous one (same
+            // album, radio stations). Otherwise every later update, like the forced refresh on each notch
+            // open, counts as a new track again: flip animation, sneak peek and a fresh lyrics lookup.
+            self.lastArtworkTitle = state.title
+            self.lastArtworkArtist = state.artist
+            self.lastArtworkAlbum = state.album
+            self.lastArtworkBundleIdentifier = state.bundleIdentifier
 
             // Only update sneak peek if there's actual content and something changed
             if !state.title.isEmpty && !state.artist.isEmpty && state.isPlaying {
@@ -358,6 +364,7 @@ class MusicManager: ObservableObject {
         guard !Self.placeholderTitles.contains(trimmed) else {
             DispatchQueue.main.async {
                 self.lyricsRequestID &+= 1
+                self.lyricsTrackKey = nil
                 self.isFetchingLyrics = false
                 self.currentLyrics = ""
                 self.syncedLyrics = []
@@ -365,17 +372,31 @@ class MusicManager: ObservableObject {
             return
         }
 
+        let key = "\(trimmed.lowercased())|\(artist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+
         Task { @MainActor in
+            guard key != self.lyricsTrackKey else { return }
             self.lyricsRequestID &+= 1
             let requestID = self.lyricsRequestID
+            self.lyricsTrackKey = key
+
+            if let cached = self.lyricsCache[key] {
+                self.currentLyrics = cached.plain
+                self.syncedLyrics = cached.synced
+                self.isFetchingLyrics = false
+                return
+            }
+
             self.isFetchingLyrics = true
             self.currentLyrics = ""
             self.syncedLyrics = []
+            self.lyricsLookupFailed = false
 
             // 1. Try LRCLIB web lookup first to obtain time-synced lyrics ([mm:ss.xx])
             await self.fetchLyricsFromWeb(title: title, artist: artist, requestID: requestID)
             guard requestID == self.lyricsRequestID else { return }
             if !self.syncedLyrics.isEmpty || !self.currentLyrics.isEmpty {
+                self.storeLyricsLookup(key: key)
                 self.isFetchingLyrics = false
                 return
             }
@@ -415,8 +436,19 @@ class MusicManager: ObservableObject {
                     }
                 } catch {}
             }
+            self.storeLyricsLookup(key: key)
             self.isFetchingLyrics = false
         }
+    }
+
+    @MainActor
+    private func storeLyricsLookup(key: String) {
+        guard !lyricsLookupFailed else {
+            lyricsTrackKey = nil
+            return
+        }
+        if lyricsCache.count >= 200 { lyricsCache.removeAll() }
+        lyricsCache[key] = (currentLyrics, syncedLyrics)
     }
 
     private func normalizedQuery(_ string: String) -> String {
@@ -461,8 +493,11 @@ class MusicManager: ObservableObject {
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard requestID == lyricsRequestID else { return false }
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                lyricsLookupFailed = true
+                return false
+            }
+            guard let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                   !jsonArray.isEmpty else {
                 return false
             }
@@ -485,6 +520,7 @@ class MusicManager: ObservableObject {
             }
             return true
         } catch {
+            if requestID == lyricsRequestID { lyricsLookupFailed = true }
             return false
         }
     }

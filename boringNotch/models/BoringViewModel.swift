@@ -197,6 +197,8 @@ class BoringViewModel: NSObject, ObservableObject {
 
         // Force music information update when notch is opened
         MusicManager.shared.forceUpdate()
+        // No-op when this track's lyrics are cached or loading; retries a lookup that failed offline
+        if Defaults[.enableLyrics] { MusicManager.shared.refreshLyrics() }
     }
 
     func close() {
