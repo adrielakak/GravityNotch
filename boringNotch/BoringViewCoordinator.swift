@@ -212,11 +212,14 @@ class BoringViewCoordinator: ObservableObject {
             }
         }
         Task { @MainActor in
+            // One assignment: four field writes meant four didSet calls, each rescheduling the hide timer
+            var next = self.sneakPeek
+            next.show = status
+            next.type = type
+            next.value = value
+            next.icon = icon
             withAnimation(.smooth) {
-                self.sneakPeek.show = status
-                self.sneakPeek.type = type
-                self.sneakPeek.value = value
-                self.sneakPeek.icon = icon
+                self.sneakPeek = next
             }
         }
 
