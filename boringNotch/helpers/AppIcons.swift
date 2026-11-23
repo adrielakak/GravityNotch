@@ -4472,6 +4472,9 @@ final class AntigravityAgentMonitor: ObservableObject {
         let turnComplete: Bool
         var hasPendingTool: Bool = true
         var diff: AgentDiffTally? = nil
+        /// The transcript ends on a prompt the model never answered (no record after the USER_INPUT)
+        var awaitingFirstResponse: Bool = false
+        var firstEventDate: Date = .distantPast
     }
 
     private struct ISODateParser {
@@ -4712,22 +4715,27 @@ final class AntigravityAgentMonitor: ObservableObject {
     private nonisolated static func resolveSnapshot(
         from entry: CachedSessionEntry,
         now: Date,
-        processRunning: Bool = true
+        processRunning: Bool = true,
+        promptSuperseded: Bool = false
     ) -> AgentSessionSnapshot {
         let s = entry.snapshot
         let age = max(0, now.timeIntervalSince(entry.lastEventDate))
 
+        // Antigravity sometimes leaves a duplicate conversation holding only the prompt, while the real
+        // run happens in a newer one. An unanswered prompt is dead once superseded or silent for 90 s.
+        let abandonedPrompt = entry.awaitingFirstResponse && (promptSuperseded || age > 90.0)
+
         // Mid-turn the transcript stays silent while a command, a search or a long thought runs,
         // so silence alone does not mean the agent stopped. Edits and questions are the exception:
         // there, silence means the agent is blocked on the user.
-        let midTurn = !entry.turnComplete
+        let midTurn = !entry.turnComplete && !abandonedPrompt
         let pendingTool = entry.hasPendingTool ? (s.recentEvents.first?.toolName ?? "") : ""
         let blockedOnUser = entry.hasPendingTool && (entry.rawPhase == .editing || isUserPromptTool(pendingTool))
         // A finished turn lingers only for the completion check (4 s), not as a ring that looks like work
         let isActive = age < (midTurn ? (processRunning ? 600.0 : 45.0) : 8.0)
         let isWorkingNow = processRunning && midTurn && age < (blockedOnUser ? 22.0 : 600.0)
         let workingPhase: AgentWorkPhase = entry.rawPhase == .waiting ? .thinking : entry.rawPhase
-        let effectivePhase: AgentWorkPhase = (entry.turnComplete || !isActive || !processRunning) ? .waiting : workingPhase
+        let effectivePhase: AgentWorkPhase = (!midTurn || !isActive || !processRunning) ? .waiting : workingPhase
 
         return AgentSessionSnapshot(
             id: s.id,
@@ -4793,13 +4801,13 @@ final class AntigravityAgentMonitor: ObservableObject {
         }
         candidates.sort { $0.modDate > $1.modDate }
 
-        var snapshots: [AgentSessionSnapshot] = []
+        var entries: [CachedSessionEntry] = []
         for candidate in candidates.prefix(3) {
             let key = "ag:\(candidate.id)"
             if let cached = cache[key],
                cached.modDate == candidate.modDate,
                cached.fileSize == candidate.fileSize {
-                snapshots.append(resolveSnapshot(from: cached, now: now))
+                entries.append(cached)
                 continue
             }
 
@@ -4818,6 +4826,7 @@ final class AntigravityAgentMonitor: ObservableObject {
             var inferredProject = "Antigravity"
             var events: [AgentToolEvent] = []
             var lastStepDate: Date = candidate.modDate
+            var firstEventDate: Date? = nil
             var lastRecordType = ""
             var lastTurnComplete = false
             var pendingToolCalls = 0
@@ -4836,6 +4845,7 @@ final class AntigravityAgentMonitor: ObservableObject {
 
                 if let d = dateParser.parse(obj["created_at"] as? String) {
                     lastStepDate = d
+                    if firstEventDate == nil { firstEventDate = d }
                 }
 
                 let inTok = (obj["input_tokens"] as? Int) ?? 0
@@ -4959,12 +4969,20 @@ final class AntigravityAgentMonitor: ObservableObject {
                 snapshot: baseSnapshot,
                 rawPhase: latestPhase,
                 turnComplete: lastTurnComplete,
-                hasPendingTool: pendingToolCalls > 0
+                hasPendingTool: pendingToolCalls > 0,
+                awaitingFirstResponse: lastRecordType == "USER_INPUT",
+                firstEventDate: firstEventDate ?? candidate.modDate
             )
             cache[key] = entry
-            snapshots.append(resolveSnapshot(from: entry, now: now))
+            entries.append(entry)
         }
-        return snapshots
+
+        return entries.map { entry in
+            let superseded = entry.awaitingFirstResponse && entries.contains {
+                $0.snapshot.id != entry.snapshot.id && $0.firstEventDate > entry.lastEventDate
+            }
+            return resolveSnapshot(from: entry, now: now, promptSuperseded: superseded)
+        }
     }
 
     private nonisolated static func parseClaudeSessions(
