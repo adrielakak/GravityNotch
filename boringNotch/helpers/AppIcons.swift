@@ -8121,6 +8121,7 @@ struct AgentSpeechBubble: Identifiable, Equatable {
     let message: String
     let detail: String
     let projectPath: String?
+    let sessionID: String?
 }
 
 @MainActor
@@ -8172,12 +8173,12 @@ final class AgentSpeechBubbleController: ObservableObject {
                     continue
                 }
             }
-            show(kind: session.kind, reason: reason, detail: session.projectName, projectPath: session.projectPath)
+            show(kind: session.kind, reason: reason, detail: session.projectName, projectPath: session.projectPath, sessionID: session.id)
             return
         }
     }
 
-    func show(kind: AgentKind, reason: AgentSpeechBubble.Reason, detail: String, projectPath: String? = nil) {
+    func show(kind: AgentKind, reason: AgentSpeechBubble.Reason, detail: String, projectPath: String? = nil, sessionID: String? = nil) {
         guard openNotches.allObjects.isEmpty else { return }
         let message: String
         switch reason {
@@ -8223,7 +8224,7 @@ final class AgentSpeechBubbleController: ObservableObject {
         panel.orderFrontRegardless()
 
         withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
-            bubble = AgentSpeechBubble(kind: kind, reason: reason, message: message, detail: detail, projectPath: projectPath)
+            bubble = AgentSpeechBubble(kind: kind, reason: reason, message: message, detail: detail, projectPath: projectPath, sessionID: sessionID)
         }
 
         dismissTask?.cancel()
@@ -8253,9 +8254,11 @@ final class AgentSpeechBubbleController: ObservableObject {
 /// Brings forward the app an agent runs in. The agent process is traced up its parents to the first one
 /// living inside an .app bundle: the editor or terminal hosting it (Antigravity, VS Code, Cursor, Terminal…).
 enum AgentHostAppLauncher {
-    static func open(kind: AgentKind, projectPath: String?) {
+    static func open(kind: AgentKind, projectPath: String?, sessionID: String? = nil) {
         Task.detached(priority: .userInitiated) {
-            let bundlePath = hostBundlePath(kind: kind, projectPath: projectPath)
+            let bundlePath = kind == .antigravity
+                ? antigravityHostBundlePath(sessionID: sessionID)
+                : hostBundlePath(kind: kind, projectPath: projectPath)
             await MainActor.run { activate(bundlePath: bundlePath, kind: kind) }
         }
     }
@@ -8277,7 +8280,7 @@ enum AgentHostAppLauncher {
         NSWorkspace.shared.openApplication(at: url, configuration: configuration)
     }
 
-    /// Antigravity runs its agent inside the app, with no process of its own to trace
+    /// Used when no host could be traced
     private static func fallbackBundleID(for kind: AgentKind) -> String? {
         switch kind {
         case .antigravity: return "com.google.antigravity"
@@ -8286,9 +8289,75 @@ enum AgentHostAppLauncher {
         }
     }
 
-    private nonisolated static func hostBundlePath(kind: AgentKind, projectPath: String?) -> String? {
-        guard kind != .antigravity else { return nil }
+    private nonisolated static let antigravityBundleIDs = ["com.google.antigravity", "com.google.antigravity-ide"]
 
+    /// Antigravity.app and Antigravity IDE share ~/.gemini/antigravity/brain, so the transcript does not say
+    /// which one runs a conversation. Each app's agent process (`agy` for the IDE, `language_server` for the
+    /// app) keeps the directories of the conversations it shows open: the one holding brain/<id> leads up
+    /// to the right app. A conversation open nowhere goes to whichever Antigravity is running.
+    private nonisolated static func antigravityHostBundlePath(sessionID: String?) -> String? {
+        if let sessionID {
+            let conversationID = sessionID.hasPrefix("ag:") ? String(sessionID.dropFirst(3)) : sessionID
+            if !conversationID.isEmpty, let bundle = bundleHoldingAntigravityConversation(conversationID) {
+                return bundle
+            }
+        }
+        for bundleID in antigravityBundleIDs {
+            if let url = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.bundleURL {
+                return url.path
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func bundleHoldingAntigravityConversation(_ conversationID: String) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(getuid())]
+        var size = 0
+        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var procs = [kinfo_proc](repeating: kinfo_proc(), count: size / MemoryLayout<kinfo_proc>.stride + 16)
+        size = procs.count * MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &procs, &size, nil, 0) == 0 else { return nil }
+
+        var parents: [pid_t: pid_t] = [:]
+        var candidates: [pid_t] = []
+        for proc in procs.prefix(size / MemoryLayout<kinfo_proc>.stride) {
+            let pid = proc.kp_proc.p_pid
+            guard pid > 0 else { continue }
+            parents[pid] = proc.kp_eproc.e_ppid
+            let comm = withUnsafeBytes(of: proc.kp_proc.p_comm) { raw in
+                String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+            }
+            if comm.hasPrefix("agy") || comm.hasPrefix("language_server") { candidates.append(pid) }
+        }
+
+        let marker = "/brain/" + conversationID
+        for pid in candidates where holdsOpenPath(pid: pid, containing: marker) {
+            if let bundle = appBundle(above: pid, parents: parents) { return bundle }
+        }
+        return nil
+    }
+
+    private nonisolated static func holdsOpenPath(pid: pid_t, containing marker: String) -> Bool {
+        let needed = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard needed > 0 else { return false }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(needed) / stride + 32)
+        let filled = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, Int32(fds.count * stride))
+        guard filled > 0 else { return false }
+
+        let infoSize = Int32(MemoryLayout<vnode_fdinfowithpath>.size)
+        for fd in fds.prefix(Int(filled) / stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
+            var info = vnode_fdinfowithpath()
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, infoSize) == infoSize else { continue }
+            let path = withUnsafeBytes(of: info.pvip.vip_path) { raw in
+                String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+            }
+            if path.contains(marker) { return true }
+        }
+        return false
+    }
+
+    private nonisolated static func hostBundlePath(kind: AgentKind, projectPath: String?) -> String? {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(getuid())]
         var size = 0
         guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return nil }
@@ -8354,7 +8423,7 @@ private struct AgentSpeechBubbleHost: View {
                     .id(bubble.id)
                     .transition(.scale(scale: 0.4, anchor: .top).combined(with: .opacity))
                     .onTapGesture {
-                        AgentHostAppLauncher.open(kind: bubble.kind, projectPath: bubble.projectPath)
+                        AgentHostAppLauncher.open(kind: bubble.kind, projectPath: bubble.projectPath, sessionID: bubble.sessionID)
                         controller.dismiss()
                     }
                     .onHover { inside in
