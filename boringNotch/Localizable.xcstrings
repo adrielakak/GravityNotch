@@ -27455,6 +27455,38 @@
         }
       }
     },
+    "macOS 27 no longer lets apps hide Apple's AirPods banner: it shows next to GravityNotch's animation.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 27 no longer lets apps hide Apple's AirPods banner: it shows next to GravityNotch's animation."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 27 ne permet plus aux apps de masquer la bannière AirPods d'Apple : elle s'affiche à côté de l'animation de GravityNotch."
+          }
+        }
+      }
+    },
+    "Learn more": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Learn more"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En savoir plus"
+          }
+        }
+      }
+    },
     "Grant Accessibility access to automatically hide Apple's Bluetooth notification.": {
       "localizations": {
         "en": {

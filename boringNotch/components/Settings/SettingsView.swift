@@ -502,7 +502,13 @@ struct HUD: View {
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
     @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
     @State private var accessibilityAuthorized = MediaKeyInterceptor.isTrustedFreshViaSubprocess()
-    
+
+    /// From macOS 27 MenuBarAgent hosts the AirPods banner and ignores Accessibility moves (issue #18)
+    private var systemBannerHidingUnsupported: Bool {
+        if #available(macOS 27, *) { return true }
+        return false
+    }
+
     var body: some View {
         let isAuthorized = mediaKeyInterceptor.isAccessibilityGranted && accessibilityAuthorized
         Form {
@@ -691,7 +697,16 @@ struct HUD: View {
                 .disabled(!showBluetoothAudioLiveActivity)
 
                 if showBluetoothAudioLiveActivity {
-                    if bluetoothAudioManager.canSuppressSystemBanner {
+                    if systemBannerHidingUnsupported {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("macOS 27 no longer lets apps hide Apple's AirPods banner: it shows next to GravityNotch's animation.", systemImage: "info.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Link("Learn more", destination: URL(string: "https://github.com/adrielakak/GravityNotch/issues/18")!)
+                                .font(.caption)
+                        }
+                        .padding(.top, 2)
+                    } else if bluetoothAudioManager.canSuppressSystemBanner {
                         Label("Automatic macOS banner dismissal active", systemImage: "checkmark.circle.fill")
                             .font(.caption)
                             .foregroundStyle(.green)
