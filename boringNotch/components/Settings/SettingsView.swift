@@ -795,6 +795,8 @@ struct Media: View {
     @Default(.lockScreenMediaAmbientGlow) var lockScreenMediaAmbientGlow
     @Default(.lockScreenMediaHorizontalPosition) var lockScreenMediaHorizontalPosition
     @Default(.lockScreenMediaVerticalPosition) var lockScreenMediaVerticalPosition
+    @Default(.lyricsSource) var lyricsSource
+    @ObservedObject var appleMusicLyrics = AppleMusicLyricsService.shared
     @Default(.lockScreenFullScreenHorizontalPosition) var lockScreenFullScreenHorizontalPosition
     @Default(.lockScreenFullScreenVerticalPosition) var lockScreenFullScreenVerticalPosition
 
@@ -908,6 +910,47 @@ struct Media: View {
                 Text("Customize which controls appear in the music player. Volume expands when active.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Lyrics source", selection: $lyricsSource) {
+                    Text("LRCLIB (open source)").tag(LyricsSource.lrclib)
+                    Text("Apple Music").tag(LyricsSource.appleMusic)
+                }
+                if lyricsSource == .appleMusic {
+                    if appleMusicLyrics.isSignedIn {
+                        HStack {
+                            Label("Signed in to Apple Music", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Spacer()
+                            Button("Sign Out") {
+                                appleMusicLyrics.signOut()
+                                MusicManager.shared.reloadLyricsForNewSource()
+                            }
+                        }
+                    } else {
+                        HStack {
+                            Label("Sign in to use Apple Music lyrics. Until then, LRCLIB is used.", systemImage: "person.crop.circle.badge.exclamationmark")
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("Sign In…") {
+                                AppleMusicSignInWindowController.shared.show()
+                            }
+                        }
+                        Text("One-time sign in: click Sign In at the bottom left of the Apple Music page, then enter your Apple Account email, password and verification code. Touch ID and passkeys are not available in this window. GravityNotch then stays signed in for months.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("Lyrics")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, words are estimated.")
+                    Text("Apple Music gives the exact lyrics and timing of the Music app, word by word, with the instrumental breaks. It needs an Apple Music subscription; songs outside the Apple Music catalog keep LRCLIB. It relies on the Apple Music web player, so it may stop working if Apple changes it.")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Section {

@@ -60,6 +60,12 @@ enum MirrorShapeEnum: String, Defaults.Serializable {
     case circle = "Circular"
 }
 
+/// Where synced lyrics come from: LRCLIB (open source, line timing) or the Apple Music catalog (word timing).
+enum LyricsSource: String, Defaults.Serializable {
+    case lrclib
+    case appleMusic
+}
+
 /// Layout of the lock screen music player: the compact card, or a full screen view with the lyrics.
 enum LockScreenPlayerStyle: String, Defaults.Serializable {
     case player

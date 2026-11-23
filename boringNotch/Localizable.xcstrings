@@ -27838,6 +27838,198 @@
           }
         }
       }
+    },
+    "Lyrics source": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lyrics source"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source des paroles"
+          }
+        }
+      }
+    },
+    "LRCLIB (open source)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LRCLIB (open source)"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LRCLIB (open source)"
+          }
+        }
+      }
+    },
+    "Apple Music": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple Music"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple Music"
+          }
+        }
+      }
+    },
+    "Signed in to Apple Music": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signed in to Apple Music"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecté à Apple Music"
+          }
+        }
+      }
+    },
+    "Sign Out": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign Out"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se déconnecter"
+          }
+        }
+      }
+    },
+    "Sign in to use Apple Music lyrics. Until then, LRCLIB is used.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in to use Apple Music lyrics. Until then, LRCLIB is used."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connectez-vous pour utiliser les paroles d'Apple Music. En attendant, LRCLIB est utilisé."
+          }
+        }
+      }
+    },
+    "Sign In…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign In…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se connecter…"
+          }
+        }
+      }
+    },
+    "Sign in to Apple Music": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in to Apple Music"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se connecter à Apple Music"
+          }
+        }
+      }
+    },
+    "Lyrics": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lyrics"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paroles"
+          }
+        }
+      }
+    },
+    "LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, words are estimated.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, words are estimated."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "LRCLIB est une bibliothèque de paroles gratuite et open source qui fonctionne pour tout le monde. Les lignes sont synchronisées, les mots sont estimés."
+          }
+        }
+      }
+    },
+    "Apple Music gives the exact lyrics and timing of the Music app, word by word, with the instrumental breaks. It needs an Apple Music subscription; songs outside the Apple Music catalog keep LRCLIB. It relies on the Apple Music web player, so it may stop working if Apple changes it.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple Music gives the exact lyrics and timing of the Music app, word by word, with the instrumental breaks. It needs an Apple Music subscription; songs outside the Apple Music catalog keep LRCLIB. It relies on the Apple Music web player, so it may stop working if Apple changes it."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple Music fournit les paroles et le timing exacts de l'app Musique, mot par mot, avec les pauses instrumentales. Il faut un abonnement Apple Music ; les morceaux hors du catalogue Apple Music gardent LRCLIB. Cette source repose sur le lecteur web d'Apple Music et peut cesser de fonctionner si Apple le modifie."
+          }
+        }
+      }
+    },
+    "One-time sign in: click Sign In at the bottom left of the Apple Music page, then enter your Apple Account email, password and verification code. Touch ID and passkeys are not available in this window. GravityNotch then stays signed in for months.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "One-time sign in: click Sign In at the bottom left of the Apple Music page, then enter your Apple Account email, password and verification code. Touch ID and passkeys are not available in this window. GravityNotch then stays signed in for months."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connexion unique : cliquez sur Sign In en bas à gauche de la page Apple Music, puis saisissez l'adresse e-mail, le mot de passe et le code de vérification de votre compte Apple. Touch ID et les clés d'identification ne sont pas disponibles dans cette fenêtre. GravityNotch reste ensuite connecté pendant des mois."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

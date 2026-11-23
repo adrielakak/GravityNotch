@@ -14,7 +14,9 @@ import CoreAudio
 import Defaults
 import IOKit.pwr_mgt
 import OSLog
+import Security
 import Sparkle
+import WebKit
 
 struct AppIcons {
     
@@ -7515,6 +7517,525 @@ struct LockScreenArtworkWallpaperView: View {
     }
 }
 
+// MARK: - Apple Music lyrics (word timing from the Apple Music catalog)
+
+struct TimedLyricWord: Equatable {
+    let begin: Double
+    let end: Double
+    /// A word or a syllable: syllables of one word are not followed by a space
+    let text: String
+    var followedBySpace: Bool
+}
+
+struct TimedLyricLine: Equatable {
+    let begin: Double
+    let end: Double
+    let text: String
+    /// Empty when the lyrics are timed by line only
+    let words: [TimedLyricWord]
+}
+
+/// Reads Apple Music's TTML lyrics: one `<p begin end>` per line, holding either the line text or one
+/// `<span begin end>` per word or syllable. Words are separated by whitespace between spans. Background
+/// vocals, translations and transliterations are left out.
+final class AppleLyricsTTMLParser: NSObject, XMLParserDelegate {
+    private var lines: [TimedLyricLine] = []
+    private var inParagraph = false
+    private var paragraphBegin = 0.0
+    private var paragraphEnd = 0.0
+    private var paragraphText = ""
+    private var words: [TimedLyricWord] = []
+    private var spans: [(begin: Double?, end: Double?, skip: Bool)] = []
+    private var spanText = ""
+    private var skippedDepth = 0
+
+    static func parse(_ ttml: String) -> [TimedLyricLine] {
+        guard let data = ttml.data(using: .utf8) else { return [] }
+        let delegate = AppleLyricsTTMLParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        parser.shouldProcessNamespaces = false
+        guard parser.parse() else { return [] }
+        return delegate.lines.sorted { $0.begin < $1.begin }
+    }
+
+    /// "1:02.345", "0:01:02.345", "62.345" or "62.345s"
+    static func seconds(_ value: String?) -> Double? {
+        guard var text = value?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return nil }
+        if text.hasSuffix("s") { text.removeLast() }
+        var total = 0.0
+        for part in text.split(separator: ":") {
+            guard let number = Double(part) else { return nil }
+            total = total * 60 + number
+        }
+        return total
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        let name = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        let role = attributeDict["ttm:role"] ?? attributeDict["role"] ?? ""
+        let hidden = role == "x-bg" || role == "x-translation" || role == "x-roman"
+
+        if skippedDepth > 0 || (hidden && name != "p") {
+            skippedDepth += 1
+            return
+        }
+        switch name {
+        case "p":
+            inParagraph = true
+            paragraphBegin = Self.seconds(attributeDict["begin"]) ?? 0
+            paragraphEnd = Self.seconds(attributeDict["end"]) ?? paragraphBegin
+            paragraphText = ""
+            words = []
+            spans = []
+        case "span" where inParagraph:
+            spans.append((Self.seconds(attributeDict["begin"]), Self.seconds(attributeDict["end"]), false))
+            spanText = ""
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard inParagraph, skippedDepth == 0 else { return }
+        if spans.isEmpty {
+            paragraphText += string
+            if !words.isEmpty, string.contains(where: \.isWhitespace) {
+                words[words.count - 1].followedBySpace = true
+            }
+        } else {
+            spanText += string
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?,
+                qualifiedName qName: String?) {
+        if skippedDepth > 0 {
+            skippedDepth -= 1
+            return
+        }
+        let name = elementName.split(separator: ":").last.map(String.init) ?? elementName
+        switch name {
+        case "span" where inParagraph && !spans.isEmpty:
+            let span = spans.removeLast()
+            let text = spanText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty, let begin = span.begin {
+                words.append(TimedLyricWord(
+                    begin: begin,
+                    end: span.end ?? begin,
+                    text: text,
+                    followedBySpace: spanText.last?.isWhitespace ?? false
+                ))
+            }
+            spanText = ""
+        case "p" where inParagraph:
+            inParagraph = false
+            let text: String
+            if words.isEmpty {
+                text = paragraphText.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                text = words.enumerated().map { index, word in
+                    word.text + (word.followedBySpace && index < words.count - 1 ? " " : "")
+                }.joined()
+            }
+            guard !text.isEmpty else { return }
+            lines.append(TimedLyricLine(begin: paragraphBegin, end: max(paragraphEnd, paragraphBegin), text: text, words: words))
+        default:
+            break
+        }
+    }
+}
+
+/// Fetches lyrics the way the Apple Music web player does: its public web token for the catalog, plus the
+/// signed in user's session token. Unofficial, so every failure falls back to LRCLIB.
+@MainActor
+final class AppleMusicLyricsService: ObservableObject {
+    static let shared = AppleMusicLyricsService()
+
+    @Published private(set) var isSignedIn: Bool
+
+    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+    private static let logger = Logger(subsystem: "theboringteam.boringnotch", category: "AppleMusicLyrics")
+    private static let keychainService = "GravityNotch Apple Music lyrics"
+    private static let keychainAccount = "media-user-token"
+    private static let webTokenDefaultsKey = "appleMusicWebPlayerToken"
+
+    private var webToken: String?
+    private var storefront: String?
+    /// Last session token Apple refused: the remembered web session may still hold it, so the sign in
+    /// window must wait for a fresh one
+    private(set) var rejectedUserToken: String?
+
+    private enum ServiceError: Error {
+        case unauthorized
+        case notFound
+        case http(Int)
+        case noWebToken
+    }
+
+    private init() {
+        isSignedIn = Self.readUserToken() != nil
+        webToken = UserDefaults.standard.string(forKey: Self.webTokenDefaultsKey)
+    }
+
+    // MARK: Session
+
+    func storeUserToken(_ token: String) {
+        Self.writeUserToken(token)
+        storefront = nil
+        isSignedIn = true
+        Self.logger.notice("Signed in to Apple Music")
+        MusicManager.shared.reloadLyricsForNewSource()
+    }
+
+    /// `forgetWebSession` is false when Apple rejected an expired token: the remembered web session then
+    /// lets the next sign in skip the verification code
+    func signOut(forgetWebSession: Bool = true) {
+        Self.deleteUserToken()
+        storefront = nil
+        isSignedIn = false
+        if forgetWebSession {
+            AppleMusicSignInWindowController.removeWebSession()
+        }
+    }
+
+    // MARK: Lyrics
+
+    /// Lyrics of the catalog song matching the track, word timed when Apple has it, nil otherwise.
+    func lyrics(title: String, artist: String, duration: Double) async -> [TimedLyricLine]? {
+        guard Defaults[.lyricsSource] == .appleMusic, let userToken = Self.readUserToken() else { return nil }
+        do {
+            let storefront = try await currentStorefront(userToken: userToken)
+            guard let songID = try await findSong(title: title, artist: artist, duration: duration, storefront: storefront) else {
+                Self.logger.notice("Apple Music lyrics: no catalog match, using LRCLIB")
+                return nil
+            }
+            for kind in ["syllable-lyrics", "lyrics"] {
+                do {
+                    let data = try await request("/v1/catalog/\(storefront)/songs/\(songID)/\(kind)", userToken: userToken)
+                    if let ttml = Self.ttml(in: data) {
+                        let lines = AppleLyricsTTMLParser.parse(ttml)
+                        if !lines.isEmpty {
+                            let wordTimed = lines.contains { !$0.words.isEmpty }
+                            let declared = Self.matches(of: #"itunes:timing="[A-Za-z]+""#, in: ttml).first ?? "no timing attribute"
+                            Self.logger.notice("Apple Music lyrics: \(lines.count, privacy: .public) lines, \(kind, privacy: .public), word timed: \(wordTimed, privacy: .public), \(declared, privacy: .public)")
+                            return lines
+                        }
+                    }
+                } catch ServiceError.notFound {
+                    continue
+                }
+            }
+        } catch ServiceError.unauthorized {
+            Self.logger.error("Apple Music refused the session, signing out")
+            rejectedUserToken = userToken
+            signOut(forgetWebSession: false)
+        } catch {
+            Self.logger.error("Apple Music lyrics lookup failed: \(String(describing: error), privacy: .public)")
+        }
+        return nil
+    }
+
+    private static func ttml(in data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = json["data"] as? [[String: Any]],
+              let attributes = items.first?["attributes"] as? [String: Any] else { return nil }
+        return (attributes["ttml"] as? String) ?? (attributes["ttmlLocalizations"] as? String)
+    }
+
+    private func currentStorefront(userToken: String) async throws -> String {
+        if let storefront { return storefront }
+        let data = try await request("/v1/me/storefront", userToken: userToken)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = (json["data"] as? [[String: Any]])?.first?["id"] as? String else {
+            throw ServiceError.notFound
+        }
+        storefront = id
+        return id
+    }
+
+    private func findSong(title: String, artist: String, duration: Double, storefront: String) async throws -> String? {
+        let data = try await request(
+            "/v1/catalog/\(storefront)/search",
+            query: [
+                URLQueryItem(name: "term", value: "\(Self.searchable(title)) \(Self.searchable(artist))"),
+                URLQueryItem(name: "types", value: "songs"),
+                URLQueryItem(name: "limit", value: "10")
+            ],
+            userToken: nil
+        )
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = json["results"] as? [String: Any],
+              let songs = (results["songs"] as? [String: Any])?["data"] as? [[String: Any]] else { return nil }
+
+        let wantedTitle = Self.normalized(title)
+        let wantedArtist = Self.normalized(artist)
+        var best: (id: String, score: Double)?
+        for song in songs {
+            guard let id = song["id"] as? String,
+                  let attributes = song["attributes"] as? [String: Any],
+                  attributes["hasLyrics"] as? Bool != false else { continue }
+            let name = Self.normalized(attributes["name"] as? String ?? "")
+            let songArtist = Self.normalized(attributes["artistName"] as? String ?? "")
+            let titleMatches = name == wantedTitle || name.contains(wantedTitle) || wantedTitle.contains(name)
+            let artistMatches = wantedArtist.isEmpty || songArtist.contains(wantedArtist) || wantedArtist.contains(songArtist)
+            guard titleMatches, artistMatches, !name.isEmpty else { continue }
+
+            var score = name == wantedTitle ? 2.0 : 1.0
+            if attributes["hasTimeSyncedLyrics"] as? Bool == true { score += 1 }
+            if duration > 0, let millis = attributes["durationInMillis"] as? Double {
+                score -= min(2, abs(millis / 1000 - duration) / 5)
+            }
+            if best == nil || score > best!.score { best = (id, score) }
+        }
+        return best?.id
+    }
+
+    /// The title without "(feat. ...)" and similar, which catalog search handles poorly
+    private static func searchable(_ text: String) -> String {
+        text.replacingOccurrences(of: #"\s*[\(\[][^\)\]]*[\)\]]"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func normalized(_ text: String) -> String {
+        searchable(text)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    // MARK: Requests
+
+    private func request(_ path: String, query: [URLQueryItem] = [], userToken: String?, retryWithNewToken: Bool = true) async throws -> Data {
+        let token = try await currentWebToken()
+        guard var components = URLComponents(string: "https://amp-api.music.apple.com" + path) else { throw ServiceError.notFound }
+        if !query.isEmpty { components.queryItems = query }
+        guard let url = components.url else { throw ServiceError.notFound }
+
+        var request = URLRequest(url: url, timeoutInterval: 12)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let userToken { request.setValue(userToken, forHTTPHeaderField: "Media-User-Token") }
+        request.setValue("https://music.apple.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://music.apple.com/", forHTTPHeaderField: "Referer")
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        switch status {
+        case 200..<300:
+            return data
+        case 401 where retryWithNewToken:
+            // The web token may have been rotated: fetch it again once before blaming the session
+            webToken = nil
+            UserDefaults.standard.removeObject(forKey: Self.webTokenDefaultsKey)
+            return try await self.request(path, query: query, userToken: userToken, retryWithNewToken: false)
+        case 401, 403:
+            throw ServiceError.unauthorized
+        case 404:
+            throw ServiceError.notFound
+        default:
+            throw ServiceError.http(status)
+        }
+    }
+
+    /// The web player's catalog token, read from the music.apple.com scripts and kept until it expires
+    private func currentWebToken() async throws -> String {
+        if let webToken, !Self.isExpired(webToken) { return webToken }
+        let html = try await fetchText("https://music.apple.com/")
+        let scripts = Self.matches(of: #"/assets/index[^"']*\.js"#, in: html)
+        for script in Set(scripts) {
+            guard let js = try? await fetchText("https://music.apple.com" + script),
+                  let token = Self.webPlayerToken(in: js) else { continue }
+            webToken = token
+            UserDefaults.standard.set(token, forKey: Self.webTokenDefaultsKey)
+            return token
+        }
+        throw ServiceError.noWebToken
+    }
+
+    private func fetchText(_ address: String) async throws -> String {
+        guard let url = URL(string: address) else { throw ServiceError.notFound }
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw ServiceError.http((response as? HTTPURLResponse)?.statusCode ?? 0) }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func webPlayerToken(in js: String) -> String? {
+        matches(of: #"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"#, in: js).first { token in
+            guard let claims = claims(of: token) else { return false }
+            return claims["iss"] as? String == "AMPWebPlay" && !isExpired(token)
+        }
+    }
+
+    private static func claims(of token: String) -> [String: Any]? {
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return nil }
+        var payload = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private static func isExpired(_ token: String) -> Bool {
+        guard let expiry = claims(of: token)?["exp"] as? Double else { return true }
+        return Date(timeIntervalSince1970: expiry) < Date().addingTimeInterval(3600)
+    }
+
+    private static func matches(of pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap { Range($0.range, in: text).map { String(text[$0]) } }
+    }
+
+    // MARK: Keychain
+
+    private static var keychainQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount
+        ]
+    }
+
+    private static func readUserToken() -> String? {
+        var query = keychainQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let token = String(data: data, encoding: .utf8), !token.isEmpty else { return nil }
+        return token
+    }
+
+    private static func writeUserToken(_ token: String) {
+        deleteUserToken()
+        var query = keychainQuery
+        query[kSecValueData as String] = Data(token.utf8)
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    private static func deleteUserToken() {
+        SecItemDelete(keychainQuery as CFDictionary)
+    }
+}
+
+/// The real music.apple.com page in a window: once the user signs in, the session token it sets is kept
+/// (in the keychain) and the window closes. The page's cookies live in a data store of their own, so Apple
+/// remembers this Mac and a later sign in skips the verification code; signing out deletes them.
+/// Passkeys and iCloud Keychain AutoFill are reserved to browsers, hence the password.
+@MainActor
+final class AppleMusicSignInWindowController: NSObject, NSWindowDelegate, WKUIDelegate, WKHTTPCookieStoreObserver {
+    static let shared = AppleMusicSignInWindowController()
+
+    private static let dataStoreID = UUID(uuidString: "6D1B5C7A-3E2F-4A8B-9C10-5F4E3D2C1B0A")!
+
+    /// Signing out forgets the Apple Music web session too
+    static func removeWebSession() {
+        WKWebsiteDataStore.remove(forIdentifier: dataStoreID) { _ in }
+    }
+
+    private var window: NSWindow?
+    private var webView: WKWebView?
+    private var popupWindows: [NSWindow] = []
+    private var cookieStore: WKHTTPCookieStore?
+
+    func show() {
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: Self.dataStoreID)
+        // Apple's sign in window opens once a script has loaded, not right on the click
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1060, height: 760), configuration: configuration)
+        webView.customUserAgent = AppleMusicLyricsService.userAgent
+        webView.uiDelegate = self
+        let store = configuration.websiteDataStore.httpCookieStore
+        store.add(self)
+        cookieStore = store
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1060, height: 760),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(localized: "Sign in to Apple Music")
+        window.contentView = webView
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+        self.window = window
+        self.webView = webView
+
+        if let url = URL(string: "https://music.apple.com/") {
+            webView.load(URLRequest(url: url))
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// WebKit calls observers on the main thread
+    nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        MainActor.assumeIsolated {
+            cookieStore.getAllCookies { cookies in
+                guard let token = cookies.first(where: { $0.name == "media-user-token" && !$0.value.isEmpty })?.value else { return }
+                Task { @MainActor in
+                    guard self.window != nil, token != AppleMusicLyricsService.shared.rejectedUserToken else { return }
+                    AppleMusicLyricsService.shared.storeUserToken(token)
+                    self.window?.close()
+                }
+            }
+        }
+    }
+
+    /// Apple's sign in opens in a popup: give it a real window sharing the page's session
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        let popup = WKWebView(frame: NSRect(x: 0, y: 0, width: 520, height: 680), configuration: configuration)
+        popup.customUserAgent = AppleMusicLyricsService.userAgent
+        popup.uiDelegate = self
+        let popupWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 680),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        popupWindow.title = String(localized: "Sign in to Apple Music")
+        popupWindow.contentView = popup
+        popupWindow.isReleasedWhenClosed = false
+        popupWindow.center()
+        popupWindow.makeKeyAndOrderFront(nil)
+        popupWindows.append(popupWindow)
+        return popup
+    }
+
+    func webViewDidClose(_ webView: WKWebView) {
+        if let popupWindow = popupWindows.first(where: { $0.contentView === webView }) {
+            popupWindow.close()
+            popupWindows.removeAll { $0 === popupWindow }
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        cookieStore?.remove(self)
+        cookieStore = nil
+        for popup in popupWindows { popup.close() }
+        popupWindows.removeAll()
+        webView = nil
+        window = nil
+    }
+}
+
 // MARK: - Lock Screen Full Screen Lyrics (player on the left, Apple Music style lyrics on the right)
 
 private struct FullScreenLyricLine: Identifiable, Equatable {
@@ -7522,6 +8043,68 @@ private struct FullScreenLyricLine: Identifiable, Equatable {
     let id: Int
     let time: Double?
     let text: String
+    /// An instrumental passage, drawn as Apple Music's three dots while it plays
+    var isInterlude: Bool = false
+    /// When the line stops, if known (an interlude, or a line followed by one)
+    var end: Double? = nil
+    /// Real word (or syllable) timing, from Apple Music lyrics only
+    var words: [TimedLyricWord] = []
+
+    /// Apple Music gives the real end of every line, so the breaks are known exactly
+    static func fromTimed(_ timed: [TimedLyricLine]) -> [FullScreenLyricLine] {
+        var result: [FullScreenLyricLine] = []
+        func add(_ line: FullScreenLyricLine) {
+            var line = line
+            line = FullScreenLyricLine(id: result.count, time: line.time, text: line.text,
+                                       isInterlude: line.isInterlude, end: line.end, words: line.words)
+            result.append(line)
+        }
+        if let first = timed.first, first.begin >= 3 {
+            add(FullScreenLyricLine(id: 0, time: 0, text: "", isInterlude: true, end: first.begin))
+        }
+        for (index, line) in timed.enumerated() {
+            add(FullScreenLyricLine(id: 0, time: line.begin, text: line.text, end: line.end, words: line.words))
+            if index + 1 < timed.count, timed[index + 1].begin - line.end >= 3 {
+                add(FullScreenLyricLine(id: 0, time: line.end, text: "", isInterlude: true, end: timed[index + 1].begin))
+            }
+        }
+        return result
+    }
+
+    /// LRCLIB times only the start of each line. Interludes come from the intro before the first line, the
+    /// empty lines LRCLIB uses to mark a break, and very long gaps (estimated: the line is assumed sung by
+    /// then, so short gaps never show dots over a slow singer).
+    static func withInterludes(_ synced: [(time: Double, text: String)]) -> [FullScreenLyricLine] {
+        var result: [FullScreenLyricLine] = []
+        func add(_ time: Double, _ text: String, interlude: Bool, end: Double?) {
+            result.append(FullScreenLyricLine(id: result.count, time: time, text: text, isInterlude: interlude, end: end))
+        }
+
+        if let first = synced.first, first.time >= 4 {
+            add(0, "", interlude: true, end: first.time)
+        }
+        for (index, line) in synced.enumerated() {
+            let next = index + 1 < synced.count ? synced[index + 1].time : nil
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty || text == "♪" {
+                if let next, next - line.time >= 3 {
+                    add(line.time, "", interlude: true, end: next)
+                }
+                continue
+            }
+            if let next, next - line.time >= 14 {
+                let estimate = LockScreenKaraokeLine.sungDuration(text: text, gap: next - line.time)
+                let interludeStart = line.time + max(estimate + 1.5, 6)
+                if next - interludeStart >= 5 {
+                    add(line.time, text, interlude: false, end: interludeStart)
+                    add(interludeStart, "", interlude: true, end: next)
+                    continue
+                }
+            }
+            add(line.time, text, interlude: false, end: next)
+        }
+        return result
+    }
 }
 
 struct LockScreenLyricsLayoutView: View {
@@ -7543,10 +8126,11 @@ struct LockScreenLyricsLayoutView: View {
     @Default(.lockScreenFullScreenVerticalPosition) private var verticalPosition
 
     private var lines: [FullScreenLyricLine] {
+        if !musicManager.timedLyrics.isEmpty {
+            return FullScreenLyricLine.fromTimed(musicManager.timedLyrics)
+        }
         if !musicManager.syncedLyrics.isEmpty {
-            return musicManager.syncedLyrics.enumerated().map {
-                FullScreenLyricLine(id: $0.offset, time: $0.element.time, text: $0.element.text)
-            }
+            return FullScreenLyricLine.withInterludes(musicManager.syncedLyrics)
         }
         return musicManager.currentLyrics
             .components(separatedBy: .newlines)
@@ -7852,6 +8436,7 @@ private struct LockScreenFullLyricsView: View {
     private static let spacing: CGFloat = 24
     private static let fontSize: CGFloat = 30
     private static let estimatedHeight: CGFloat = 40
+    private static let interludeHeight: CGFloat = 30
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.1 : 1.0)) { context in
@@ -7868,7 +8453,13 @@ private struct LockScreenFullLyricsView: View {
         var y: CGFloat = 0
         for line in lines {
             tops.append(y)
-            y += (heights[line.id] ?? Self.estimatedHeight) + Self.spacing
+            if line.isInterlude {
+                // Takes room only while it plays, like in Apple Music; set here rather than measured so it
+                // opens and closes with the same spring as the scroll
+                y += line.id == active ? Self.interludeHeight + Self.spacing : 0
+            } else {
+                y += (heights[line.id] ?? Self.estimatedHeight) + Self.spacing
+            }
         }
         let shift = size.height * 0.16 - (tops.indices.contains(active) ? tops[active] : 0)
 
@@ -7900,6 +8491,24 @@ private struct LockScreenFullLyricsView: View {
 
     @ViewBuilder
     private func row(_ line: FullScreenLyricLine, active: Int, width: CGFloat) -> some View {
+        if line.isInterlude {
+            interludeRow(line, isActive: line.id == active, width: width)
+        } else {
+            textRow(line, active: active, width: width)
+        }
+    }
+
+    private func interludeRow(_ line: FullScreenLyricLine, isActive: Bool, width: CGFloat) -> some View {
+        let start = line.time ?? 0
+        return LockScreenInterludeDots(start: start, end: line.end ?? (start + 5), isActive: isActive)
+            .frame(width: width, height: Self.interludeHeight, alignment: .leading)
+            .scaleEffect(isActive ? 1 : 0.4, anchor: .leading)
+            .opacity(isActive ? 1 : 0)
+            .allowsHitTesting(isActive)
+    }
+
+    @ViewBuilder
+    private func textRow(_ line: FullScreenLyricLine, active: Int, width: CGFloat) -> some View {
         let distance = line.id - active
         let isActive = distance == 0
         let isVisible = distance >= -4 && distance <= 14
@@ -7912,6 +8521,7 @@ private struct LockScreenFullLyricsView: View {
                     text: text,
                     start: start,
                     end: lineEnd(after: line.id, start: start),
+                    words: line.words,
                     fontSize: Self.fontSize
                 )
             } else {
@@ -7954,6 +8564,7 @@ private struct LockScreenFullLyricsView: View {
     }
 
     private func lineEnd(after index: Int, start: Double) -> Double {
+        if let end = lines[index].end { return end }
         let next = index + 1 < lines.count ? lines[index + 1].time : nil
         return next ?? (start + 5)
     }
@@ -7988,22 +8599,36 @@ private struct LockScreenKaraokeLine: View {
     let text: String
     let start: Double
     let end: Double
+    /// Real timing from Apple Music; empty with LRCLIB, where it is estimated
+    var words: [TimedLyricWord] = []
     let fontSize: CGFloat
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !musicManager.isPlaying)) { context in
-            styledText(at: musicManager.estimatedPlaybackPosition(at: context.date))
+            let elapsed = musicManager.estimatedPlaybackPosition(at: context.date)
+            (words.isEmpty ? estimatedText(at: elapsed) : timedText(at: elapsed))
                 .font(.system(size: fontSize, weight: .bold))
         }
     }
 
+    /// Each word or syllable lights up over the exact time Apple Music gives for it
+    private func timedText(at elapsed: Double) -> Text {
+        var result = Text(verbatim: "")
+        for (index, word) in words.enumerated() {
+            let progress = min(1, max(0, (elapsed - word.begin) / max(0.05, word.end - word.begin)))
+            let spacer = word.followedBySpace && index < words.count - 1 ? " " : ""
+            result = result + Text(verbatim: word.text + spacer)
+                .foregroundColor(.white.opacity(0.38 + 0.62 * progress))
+        }
+        return result
+    }
+
     /// LRCLIB only times whole lines, so the line is spread over its words, weighted by their length, to
     /// estimate when each one is sung. A line is usually sung faster than the gap before the next one.
-    private func styledText(at elapsed: Double) -> Text {
+    private func estimatedText(at elapsed: Double) -> Text {
         let words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         guard !words.isEmpty else { return Text(verbatim: text).foregroundColor(.white) }
-        let gap = max(0.4, end - start)
-        let sungDuration = min(gap * 0.9, max(1.0, Double(text.count) * 0.11))
+        let sungDuration = Self.sungDuration(text: text, gap: end - start)
         let weights = words.map { Double($0.count) + 1.5 }
         let total = weights.reduce(0, +)
 
@@ -8018,6 +8643,41 @@ private struct LockScreenKaraokeLine: View {
             cursor += wordDuration
         }
         return result
+    }
+
+    /// Estimated time to sing a line: about 0.11 s per character, never more than most of the gap
+    static func sungDuration(text: String, gap: Double) -> Double {
+        min(max(0.4, gap) * 0.9, max(1.0, Double(text.count) * 0.11))
+    }
+}
+
+/// Apple Music's instrumental dots: they light up one after the other over the break, breathe, and shrink
+/// away just before the next line.
+private struct LockScreenInterludeDots: View {
+    @ObservedObject private var musicManager = MusicManager.shared
+    let start: Double
+    let end: Double
+    let isActive: Bool
+
+    private static let dotSize: CGFloat = 15
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isActive || !musicManager.isPlaying)) { context in
+            let elapsed = musicManager.estimatedPlaybackPosition(at: context.date)
+            let progress = min(1, max(0, (elapsed - start) / max(0.5, end - start)))
+            let exit = min(1, max(0, (end - elapsed) / 0.45))
+            let breathe = 1 + 0.07 * sin(context.date.timeIntervalSinceReferenceDate * 2.6)
+
+            HStack(spacing: Self.dotSize * 0.6) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.white.opacity(0.3 + 0.7 * min(1, max(0, progress * 3 - Double(index)))))
+                        .frame(width: Self.dotSize, height: Self.dotSize)
+                }
+            }
+            .scaleEffect(breathe * (0.6 + 0.4 * exit), anchor: .leading)
+            .opacity(exit)
+        }
     }
 }
 

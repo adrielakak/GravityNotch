@@ -51,6 +51,9 @@ class MusicManager: ObservableObject {
     @Published var currentLyrics: String = ""
     @Published var isFetchingLyrics: Bool = false
     @Published var syncedLyrics: [(time: Double, text: String)] = []
+    /// Apple Music lyrics with the real begin and end of every line and word; empty with LRCLIB lyrics
+    @Published var timedLyrics: [TimedLyricLine] = []
+    private var timedLyricsCache: [String: [TimedLyricLine]] = [:]
     /// Skipping tracks starts overlapping lookups: only the latest one may publish its result.
     private var lyricsRequestID = 0
     /// Track whose lyrics are loaded or being looked up, so the same track is never searched twice.
@@ -83,6 +86,12 @@ class MusicManager: ObservableObject {
             .sink { [weak self] _ in
                 self?.setActiveControllerBasedOnPreference()
             }
+            .store(in: &cancellables)
+
+        // A new lyrics source (or signing in to Apple Music) reloads the current track's lyrics
+        Defaults.publisher(.lyricsSource, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reloadLyricsForNewSource() }
             .store(in: &cancellables)
 
         // Initialize deprecation check asynchronously
@@ -359,6 +368,14 @@ class MusicManager: ObservableObject {
         fetchLyricsIfAvailable(bundleIdentifier: bundleIdentifier, title: songTitle, artist: artistName)
     }
 
+    /// Cached lookups came from the previous source: forget them and look the current track up again
+    func reloadLyricsForNewSource() {
+        lyricsCache.removeAll()
+        timedLyricsCache.removeAll()
+        lyricsTrackKey = nil
+        refreshLyrics()
+    }
+
     private func fetchLyricsIfAvailable(bundleIdentifier: String?, title: String, artist: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !Self.placeholderTitles.contains(trimmed) else {
@@ -368,6 +385,7 @@ class MusicManager: ObservableObject {
                 self.isFetchingLyrics = false
                 self.currentLyrics = ""
                 self.syncedLyrics = []
+                self.timedLyrics = []
             }
             return
         }
@@ -383,6 +401,7 @@ class MusicManager: ObservableObject {
             if let cached = self.lyricsCache[key] {
                 self.currentLyrics = cached.plain
                 self.syncedLyrics = cached.synced
+                self.timedLyrics = self.timedLyricsCache[key] ?? []
                 self.isFetchingLyrics = false
                 return
             }
@@ -390,7 +409,21 @@ class MusicManager: ObservableObject {
             self.isFetchingLyrics = true
             self.currentLyrics = ""
             self.syncedLyrics = []
+            self.timedLyrics = []
             self.lyricsLookupFailed = false
+
+            // 0. Apple Music lyrics when chosen in the settings: the real timing of every word
+            if let timed = await AppleMusicLyricsService.shared.lyrics(title: title, artist: artist, duration: self.songDuration) {
+                guard requestID == self.lyricsRequestID else { return }
+                self.timedLyrics = timed
+                self.syncedLyrics = timed.map { (time: $0.begin, text: $0.text) }
+                self.currentLyrics = timed.map(\.text).joined(separator: "\n")
+                self.timedLyricsCache[key] = timed
+                self.storeLyricsLookup(key: key)
+                self.isFetchingLyrics = false
+                return
+            }
+            guard requestID == self.lyricsRequestID else { return }
 
             // 1. Try LRCLIB web lookup first to obtain time-synced lyrics ([mm:ss.xx])
             await self.fetchLyricsFromWeb(title: title, artist: artist, requestID: requestID)
@@ -447,7 +480,10 @@ class MusicManager: ObservableObject {
             lyricsTrackKey = nil
             return
         }
-        if lyricsCache.count >= 200 { lyricsCache.removeAll() }
+        if lyricsCache.count >= 200 {
+            lyricsCache.removeAll()
+            timedLyricsCache.removeAll()
+        }
         lyricsCache[key] = (currentLyrics, syncedLyrics)
     }
 
