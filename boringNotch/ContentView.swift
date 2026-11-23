@@ -676,6 +676,15 @@ struct ContentView: View {
         }
     }
 
+    /// Hover and swipe opens: straight to the Agents tab while an agent works, when the user asked for it
+    private func openForUser() {
+        if Defaults[.openAgentsTabWhileWorking] && AntigravityAgentMonitor.shared.isWorkingNow {
+            openAgentsTab()
+        } else {
+            doOpen()
+        }
+    }
+
     private func openAgentsTab() {
         guard Defaults[.showAgentsTab] else {
             doOpen()
@@ -725,7 +734,7 @@ struct ContentView: View {
                           !self.shouldShowBluetoothLiveActivity,
                           !self.shouldShowTimerLiveActivity else { return }
                     
-                    self.doOpen()
+                    self.openForUser()
                 }
             }
         } else {
@@ -795,7 +804,7 @@ struct ContentView: View {
             withAnimation(animationSpring) {
                 gestureProgress = .zero
             }
-            doOpen()
+            openForUser()
         }
     }
 

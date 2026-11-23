@@ -81,6 +81,22 @@
         }
       }
     },
+    "Open the Agents tab while an agent is working": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the Agents tab while an agent is working"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ouvrir l'onglet Agents quand un agent travaille"
+          }
+        }
+      }
+    },
     "Open the preview to watch the player move while you adjust its position.": {
       "localizations": {
         "en": {

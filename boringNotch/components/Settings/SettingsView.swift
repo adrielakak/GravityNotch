@@ -1413,6 +1413,7 @@ struct Appearance: View {
     @Default(.customVisualizers) var customVisualizers
     @Default(.selectedVisualizer) var selectedVisualizer
     @Default(.enableAgentLiveActivity) var enableAgentLiveActivity
+    @Default(.showAgentsTab) var showAgentsTab
     @Default(.showTimerButton) var showTimerButton
     @Default(.showCaffeineButton) var showCaffeineButton
     @Default(.showClipboardTab) var showClipboardTab
@@ -1488,6 +1489,10 @@ struct Appearance: View {
                     Text("Prioritize agents when music is paused")
                 }
                 .disabled(!enableAgentLiveActivity)
+                Defaults.Toggle(key: .openAgentsTabWhileWorking) {
+                    Text("Open the Agents tab while an agent is working")
+                }
+                .disabled(!showAgentsTab)
             } header: {
                 Text("Coding Agents")
             } footer: {

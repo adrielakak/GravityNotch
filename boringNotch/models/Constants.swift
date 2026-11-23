@@ -151,6 +151,7 @@ extension Defaults.Keys {
     static let enableAgentLiveActivity = Key<Bool>("enableAgentLiveActivity", default: true)
     static let agentSpeechBubbles = Key<Bool>("agentSpeechBubbles", default: true)
     static let prioritizeAgentsOverPausedMusic = Key<Bool>("prioritizeAgentsOverPausedMusic", default: true)
+    static let openAgentsTabWhileWorking = Key<Bool>("openAgentsTabWhileWorking", default: false)
     
     // MARK: Appearance
     static let showClipboardTab = Key<Bool>("showClipboardTab", default: true)

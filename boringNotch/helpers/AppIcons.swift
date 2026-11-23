@@ -4316,6 +4316,73 @@ struct AgentToolEvent: Identifiable, Equatable {
     }
 }
 
+/// Lines added and removed per file, from the structuredPatch Claude Code stores with every Edit/Write result.
+/// Those rows embed the whole original file (hundreds of KB), so they fall out of the transcript tail the
+/// session parser reads: the tally reads the transcript incrementally from where it stopped instead.
+struct AgentDiffTally: Sendable {
+    struct FileDiff: Sendable, Equatable {
+        var added = 0
+        var removed = 0
+    }
+
+    private(set) var offset: UInt64 = 0
+    private(set) var added = 0
+    private(set) var removed = 0
+    private(set) var perFile: [String: FileDiff] = [:]
+    private(set) var editCount = 0
+
+    private static let maxInitialBytes: UInt64 = 48 * 1024 * 1024
+    private static let needle = Data("\"structuredPatch\"".utf8)
+
+    mutating func advance(url: URL) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return }
+        if size < offset { self = AgentDiffTally() }
+        var start = offset
+        var skipFirstLine = false
+        if offset == 0 && size > Self.maxInitialBytes {
+            start = size - Self.maxInitialBytes
+            skipFirstLine = true
+        }
+        guard size > start else { return }
+        try? handle.seek(toOffset: start)
+        guard let data = try? handle.read(upToCount: Int(size - start)), !data.isEmpty,
+              // No newline yet: the row is still being written, read it whole next time
+              let lastNewline = data.lastIndex(of: 0x0A) else { return }
+        offset = start + UInt64(lastNewline - data.startIndex + 1)
+        var lines = data[data.startIndex..<lastNewline].split(separator: 0x0A)
+        if skipFirstLine && !lines.isEmpty { lines.removeFirst() }
+        for line in lines where line.range(of: Self.needle) != nil {
+            record(line)
+        }
+    }
+
+    private mutating func record(_ line: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let result = obj["toolUseResult"] as? [String: Any],
+              let path = result["filePath"] as? String, !path.isEmpty else { return }
+        var add = 0
+        var rem = 0
+        if let hunks = result["structuredPatch"] as? [[String: Any]], !hunks.isEmpty {
+            for hunk in hunks {
+                for patchLine in (hunk["lines"] as? [String]) ?? [] {
+                    if patchLine.hasPrefix("+") { add += 1 } else if patchLine.hasPrefix("-") { rem += 1 }
+                }
+            }
+        } else if (result["type"] as? String) == "create", let content = result["content"] as? String, !content.isEmpty {
+            add = content.split(separator: "\n", omittingEmptySubsequences: false).count - (content.hasSuffix("\n") ? 1 : 0)
+        }
+        guard add > 0 || rem > 0 else { return }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        perFile[name, default: FileDiff()].added += add
+        perFile[name, default: FileDiff()].removed += rem
+        added += add
+        removed += rem
+        editCount += 1
+    }
+}
+
 struct AgentSessionSnapshot: Identifiable, Equatable {
     let id: String
     let kind: AgentKind
@@ -4338,6 +4405,12 @@ struct AgentSessionSnapshot: Identifiable, Equatable {
     let currentActionTitle: String
     let currentActionDetail: String
     let recentEvents: [AgentToolEvent]
+    /// Diff of `currentFile` alone, and a counter bumped by every edit (drives the edit flash)
+    var fileLinesAdded: Int = 0
+    var fileLinesRemoved: Int = 0
+    var editSerial: Int = 0
+    /// Working directory of the session, used to find the app the agent runs in
+    var projectPath: String? = nil
 
     var contextPercentage: Double {
         guard maxContextWindow > 0 else { return 0 }
@@ -4398,6 +4471,7 @@ final class AntigravityAgentMonitor: ObservableObject {
         let rawPhase: AgentWorkPhase
         let turnComplete: Bool
         var hasPendingTool: Bool = true
+        var diff: AgentDiffTally? = nil
     }
 
     private struct ISODateParser {
@@ -4647,7 +4721,8 @@ final class AntigravityAgentMonitor: ObservableObject {
         let midTurn = !entry.turnComplete
         let pendingTool = entry.hasPendingTool ? (s.recentEvents.first?.toolName ?? "") : ""
         let blockedOnUser = entry.hasPendingTool && (entry.rawPhase == .editing || isUserPromptTool(pendingTool))
-        let isActive = age < (midTurn && processRunning ? 600.0 : 45.0)
+        // A finished turn lingers only for the completion check (4 s), not as a ring that looks like work
+        let isActive = age < (midTurn ? (processRunning ? 600.0 : 45.0) : 8.0)
         let isWorkingNow = processRunning && midTurn && age < (blockedOnUser ? 22.0 : 600.0)
         let workingPhase: AgentWorkPhase = entry.rawPhase == .waiting ? .thinking : entry.rawPhase
         let effectivePhase: AgentWorkPhase = (entry.turnComplete || !isActive || !processRunning) ? .waiting : workingPhase
@@ -4673,7 +4748,11 @@ final class AntigravityAgentMonitor: ObservableObject {
             currentFile: s.currentFile,
             currentActionTitle: s.currentActionTitle,
             currentActionDetail: s.currentActionDetail,
-            recentEvents: s.recentEvents
+            recentEvents: s.recentEvents,
+            fileLinesAdded: s.fileLinesAdded,
+            fileLinesRemoved: s.fileLinesRemoved,
+            editSerial: s.editSerial,
+            projectPath: s.projectPath
         )
     }
 
@@ -4933,6 +5012,7 @@ final class AntigravityAgentMonitor: ObservableObject {
             guard !lines.isEmpty else { continue }
 
             var projectName = "Claude Code"
+            var projectPath: String? = nil
             var sessionTitle = ""
             var modelDisplay: String? = nil
             var contextTokens = 0
@@ -4960,6 +5040,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 let parsedTimestamp = dateParser.parse(obj["timestamp"] as? String)
                 if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
                     projectName = URL(fileURLWithPath: cwd).lastPathComponent
+                    projectPath = cwd
                 }
 
                 if rowType == "ai-title", let title = obj["aiTitle"] as? String, !title.isEmpty {
@@ -5105,6 +5186,10 @@ final class AntigravityAgentMonitor: ObservableObject {
                 }
             }
 
+            var tally = cache[key]?.diff ?? AgentDiffTally()
+            tally.advance(url: candidate.url)
+            let fileDiff = latestFile.flatMap { tally.perFile[$0] }
+
             let windowSize: Double = contextTokens > 200_000 ? 1_000_000.0 : 200_000.0
             let baseSnapshot = AgentSessionSnapshot(
                 id: key,
@@ -5122,12 +5207,16 @@ final class AntigravityAgentMonitor: ObservableObject {
                 cacheReadTokens: cacheRead,
                 outputTokens: sumOutput,
                 filesModifiedCount: editCount,
-                linesAdded: linesAdded,
-                linesRemoved: linesRemoved,
+                linesAdded: max(linesAdded, tally.added),
+                linesRemoved: max(linesRemoved, tally.removed),
                 currentFile: latestFile,
                 currentActionTitle: latestTitle,
                 currentActionDetail: latestDetail,
-                recentEvents: Array(events.suffix(12).reversed())
+                recentEvents: Array(events.suffix(12).reversed()),
+                fileLinesAdded: fileDiff?.added ?? 0,
+                fileLinesRemoved: fileDiff?.removed ?? 0,
+                editSerial: tally.editCount,
+                projectPath: projectPath
             )
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
@@ -5136,7 +5225,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                 snapshot: baseSnapshot,
                 rawPhase: latestPhase,
                 turnComplete: lastTurnComplete,
-                hasPendingTool: hasPendingTool
+                hasPendingTool: hasPendingTool,
+                diff: tally
             )
             cache[key] = entry
             snapshots.append(resolveSnapshot(from: entry, now: now, processRunning: processRunning))
@@ -5189,6 +5279,7 @@ final class AntigravityAgentMonitor: ObservableObject {
             var sumOutput = 0
             var stepCounter = 0
             var editCount = 0
+            var projectPath: String? = nil
             var latestTitle = String(localized: "Codex Ready")
             var latestDetail = String(localized: "Session active")
             var latestPhase: AgentWorkPhase = .waiting
@@ -5207,6 +5298,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 let payload = obj["payload"] as? [String: Any]
                 if rowType == "session_meta", let cwd = payload?["cwd"] as? String, !cwd.isEmpty {
                     projectName = URL(fileURLWithPath: cwd).lastPathComponent
+                    projectPath = cwd
                 } else if rowType == "event_msg", let payload {
                     let pType = (payload["type"] as? String) ?? ""
                     if pType == "task_started" {
@@ -5303,7 +5395,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                 currentFile: nil,
                 currentActionTitle: latestTitle,
                 currentActionDetail: latestDetail,
-                recentEvents: Array(events.suffix(12).reversed())
+                recentEvents: Array(events.suffix(12).reversed()),
+                projectPath: projectPath
             )
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
@@ -5752,7 +5845,7 @@ struct AgentsNotchView: View {
     var body: some View {
         Group {
             if let session = monitor.activeSession {
-                VStack(spacing: 5) {
+                VStack(alignment: .leading, spacing: 8) {
                     if monitor.sessions.count > 1 {
                         AgentSessionSwitcherBar(
                             sessions: monitor.sessions,
@@ -5760,20 +5853,21 @@ struct AgentsNotchView: View {
                             activeCount: monitor.activeAgentCount,
                             onSelect: { monitor.selectSession($0) }
                         )
-                        .frame(height: 21)
+                        .frame(height: 20)
                     }
 
-                    HStack(spacing: 8) {
-                        AgentStatusCard(session: session)
-                            .frame(width: 262)
+                    HStack(alignment: .top, spacing: 16) {
+                        AgentTimelineColumn(session: session)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                        AgentToolStreamCard(session: session)
-                            .frame(maxWidth: .infinity)
+                        AgentFocusColumn(session: session)
+                            .frame(width: 240)
                     }
                     .frame(maxHeight: .infinity, alignment: .top)
                 }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 1)
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+                .padding(.bottom, 4)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else {
                 AgentsEmptyStateView()
@@ -5789,93 +5883,74 @@ private struct AgentSessionSwitcherBar: View {
     let activeCount: Int
     let onSelect: (String) -> Void
 
+    /// Sessions of one project all read "BoringNotch": their titles are what tells them apart
+    private var labelsUseTitles: Bool { Set(sessions.map(\.projectName)).count == 1 }
+
+    private func label(for session: AgentSessionSnapshot) -> String {
+        if labelsUseTitles && !session.sessionTitle.isEmpty { return session.sessionTitle }
+        return session.projectName
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 10) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 5) {
+                HStack(spacing: 2) {
                     ForEach(sessions) { session in
                         let isSelected = session.id == selectedID
                         Button {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                                 onSelect(session.id)
                             }
                         } label: {
-                            HStack(spacing: 4) {
+                            HStack(spacing: 5) {
                                 Circle()
-                                    .fill(session.isActive ? session.kind.accentColor : Color.white.opacity(0.28))
+                                    .fill(session.isActive ? session.kind.accentColor : Color.white.opacity(0.25))
                                     .frame(width: 5, height: 5)
-                                Text(session.kind.shortLabel)
-                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                                    .foregroundStyle(isSelected ? .white : .white.opacity(0.68))
-                                Text("· \(session.projectName)")
-                                    .font(.system(size: 9.5, weight: .medium))
-                                    .foregroundStyle(isSelected ? .white.opacity(0.84) : .gray)
+                                Text(label(for: session))
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(isSelected ? .white : .white.opacity(0.42))
                                     .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .frame(maxWidth: 130, alignment: .leading)
+                                    .fixedSize(horizontal: true, vertical: false)
                             }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2.5)
-                            .background(
-                                Capsule()
-                                    .fill(isSelected ? session.kind.accentColor.opacity(0.20) : Color.white.opacity(0.05))
-                                    .overlay(
-                                        Capsule()
-                                            .strokeBorder(
-                                                isSelected ? session.kind.accentColor.opacity(0.45) : Color.white.opacity(0.08),
-                                                lineWidth: 0.8
-                                            )
-                                    )
-                            )
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3.5)
+                            .background(Capsule().fill(Color.white.opacity(isSelected ? 0.10 : 0)))
+                            .contentShape(Capsule())
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.trailing, activeCount > 0 ? 10 : 2)
             }
-            .mask(
-                HStack(spacing: 0) {
-                    Rectangle().fill(Color.white)
-                    if activeCount > 0 {
-                        LinearGradient(colors: [.white, .clear], startPoint: .leading, endPoint: .trailing)
-                            .frame(width: 14)
-                    }
-                }
-            )
 
             if activeCount > 0 {
-                Text("\(activeCount) running")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.green.opacity(0.9))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2.5)
-                    .background(Capsule().fill(Color.green.opacity(0.14)))
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(Color(red: 0.36, green: 0.86, blue: 0.56))
+                        .frame(width: 5, height: 5)
+                    Text("\(activeCount) running")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .fixedSize()
+                }
             }
         }
     }
 }
 
-private struct AgentStatusCard: View {
+private struct AgentTimelineColumn: View {
     let session: AgentSessionSnapshot
 
     private var accent: Color { session.kind.accentColor }
-    private var secondary: Color { session.kind.secondaryAccentColor }
 
-    private var actionHeadline: String {
-        if let file = session.currentFile {
-            if session.currentActionDetail != file && !session.currentActionDetail.isEmpty {
-                return "\(file) · \(session.currentActionDetail)"
-            }
-            return file
-        }
-        if !session.currentActionDetail.isEmpty && session.currentActionDetail != session.currentActionTitle {
-            return "\(session.currentActionTitle) · \(session.currentActionDetail)"
-        }
-        return session.currentActionTitle
+    private var subtitle: String {
+        session.sessionTitle.isEmpty ? session.projectName : "\(session.projectName) · \(session.sessionTitle)"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Top Identity Row
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 AgentPixelMascot(
                     kind: session.kind,
                     isWorking: session.isWorkingNow,
@@ -5883,288 +5958,75 @@ private struct AgentStatusCard: View {
                     pixel: 2
                 )
 
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 4) {
-                        Text(session.kind.rawValue)
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(session.kind.shortLabel)
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.white)
-                            .lineLimit(1)
                         if let model = session.modelName {
                             Text(model)
-                                .font(.system(size: 8, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.65))
-                                .padding(.horizontal, 4.5)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(Color.white.opacity(0.08)))
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.38))
                         }
                     }
-                    Text(session.sessionTitle.isEmpty ? session.projectName : "\(session.projectName) · \(session.sessionTitle)")
-                        .font(.system(size: 8.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
+                    .lineLimit(1)
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.42))
                         .lineLimit(1)
                 }
-
-                Spacer(minLength: 4)
-
-                HStack(spacing: 3.5) {
-                    if session.isWorkingNow {
-                        AgentCompactWaveform(isWorking: true, color: accent, secondaryColor: secondary)
-                    }
-                    Text(session.phase.localizedTitle)
-                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                        .foregroundStyle(session.isActive ? session.phase.color : .gray)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2.5)
-                .background(
-                    Capsule()
-                        .fill(session.isActive ? session.phase.color.opacity(0.16) : Color.white.opacity(0.06))
-                )
-            }
-
-            Spacer(minLength: 3)
-
-            // Active File / Command Highlight Pill (compact single line)
-            HStack(spacing: 5) {
-                Image(systemName: session.phase.iconName)
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(session.phase.color)
-                    .frame(width: 13)
-
-                Text(actionHeadline)
-                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer(minLength: 0)
-
-                if session.linesAdded > 0 || session.linesRemoved > 0 {
-                    HStack(spacing: 4) {
-                        Text("+\(session.linesAdded)")
-                            .foregroundStyle(Color(red: 0.36, green: 0.86, blue: 0.56))
-                        Text("-\(session.linesRemoved)")
-                            .foregroundStyle(Color(red: 0.98, green: 0.45, blue: 0.42))
-                    }
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .contentTransition(.numericText())
-                    .fixedSize()
-                }
-            }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3.5)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-                    .overlay(alignment: .bottom) {
-                        if session.isWorkingNow {
-                            AgentActivityBar(color: accent)
-                                .frame(height: 2)
-                                .transition(.opacity)
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(session.isWorkingNow ? accent.opacity(0.28) : Color.white.opacity(0.07), lineWidth: 0.8)
-                    )
-            )
-            .animation(.easeInOut(duration: 0.25), value: session.isWorkingNow)
-
-            Spacer(minLength: 3)
-
-            // Context Window Progress Gauge
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("Context")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
-                    Spacer()
-                    Text("\(session.formattedContextTokens) / \(session.formattedMaxContext) · \(String(format: "%.0f%%", session.contextPercentage))")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(session.contextPercentage > 80 ? Color.orange : .white.opacity(0.9))
-                }
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.10))
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: session.contextPercentage > 82
-                                        ? [.orange, .red]
-                                        : [accent, secondary],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(width: max(5, geo.size.width * CGFloat(session.contextPercentage / 100.0)))
-                    }
-                }
-                .frame(height: 4)
-            }
-
-            Spacer(minLength: 3)
-
-            // Compact 3-Metric Swiss Telemetry Footer (single-line chips)
-            HStack(spacing: 5) {
-                if session.linesAdded > 0 || session.linesRemoved > 0 {
-                    metricChip(
-                        label: String(localized: "Diff"),
-                        value: "+\(session.linesAdded)-\(session.linesRemoved)",
-                        valueColor: .green
-                    )
-                } else {
-                    metricChip(label: String(localized: "Edits"), value: "\(session.filesModifiedCount)", valueColor: .white)
-                }
-                metricChip(label: String(localized: "Cache"), value: String(format: "%.0f%%", session.cacheHitPercentage), valueColor: .white)
-                metricChip(label: String(localized: "Out"), value: session.formattedOutputTokens, valueColor: .white)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.045))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    (session.isWorkingNow ? accent : Color.white).opacity(0.24),
-                                    Color.white.opacity(0.05)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 0.9
-                        )
-                )
-        )
-    }
-
-    private func metricChip(label: String, value: String, valueColor: Color) -> some View {
-        HStack(spacing: 3) {
-            Text(label)
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.white.opacity(0.45))
-            Text(value)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 3)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.white.opacity(0.055))
-        )
-    }
-}
-
-private struct AgentToolStreamCard: View {
-    let session: AgentSessionSnapshot
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: "checklist")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
-                Text("Progress")
-                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.6))
-                Spacer()
-                Text("Step #\(session.stepCount)")
-                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.45))
             }
 
             if session.recentEvents.isEmpty {
-                Spacer()
-                HStack(spacing: 6) {
-                    Image(systemName: "waveform.path.ecg")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.35))
-                    Text("Waiting for agent tool calls…")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.45))
-                }
-                .frame(maxWidth: .infinity)
-                Spacer()
+                Text("Waiting for agent tool calls…")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(.leading, 2)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 3) {
+                    VStack(alignment: .leading, spacing: 6) {
                         ForEach(Array(session.recentEvents.enumerated()), id: \.element.id) { index, ev in
-                            let isNewest = index == 0 && session.isWorkingNow
-                            HStack(spacing: 6) {
-                                AgentStepMarker(isCurrent: isNewest, color: session.kind.accentColor)
-                                    .frame(width: 17, height: 17)
-
-                                HStack(spacing: 4) {
-                                    Text(ev.toolName)
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(.white.opacity(0.92))
-                                        .lineLimit(1)
-                                    if let file = ev.targetFile {
-                                        Text(file)
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .foregroundStyle(ev.tintColor)
-                                            .lineLimit(1)
-                                    } else if ev.summary != ev.toolName && !ev.summary.isEmpty {
-                                        Text(ev.summary)
-                                            .font(.system(size: 9))
-                                            .foregroundStyle(.white.opacity(0.55))
-                                            .lineLimit(1)
-                                    }
-                                    if ev.targetFile != nil && ev.summary != ev.targetFile && ev.summary != ev.toolName && !ev.summary.isEmpty {
-                                        Text("· \(ev.summary)")
-                                            .font(.system(size: 8.5))
-                                            .foregroundStyle(.white.opacity(0.45))
-                                            .lineLimit(1)
-                                    }
-                                }
-
-                                Spacer(minLength: 4)
-
-                                Text(relativeAgeText(ev.timestamp))
-                                    .font(.system(size: 8.5, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.42))
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(isNewest ? session.kind.accentColor.opacity(0.11) : Color.white.opacity(0.045))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                            .strokeBorder(
-                                                isNewest ? session.kind.accentColor.opacity(0.28) : Color.clear,
-                                                lineWidth: 0.8
-                                            )
-                                    )
-                            )
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            eventRow(ev, isCurrent: index == 0 && session.isWorkingNow)
+                                .opacity(max(0.4, 1 - Double(index) * 0.14))
+                                .transition(.move(edge: .top).combined(with: .opacity))
                         }
                     }
-                    .animation(.spring(response: 0.32, dampingFraction: 0.84), value: session.recentEvents.first?.id)
+                    .padding(.leading, 2)
+                    .animation(.spring(response: 0.32, dampingFraction: 0.86), value: session.recentEvents.first?.id)
                 }
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white, location: 0),
+                            .init(color: .white, location: 0.78),
+                            .init(color: .clear, location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
             }
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.045))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 0.9)
-                )
-        )
+    }
+
+    private func eventRow(_ ev: AgentToolEvent, isCurrent: Bool) -> some View {
+        let detail = ev.targetFile ?? (ev.summary != ev.toolName ? ev.summary : "")
+        return HStack(spacing: 8) {
+            AgentStepMarker(isCurrent: isCurrent, color: accent)
+                .frame(width: 12)
+
+            (Text(ev.toolName).foregroundColor(.white)
+                + Text(detail.isEmpty ? "" : "  \(detail)").foregroundColor(.white.opacity(0.5)))
+                .font(.system(size: 11.5, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 6)
+
+            Text(relativeAgeText(ev.timestamp))
+                .font(.system(size: 10, weight: .medium).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.3))
+        }
     }
 
     private func relativeAgeText(_ date: Date) -> String {
@@ -6176,28 +6038,203 @@ private struct AgentToolStreamCard: View {
     }
 }
 
+private struct AgentFocusColumn: View {
+    let session: AgentSessionSnapshot
+
+    private var accent: Color { session.kind.accentColor }
+
+    private var focusTitle: String { session.currentFile ?? session.currentActionTitle }
+
+    private var statusLine: String {
+        let detail = session.currentActionDetail
+        if detail.isEmpty || detail == focusTitle || detail == session.currentActionTitle {
+            return session.phase.localizedTitle
+        }
+        return detail
+    }
+
+    private var hasDiff: Bool { session.fileLinesAdded > 0 || session.fileLinesRemoved > 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 6) {
+                    Image(systemName: session.currentFile != nil ? "doc.text.fill" : session.phase.iconName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(accent)
+                    Text(focusTitle)
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundStyle(accent)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    if hasDiff {
+                        HStack(spacing: 4) {
+                            Text("+\(session.fileLinesAdded)")
+                                .foregroundStyle(Color(red: 0.36, green: 0.86, blue: 0.56))
+                            if session.fileLinesRemoved > 0 {
+                                Text("-\(session.fileLinesRemoved)")
+                                    .foregroundStyle(Color(red: 0.98, green: 0.45, blue: 0.42))
+                            }
+                        }
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .contentTransition(.numericText())
+                        .fixedSize()
+                    }
+                }
+
+                HStack(spacing: 5) {
+                    if session.isWorkingNow {
+                        AgentCompactWaveform(isWorking: true, color: accent, secondaryColor: session.kind.secondaryAccentColor)
+                    } else {
+                        Circle()
+                            .fill(session.isActive ? session.phase.color : Color.gray)
+                            .frame(width: 5, height: 5)
+                    }
+                    Text(statusLine)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                ZStack {
+                    if hasDiff {
+                        AgentDiffBar(
+                            added: session.fileLinesAdded,
+                            removed: session.fileLinesRemoved,
+                            editSerial: session.editSerial,
+                            color: accent
+                        )
+                        // A new file starts its own bar from empty
+                        .id(session.currentFile)
+                        .transition(.opacity)
+                    } else if session.isWorkingNow {
+                        AgentActivityBar(color: accent)
+                            .transition(.opacity)
+                    } else {
+                        Capsule().fill(Color.white.opacity(0.10))
+                    }
+                }
+                .frame(height: 3)
+                .clipShape(Capsule())
+                .padding(.top, 1)
+                .animation(.easeInOut(duration: 0.25), value: hasDiff)
+                .animation(.easeInOut(duration: 0.25), value: session.isWorkingNow)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.07))
+            )
+
+            HStack(alignment: .top, spacing: 0) {
+                stat(
+                    String(localized: "Context"),
+                    String(format: "%.0f%%", session.contextPercentage),
+                    color: session.contextPercentage > 80 ? .orange : .white
+                )
+                stat(String(localized: "Cache"), String(format: "%.0f%%", session.cacheHitPercentage), color: .white)
+                stat(String(localized: "Out"), session.formattedOutputTokens, color: .white)
+            }
+            .padding(.horizontal, 4)
+        }
+    }
+
+    private func stat(_ label: String, _ value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.white.opacity(0.38))
+            Text(value)
+                .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
+                .foregroundStyle(color.opacity(0.9))
+                .contentTransition(.numericText())
+        }
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The current file's diff as a bar that grows with every edit: its length follows the lines changed (easing
+/// toward full width, so a big rewrite never overflows), the accent part is what was added, the red part what
+/// was removed. It starts empty and springs to each new length, then flashes, so edits read live.
+private struct AgentDiffBar: View {
+    let added: Int
+    let removed: Int
+    let editSerial: Int
+    let color: Color
+
+    @State private var shownFill: CGFloat = 0
+    @State private var shownAddedShare: CGFloat = 1
+
+    /// ~30 lines fill 40%, ~60 lines 63%, ~150 lines 92%
+    private var targetFill: CGFloat {
+        let total = CGFloat(added + removed)
+        return total > 0 ? max(0.04, 1 - exp(-total / 60)) : 0
+    }
+
+    private var addedShare: CGFloat {
+        let total = added + removed
+        return total > 0 ? CGFloat(added) / CGFloat(total) : 1
+    }
+
+    private static let growth = Animation.spring(response: 0.75, dampingFraction: 0.86)
+
+    var body: some View {
+        GeometryReader { geo in
+            let filled = geo.size.width * shownFill
+            let gap: CGFloat = removed > 0 && added > 0 && filled > 8 ? 2 : 0
+            let usable = max(0, filled - gap)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.10))
+                HStack(spacing: gap) {
+                    Capsule()
+                        .fill(color)
+                        .frame(width: usable * shownAddedShare)
+                    Capsule()
+                        .fill(Color(red: 0.98, green: 0.45, blue: 0.42))
+                        .frame(width: usable * (1 - shownAddedShare))
+                }
+            }
+        }
+        .onAppear {
+            withAnimation(Self.growth) {
+                shownFill = targetFill
+                shownAddedShare = addedShare
+            }
+        }
+        .onChange(of: targetFill) { _, fill in
+            withAnimation(Self.growth) { shownFill = fill }
+        }
+        .onChange(of: addedShare) { _, share in
+            withAnimation(Self.growth) { shownAddedShare = share }
+        }
+        .phaseAnimator([false, true], trigger: editSerial) { content, lit in
+            content
+                .brightness(lit ? 0.28 : 0)
+                .shadow(color: color.opacity(lit ? 0.7 : 0), radius: lit ? 5 : 0)
+        } animation: { lit in
+            lit ? .easeOut(duration: 0.12) : .easeOut(duration: 0.6)
+        }
+    }
+}
+
 private struct AgentsEmptyStateView: View {
     var body: some View {
-        VStack(spacing: 5) {
-            Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
+        VStack(spacing: 6) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.white.opacity(0.45))
             Text("No Coding Agents Running")
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.9))
             Text("Claude Code, Antigravity & Codex sessions appear here live")
-                .font(.system(size: 9.5))
-                .foregroundStyle(.white.opacity(0.5))
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.42))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.04))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
-                )
-        )
     }
 }
 
@@ -7998,7 +8035,7 @@ struct AgentStepMarker: View {
         Group {
             if isCurrent {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(color)
                     .scaleEffect(pulse ? 1.18 : 0.86)
                     .opacity(pulse ? 1 : 0.6)
@@ -8009,8 +8046,8 @@ struct AgentStepMarker: View {
                     }
             } else {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 8.5, weight: .heavy))
-                    .foregroundStyle(color.opacity(0.75))
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(color)
             }
         }
         .transition(.scale.combined(with: .opacity))
@@ -8060,6 +8097,7 @@ struct AgentSpeechBubble: Identifiable, Equatable {
     let reason: Reason
     let message: String
     let detail: String
+    let projectPath: String?
 }
 
 @MainActor
@@ -8111,12 +8149,12 @@ final class AgentSpeechBubbleController: ObservableObject {
                     continue
                 }
             }
-            show(kind: session.kind, reason: reason, detail: session.projectName)
+            show(kind: session.kind, reason: reason, detail: session.projectName, projectPath: session.projectPath)
             return
         }
     }
 
-    func show(kind: AgentKind, reason: AgentSpeechBubble.Reason, detail: String) {
+    func show(kind: AgentKind, reason: AgentSpeechBubble.Reason, detail: String, projectPath: String? = nil) {
         guard openNotches.allObjects.isEmpty else { return }
         let message: String
         switch reason {
@@ -8162,7 +8200,7 @@ final class AgentSpeechBubbleController: ObservableObject {
         panel.orderFrontRegardless()
 
         withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
-            bubble = AgentSpeechBubble(kind: kind, reason: reason, message: message, detail: detail)
+            bubble = AgentSpeechBubble(kind: kind, reason: reason, message: message, detail: detail, projectPath: projectPath)
         }
 
         dismissTask?.cancel()
@@ -8189,6 +8227,107 @@ final class AgentSpeechBubbleController: ObservableObject {
     }
 }
 
+/// Brings forward the app an agent runs in. The agent process is traced up its parents to the first one
+/// living inside an .app bundle: the editor or terminal hosting it (Antigravity, VS Code, Cursor, Terminal…).
+enum AgentHostAppLauncher {
+    static func open(kind: AgentKind, projectPath: String?) {
+        Task.detached(priority: .userInitiated) {
+            let bundlePath = hostBundlePath(kind: kind, projectPath: projectPath)
+            await MainActor.run { activate(bundlePath: bundlePath, kind: kind) }
+        }
+    }
+
+    @MainActor private static func activate(bundlePath: String?, kind: AgentKind) {
+        let url: URL?
+        if let bundlePath {
+            url = URL(fileURLWithPath: bundlePath)
+        } else if let bundleID = fallbackBundleID(for: kind) {
+            url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        } else {
+            url = nil
+        }
+        guard let url else { return }
+        // LaunchServices activates a running app too, and unlike NSRunningApplication.activate() it is not
+        // refused for a caller that is not frontmost (the bubble panel never activates GravityNotch)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+    }
+
+    /// Antigravity runs its agent inside the app, with no process of its own to trace
+    private static func fallbackBundleID(for kind: AgentKind) -> String? {
+        switch kind {
+        case .antigravity: return "com.google.antigravity"
+        case .codex: return "com.openai.codex"
+        case .claudeCode: return nil
+        }
+    }
+
+    private nonisolated static func hostBundlePath(kind: AgentKind, projectPath: String?) -> String? {
+        let agentName: String
+        switch kind {
+        case .claudeCode: agentName = "claude"
+        case .codex: agentName = "codex"
+        case .antigravity: return nil
+        }
+
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(getuid())]
+        var size = 0
+        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var procs = [kinfo_proc](repeating: kinfo_proc(), count: size / MemoryLayout<kinfo_proc>.stride + 16)
+        size = procs.count * MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &procs, &size, nil, 0) == 0 else { return nil }
+
+        var parents: [pid_t: pid_t] = [:]
+        var agents: [pid_t] = []
+        for proc in procs.prefix(size / MemoryLayout<kinfo_proc>.stride) {
+            let pid = proc.kp_proc.p_pid
+            guard pid > 0 else { continue }
+            parents[pid] = proc.kp_eproc.e_ppid
+            let comm = withUnsafeBytes(of: proc.kp_proc.p_comm) { raw in
+                String(cString: raw.bindMemory(to: CChar.self).baseAddress!).lowercased()
+            }
+            if comm == agentName { agents.append(pid) }
+        }
+
+        // Several sessions may run at once: the one started in the bubble's project comes first
+        let target = projectPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        let ordered = agents.filter { target != nil && workingDirectory(of: $0) == target }
+            + agents.filter { target == nil || workingDirectory(of: $0) != target }
+
+        for pid in ordered {
+            if let bundle = appBundle(above: pid, parents: parents) { return bundle }
+        }
+        return nil
+    }
+
+    private nonisolated static func appBundle(above pid: pid_t, parents: [pid_t: pid_t]) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        var current = parents[pid] ?? 0
+        for _ in 0..<24 where current > 1 {
+            if proc_pidpath(current, &buffer, UInt32(buffer.count)) > 0 {
+                let path = String(cString: buffer)
+                // The outermost bundle: helpers live in Frameworks/<Name> Helper.app inside the main app
+                if let range = path.range(of: ".app/") {
+                    return String(path[..<range.lowerBound]) + ".app"
+                }
+            }
+            current = parents[current] ?? 0
+        }
+        return nil
+    }
+
+    private nonisolated static func workingDirectory(of pid: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
+        let path = withUnsafeBytes(of: info.pvi_cdir.vip_path) { raw in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!)
+        }
+        return path.isEmpty ? nil : URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+}
+
 private struct AgentSpeechBubbleHost: View {
     @ObservedObject private var controller = AgentSpeechBubbleController.shared
 
@@ -8199,7 +8338,11 @@ private struct AgentSpeechBubbleHost: View {
                     .id(bubble.id)
                     .transition(.scale(scale: 0.4, anchor: .top).combined(with: .opacity))
                     .onTapGesture {
+                        AgentHostAppLauncher.open(kind: bubble.kind, projectPath: bubble.projectPath)
                         controller.dismiss()
+                    }
+                    .onHover { inside in
+                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
                     }
             }
             Spacer(minLength: 0)
