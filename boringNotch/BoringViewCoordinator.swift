@@ -220,7 +220,7 @@ class BoringViewCoordinator: ObservableObject {
             next.type = type
             next.value = value
             next.icon = icon
-            withAnimation(.smooth) {
+            withAnimation(self.sneakPeekAnimation(for: next)) {
                 self.sneakPeek = next
             }
         }
@@ -232,6 +232,22 @@ class BoringViewCoordinator: ObservableObject {
 
     private var sneakPeekDuration: TimeInterval = 1.5
     private var sneakPeekTask: Task<Void, Never>?
+    private var lastLevelStepAt: Date = .distantPast
+
+    /// A 0.5 s spring per key press nearly settles between spaced taps, so spamming made the bar stop and
+    /// restart (holding the key repeats every ~90 ms and hid it). Level steps on a HUD already shown move
+    /// linearly over the time since the previous step, so the bar keeps a constant speed at the tap rhythm.
+    @MainActor private func sneakPeekAnimation(for next: sneakPeek) -> Animation {
+        let isLevel = next.type == .volume || next.type == .brightness || next.type == .backlight
+        guard isLevel, next.show, sneakPeek.show, sneakPeek.type == next.type else {
+            if isLevel && next.show { lastLevelStepAt = Date() }
+            return .smooth
+        }
+        let now = Date()
+        let interval = now.timeIntervalSince(lastLevelStepAt)
+        lastLevelStepAt = now
+        return .linear(duration: min(max(interval, 0.08), 0.2))
+    }
 
     // Helper function to manage sneakPeek timer using Swift Concurrency
     private func scheduleSneakPeekHide(after duration: TimeInterval) {
