@@ -4661,50 +4661,52 @@ final class AntigravityAgentMonitor: ObservableObject {
         let actual = size / MemoryLayout<kinfo_proc>.stride
         var claudeRunning = false
         var codexRunning = false
-        var pathBuf = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
 
         for i in 0..<actual {
             if claudeRunning && codexRunning { break }
             let pid = procs[i].kp_proc.p_pid
             guard pid > 0 else { continue }
-
-            let comm = withUnsafePointer(to: procs[i].kp_proc.p_comm) {
-                $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN) + 1) {
-                    String(cString: $0).lowercased()
-                }
-            }
-            if comm == "claude" { claudeRunning = true }
-            if comm == "codex" { codexRunning = true }
-
-            let len = proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count))
-            guard len > 0 else { continue }
-            let path = String(cString: pathBuf).lowercased()
-            if path.contains("/claude/") || path.hasSuffix("/claude") {
-                claudeRunning = true
-            }
-            if path.contains("/codex/") || path.hasSuffix("/codex") || path.contains("codex.app") {
-                codexRunning = true
-            }
-            if (!claudeRunning || !codexRunning) && (path.hasSuffix("/node") || path.hasSuffix("/bun")) {
-                var argsMib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
-                var argsSize: Int = 0
-                if sysctl(&argsMib, 3, nil, &argsSize, nil, 0) == 0, argsSize > 4, argsSize < 65_536 {
-                    var argsBuf = [UInt8](repeating: 0, count: argsSize)
-                    if sysctl(&argsMib, 3, &argsBuf, &argsSize, nil, 0) == 0 {
-                        let args = argsBuf.dropFirst(4).split(separator: 0).prefix(6).compactMap {
-                            String(bytes: $0, encoding: .utf8)?.lowercased()
-                        }
-                        if args.contains(where: { $0.hasSuffix("/claude") || $0.contains("/claude/") || $0 == "claude" }) {
-                            claudeRunning = true
-                        }
-                        if args.contains(where: { $0.hasSuffix("/codex") || $0.contains("/codex/") || $0 == "codex" }) {
-                            codexRunning = true
-                        }
-                    }
-                }
-            }
+            let match = agentProcessMatch(pid: pid, comm: procs[i].kp_proc.p_comm)
+            if match.claude { claudeRunning = true }
+            if match.codex { codexRunning = true }
         }
         return (claudeRunning, codexRunning)
+    }
+
+    /// Whether a process is a Claude Code or Codex CLI. The process name alone is not enough: the native
+    /// Claude Code installer runs ~/.local/share/claude/versions/<version>, so its name is "2.1.330".
+    nonisolated static func agentProcessMatch(
+        pid: pid_t,
+        comm rawComm: (CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar,
+                       CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar, CChar)
+    ) -> (claude: Bool, codex: Bool) {
+        let comm = withUnsafeBytes(of: rawComm) { raw in
+            String(cString: raw.bindMemory(to: CChar.self).baseAddress!).lowercased()
+        }
+        var claude = comm == "claude"
+        var codex = comm == "codex"
+        if claude || codex { return (claude, codex) }
+
+        var pathBuf = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        guard proc_pidpath(pid, &pathBuf, UInt32(pathBuf.count)) > 0 else { return (false, false) }
+        let path = String(cString: pathBuf).lowercased()
+        claude = path.contains("/claude/") || path.hasSuffix("/claude")
+        codex = path.contains("/codex/") || path.hasSuffix("/codex") || path.contains("codex.app")
+        guard !claude, !codex, path.hasSuffix("/node") || path.hasSuffix("/bun") else { return (claude, codex) }
+
+        var argsMib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var argsSize: Int = 0
+        guard sysctl(&argsMib, 3, nil, &argsSize, nil, 0) == 0, argsSize > 4, argsSize < 65_536 else {
+            return (false, false)
+        }
+        var argsBuf = [UInt8](repeating: 0, count: argsSize)
+        guard sysctl(&argsMib, 3, &argsBuf, &argsSize, nil, 0) == 0 else { return (false, false) }
+        let args = argsBuf.dropFirst(4).split(separator: 0).prefix(6).compactMap {
+            String(bytes: $0, encoding: .utf8)?.lowercased()
+        }
+        claude = args.contains { $0.hasSuffix("/claude") || $0.contains("/claude/") || $0 == "claude" }
+        codex = args.contains { $0.hasSuffix("/codex") || $0.contains("/codex/") || $0 == "codex" }
+        return (claude, codex)
     }
 
     private nonisolated static func resolveSnapshot(
@@ -8267,12 +8269,7 @@ enum AgentHostAppLauncher {
     }
 
     private nonisolated static func hostBundlePath(kind: AgentKind, projectPath: String?) -> String? {
-        let agentName: String
-        switch kind {
-        case .claudeCode: agentName = "claude"
-        case .codex: agentName = "codex"
-        case .antigravity: return nil
-        }
+        guard kind != .antigravity else { return nil }
 
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(getuid())]
         var size = 0
@@ -8287,10 +8284,8 @@ enum AgentHostAppLauncher {
             let pid = proc.kp_proc.p_pid
             guard pid > 0 else { continue }
             parents[pid] = proc.kp_eproc.e_ppid
-            let comm = withUnsafeBytes(of: proc.kp_proc.p_comm) { raw in
-                String(cString: raw.bindMemory(to: CChar.self).baseAddress!).lowercased()
-            }
-            if comm == agentName { agents.append(pid) }
+            let match = AntigravityAgentMonitor.agentProcessMatch(pid: pid, comm: proc.kp_proc.p_comm)
+            if kind == .claudeCode ? match.claude : match.codex { agents.append(pid) }
         }
 
         // Several sessions may run at once: the one started in the bubble's project comes first
