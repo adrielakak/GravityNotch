@@ -5084,7 +5084,10 @@ final class AntigravityAgentMonitor: ObservableObject {
                     let userText = (userMessage?["content"] as? String)
                         ?? ((userMessage?["content"] as? [[String: Any]])?.first?["text"] as? String)
                         ?? ""
-                    if userText.hasPrefix("<command-name>/compact") || userText.hasPrefix("<local-command-") {
+                    // Local slash commands (/clear, /model, /mcp, /compact...) are logged as
+                    // "<command-name>..." and never reach the model. Commands that do prompt it
+                    // (skills, /init) are logged as "<command-message>..." and still start a turn.
+                    if userText.hasPrefix("<command-name>") || userText.hasPrefix("<local-command-") {
                         continue
                     }
 
