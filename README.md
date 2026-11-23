@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>Turn your MacBook notch into a Dynamic Island.</b><br>
-  Free and open source. System HUDs that work on macOS 26 Tahoe, a lock screen music player with synced lyrics,<br>
+  Free and open source. System HUDs that work on macOS 26 Tahoe and macOS 27 Golden Gate, a lock screen music player with synced lyrics,<br>
   and live Claude Code / Codex agent tracking, right in the notch.
 </p>
 
@@ -71,9 +71,9 @@ All releases are available on the [Releases](https://github.com/adrielakak/Gravi
 - Click any upcoming track to play it immediately, or use **`arrow.up.to.line`** to promote it to the top of the queue.
 - Also works when streaming from the Apple Music catalog (reads the album tracklist) and warns when Shuffle hides the actual order.
 
-### 3. 🔆 macOS Tahoe System HUDs
+### 3. 🔆 System HUDs for macOS Tahoe & Golden Gate
 - Replaces the macOS system HUDs (Volume, Display Brightness, Keyboard Backlight, and **Caps Lock HUD**) with smooth animations inside the notch.
-- Compatible with **macOS 26 Tahoe**: intercepts hardware media keys via `.cghidEventTap`, `.cgSessionEventTap`, and `.cgAnnotatedSessionEventTap` on a `.userInteractive` queue, reading `CGEvent` fields (`99` and `149`) with zero latency or duplicate system popups.
+- Compatible with **macOS 26 Tahoe** and **macOS 27 Golden Gate**: intercepts hardware media keys via `.cghidEventTap`, `.cgSessionEventTap`, and `.cgAnnotatedSessionEventTap` on a `.userInteractive` queue, reading `CGEvent` fields (`99` and `149`) with zero latency or duplicate system popups.
 
 ### 4. 🔍 Text Capture (Screen OCR) & Element Capture
 - **`text.viewfinder`** button in the notch header:
@@ -102,7 +102,7 @@ All releases are available on the [Releases](https://github.com/adrielakak/Gravi
 ## 🛠️ Building from Source
 
 ### Requirements
-- macOS 14 Sonoma, macOS 15 Sequoia, or **macOS 26 Tahoe**
+- macOS 14 Sonoma, macOS 15 Sequoia, macOS 26 Tahoe, or **macOS 27 Golden Gate**
 - Xcode 16+
 
 ### Build

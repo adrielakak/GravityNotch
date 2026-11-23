@@ -66,7 +66,7 @@
     "faq.2.q": "Do I need a MacBook with a notch?",
     "faq.2.a": "No. On a display without a notch, GravityNotch shows a virtual island at the top of the screen.",
     "faq.3.q": "Which macOS versions are supported?",
-    "faq.3.a": "macOS 14 Sonoma, macOS 15 Sequoia and macOS 26 Tahoe, on both Apple Silicon and Intel.",
+    "faq.3.a": "macOS 14 Sonoma, macOS 15 Sequoia, macOS 26 Tahoe and macOS 27 Golden Gate, on both Apple Silicon and Intel.",
     "faq.4.q": "Why does the app ask for Accessibility?",
     "faq.4.a": "To intercept the volume, brightness and keyboard backlight keys and show their HUD in the notch instead of the macOS bubbles.",
     "faq.5.q": "How is it related to Boring Notch?",
