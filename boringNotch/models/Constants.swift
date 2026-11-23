@@ -139,6 +139,11 @@ extension Defaults.Keys {
     static let lockScreenHideMissingLyrics = Key<Bool>("lockScreenHideMissingLyrics", default: true)
     static let lockScreenMediaAmbientGlow = Key<Bool>("lockScreenMediaAmbientGlow", default: true)
     static let lockScreenAnimatedArtwork = Key<Bool>("lockScreenAnimatedArtwork", default: true)
+    static let lockScreenPlayerStyle = Key<LockScreenPlayerStyle>("lockScreenPlayerStyle", default: .player)
+    /// The full screen lyrics layout keeps its own settings, so switching layouts never resets the other one
+    static let lockScreenFullScreenShowLyrics = Key<Bool>("lockScreenFullScreenShowLyrics", default: true)
+    static let lockScreenFullScreenHorizontalPosition = Key<Double>("lockScreenFullScreenHorizontalPosition", default: 0.5)
+    static let lockScreenFullScreenVerticalPosition = Key<Double>("lockScreenFullScreenVerticalPosition", default: 0.5)
     /// 0 = far left / bottom, 1 = far right / top of the area the lock screen player can occupy.
     static let lockScreenMediaHorizontalPosition = Key<Double>("lockScreenMediaHorizontalPosition", default: 0.5)
     static let lockScreenMediaVerticalPosition = Key<Double>("lockScreenMediaVerticalPosition", default: 0.16)

@@ -790,10 +790,33 @@ struct Media: View {
     @Default(.enableLyrics) var enableLyrics
     @Default(.showOnLockScreen) var showOnLockScreen
     @Default(.lockScreenMediaPlayer) var lockScreenMediaPlayer
+    @Default(.lockScreenPlayerStyle) var lockScreenPlayerStyle
     @Default(.lockScreenShowLyrics) var lockScreenShowLyrics
     @Default(.lockScreenMediaAmbientGlow) var lockScreenMediaAmbientGlow
     @Default(.lockScreenMediaHorizontalPosition) var lockScreenMediaHorizontalPosition
     @Default(.lockScreenMediaVerticalPosition) var lockScreenMediaVerticalPosition
+    @Default(.lockScreenFullScreenHorizontalPosition) var lockScreenFullScreenHorizontalPosition
+    @Default(.lockScreenFullScreenVerticalPosition) var lockScreenFullScreenVerticalPosition
+
+    /// The position sliders edit the selected layout only: each layout keeps its own placement
+    private var isFullScreenLayout: Bool { lockScreenPlayerStyle == .lyrics }
+
+    private var playerHorizontalPosition: Binding<Double> {
+        isFullScreenLayout ? $lockScreenFullScreenHorizontalPosition : $lockScreenMediaHorizontalPosition
+    }
+
+    private var playerVerticalPosition: Binding<Double> {
+        isFullScreenLayout ? $lockScreenFullScreenVerticalPosition : $lockScreenMediaVerticalPosition
+    }
+
+    private var playerPositionIsDefault: Bool {
+        if isFullScreenLayout {
+            return lockScreenFullScreenHorizontalPosition == Defaults.Keys.lockScreenFullScreenHorizontalPosition.defaultValue
+                && lockScreenFullScreenVerticalPosition == Defaults.Keys.lockScreenFullScreenVerticalPosition.defaultValue
+        }
+        return lockScreenMediaHorizontalPosition == Defaults.Keys.lockScreenMediaHorizontalPosition.defaultValue
+            && lockScreenMediaVerticalPosition == Defaults.Keys.lockScreenMediaVerticalPosition.defaultValue
+    }
 
     var body: some View {
         Form {
@@ -895,44 +918,69 @@ struct Media: View {
                     Text("Show Gravity music player on lock screen")
                 }
                 .disabled(!showOnLockScreen)
-                Defaults.Toggle(key: .lockScreenShowLyrics) {
-                    Text("Show interactive lyrics on lock screen")
+                Picker(selection: $lockScreenPlayerStyle) {
+                    Text("Player").tag(LockScreenPlayerStyle.player)
+                    Text("Full screen lyrics").tag(LockScreenPlayerStyle.lyrics)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Lock screen layout")
+                        Text("Full screen lyrics shows the player on the left and the synced lyrics on the right, like Apple Music. Tracks without lyrics show the player in the center.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
-                Defaults.Toggle(key: .lockScreenHideMissingLyrics) {
-                    Text("Hide lyrics when none are found")
+                if isFullScreenLayout {
+                    Defaults.Toggle(key: .lockScreenFullScreenShowLyrics) {
+                        Text("Show interactive lyrics on lock screen")
+                    }
+                    .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                } else {
+                    Defaults.Toggle(key: .lockScreenShowLyrics) {
+                        Text("Show interactive lyrics on lock screen")
+                    }
+                    .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                    Defaults.Toggle(key: .lockScreenHideMissingLyrics) {
+                        Text("Hide lyrics when none are found")
+                    }
+                    .disabled(!showOnLockScreen || !lockScreenMediaPlayer || !lockScreenShowLyrics)
+                    Defaults.Toggle(key: .lockScreenMediaAmbientGlow) {
+                        Text("Ambient album artwork glow")
+                    }
+                    .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 }
-                .disabled(!showOnLockScreen || !lockScreenMediaPlayer || !lockScreenShowLyrics)
-                Defaults.Toggle(key: .lockScreenMediaAmbientGlow) {
-                    Text("Ambient album artwork glow")
-                }
-                .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Defaults.Toggle(key: .lockScreenAnimatedArtwork) {
                     Text("Use animated artwork as lock screen wallpaper")
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Group {
-                    Slider(value: $lockScreenMediaHorizontalPosition, in: 0...1) {
+                    Slider(value: playerHorizontalPosition, in: 0...1) {
                         Text("Horizontal position")
                     } minimumValueLabel: {
                         Image(systemName: "arrow.left")
                     } maximumValueLabel: {
                         Image(systemName: "arrow.right")
                     }
-                    Slider(value: $lockScreenMediaVerticalPosition, in: 0...1) {
+                    Slider(value: playerVerticalPosition, in: 0...1) {
                         Text("Vertical position")
                     } minimumValueLabel: {
                         Image(systemName: "arrow.down")
                     } maximumValueLabel: {
                         Image(systemName: "arrow.up")
                     }
-                    Button("Reset player position") {
-                        Defaults.reset(.lockScreenMediaHorizontalPosition, .lockScreenMediaVerticalPosition)
+                    if isFullScreenLayout {
+                        Text("Over an animated artwork, the player stays at the bottom so the artwork remains visible.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(
-                        lockScreenMediaHorizontalPosition == Defaults.Keys.lockScreenMediaHorizontalPosition.defaultValue
-                            && lockScreenMediaVerticalPosition == Defaults.Keys.lockScreenMediaVerticalPosition.defaultValue
-                    )
+                    Button("Reset player position") {
+                        if isFullScreenLayout {
+                            Defaults.reset(.lockScreenFullScreenHorizontalPosition, .lockScreenFullScreenVerticalPosition)
+                        } else {
+                            Defaults.reset(.lockScreenMediaHorizontalPosition, .lockScreenMediaVerticalPosition)
+                        }
+                    }
+                    .disabled(playerPositionIsDefault)
                 }
                 .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
                 Button {

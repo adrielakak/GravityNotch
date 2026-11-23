@@ -20604,6 +20604,86 @@
         }
       }
     },
+    "Lock screen layout": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lock screen layout"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disposition sur l'écran verrouillé"
+          }
+        }
+      }
+    },
+    "Over an animated artwork, the player stays at the bottom so the artwork remains visible.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Over an animated artwork, the player stays at the bottom so the artwork remains visible."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sur une pochette animée, le lecteur reste en bas pour laisser la pochette visible."
+          }
+        }
+      }
+    },
+    "Player": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Player"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lecteur"
+          }
+        }
+      }
+    },
+    "Full screen lyrics": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full screen lyrics"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paroles plein écran"
+          }
+        }
+      }
+    },
+    "Full screen lyrics shows the player on the left and the synced lyrics on the right, like Apple Music. Tracks without lyrics show the player in the center.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Full screen lyrics shows the player on the left and the synced lyrics on the right, like Apple Music. Tracks without lyrics show the player in the center."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Les paroles plein écran affichent le lecteur à gauche et les paroles synchronisées à droite, comme dans Apple Music. Les morceaux sans paroles affichent le lecteur au centre."
+          }
+        }
+      }
+    },
     "Show HUD": {
       "localizations": {
         "en": {

@@ -60,6 +60,12 @@ enum MirrorShapeEnum: String, Defaults.Serializable {
     case circle = "Circular"
 }
 
+/// Layout of the lock screen music player: the compact card, or a full screen view with the lyrics.
+enum LockScreenPlayerStyle: String, Defaults.Serializable {
+    case player
+    case lyrics
+}
+
 enum WindowHeightMode: String, Defaults.Serializable {
     case matchMenuBar = "Match menubar height"
     case matchRealNotchSize = "Match real notch height"

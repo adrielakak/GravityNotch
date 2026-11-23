@@ -6288,6 +6288,10 @@ final class LockScreenMediaPanelManager: ObservableObject {
     /// recreating the SkyLight window on each of those blips left the notch in an inconsistent state.
     private var pendingDismissTask: Task<Void, Never>?
     private var positionObserver: AnyCancellable?
+    private var styleObserver: AnyCancellable?
+    /// Full screen lyrics layout (player on the left, lyrics on the right) instead of the compact card
+    @Published private(set) var isLyricsLayout: Bool = false
+    private var isPresentedOnSkyLight: Bool = false
 
     private init() {
         positionObserver = Defaults.publisher(keys: .lockScreenMediaHorizontalPosition, .lockScreenMediaVerticalPosition)
@@ -6295,6 +6299,14 @@ final class LockScreenMediaPanelManager: ObservableObject {
             .sink { [weak self] in
                 MainActor.assumeIsolated {
                     self?.applyPanelPosition()
+                }
+            }
+        styleObserver = Defaults.publisher(.lockScreenPlayerStyle, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.panelWindow?.isVisible == true else { return }
+                    self.presentPanel(delegateToSkyLight: self.isPresentedOnSkyLight)
                 }
             }
     }
@@ -6323,7 +6335,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
 
     private func applyPanelPosition() {
         guard let window = panelWindow, window.isVisible, let screen = panelScreen else { return }
-        if isWindowExpanded {
+        if isWindowExpanded || isLyricsLayout {
             updateExpandedCardPlacement(on: screen)
         } else {
             window.setFrame(compactFrame(on: screen), display: true)
@@ -6331,7 +6343,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
     }
 
     func toggleWallpaperMode() {
-        guard isWallpaperMode || animatedArtworkURL != nil else { return }
+        guard !isLyricsLayout, isWallpaperMode || animatedArtworkURL != nil else { return }
         wallpaperWanted = !isWallpaperMode
         if wallpaperWanted {
             enterWallpaperMode()
@@ -6358,7 +6370,8 @@ final class LockScreenMediaPanelManager: ObservableObject {
     }
 
     private func enterWallpaperMode() {
-        guard !isWallpaperMode, let window = panelWindow, let screen = panelScreen else { return }
+        // The lyrics layout already fills the screen and draws the animated artwork itself
+        guard !isLyricsLayout, !isWallpaperMode, let window = panelWindow, let screen = panelScreen else { return }
         wallpaperTransitionID += 1
         updateExpandedCardPlacement(on: screen)
         isWindowExpanded = true
@@ -6440,6 +6453,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
         pendingDismissTask?.cancel()
         pendingDismissTask = nil
         resetWallpaperMode()
+        isLyricsLayout = false
         guard let window = panelWindow else { return }
         window.disableSkyLight()
         window.orderOut(nil)
@@ -6498,11 +6512,22 @@ final class LockScreenMediaPanelManager: ObservableObject {
         pendingDismissTask?.cancel()
         pendingDismissTask = nil
         resetWallpaperMode()
+        let lyricsLayout = Defaults[.lockScreenPlayerStyle] == .lyrics
+        isLyricsLayout = lyricsLayout
+        isPresentedOnSkyLight = delegateToSkyLight
         // On every lock the wallpaper comes back by itself as soon as a track has an animated artwork;
         // tapping it away only lasts until the next lock
-        wallpaperWanted = delegateToSkyLight
+        wallpaperWanted = delegateToSkyLight && !lyricsLayout
         panelScreen = screen
-        let frame = compactFrame(on: screen)
+        let frame: NSRect
+        if lyricsLayout {
+            // Without lyrics the layout falls back to the compact card, placed where the sliders say
+            updateExpandedCardPlacement(on: screen)
+            isWindowExpanded = true
+            frame = screen.frame
+        } else {
+            frame = compactFrame(on: screen)
+        }
 
         if Self.hasActiveMedia()
             && MusicManager.shared.currentLyrics.isEmpty
@@ -7381,18 +7406,25 @@ struct LockScreenPanelRootView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            if manager.isWallpaperMode {
-                LockScreenArtworkWallpaperView(
-                    videoURL: manager.wallpaperVideoURL,
-                    highResCover: artworkService.stillImage(for: trackKey),
-                    onDismiss: { manager.toggleWallpaperMode() }
+            if manager.isLyricsLayout {
+                LockScreenLyricsLayoutView(
+                    trackKey: trackKey,
+                    onClosePreview: onClosePreview
                 )
-                .transition(.opacity)
-            }
+            } else {
+                if manager.isWallpaperMode {
+                    LockScreenArtworkWallpaperView(
+                        videoURL: manager.wallpaperVideoURL,
+                        highResCover: artworkService.stillImage(for: trackKey),
+                        onDismiss: { manager.toggleWallpaperMode() }
+                    )
+                    .transition(.opacity)
+                }
 
-            LockScreenMediaPanelView(onClosePreview: onClosePreview)
-                .padding(.bottom, manager.isWindowExpanded ? manager.cardBottomInset : 0)
-                .offset(x: manager.isWindowExpanded ? manager.cardHorizontalOffset : 0)
+                LockScreenMediaPanelView(onClosePreview: onClosePreview)
+                    .padding(.bottom, manager.isWindowExpanded ? manager.cardBottomInset : 0)
+                    .offset(x: manager.isWindowExpanded ? manager.cardHorizontalOffset : 0)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .onChange(of: animatedArtworkURL, initial: true) { _, url in
@@ -7480,6 +7512,512 @@ struct LockScreenArtworkWallpaperView: View {
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture(perform: onDismiss)
+    }
+}
+
+// MARK: - Lock Screen Full Screen Lyrics (player on the left, Apple Music style lyrics on the right)
+
+private struct FullScreenLyricLine: Identifiable, Equatable {
+    /// Index in the lyrics, so it doubles as the row position
+    let id: Int
+    let time: Double?
+    let text: String
+}
+
+struct LockScreenLyricsLayoutView: View {
+    @ObservedObject private var manager = LockScreenMediaPanelManager.shared
+    @ObservedObject private var musicManager = MusicManager.shared
+    @ObservedObject private var artworkService = AnimatedArtworkService.shared
+    let trackKey: String
+    var onClosePreview: (() -> Void)?
+
+    @State private var showRemainingTime = true
+    @State private var showAudioDrawer = false
+    /// Outcome of the last finished lookup, kept while the next track's lyrics load so the player does not
+    /// slide to the center and back on every track change. False at first: nothing is shown on the right
+    /// until lyrics are actually there.
+    @State private var lastLookupFoundLyrics = false
+    @State private var playerSize: CGSize = .zero
+    @Default(.lockScreenFullScreenShowLyrics) private var showLyricsPreference
+    @Default(.lockScreenFullScreenHorizontalPosition) private var horizontalPosition
+    @Default(.lockScreenFullScreenVerticalPosition) private var verticalPosition
+
+    private var lines: [FullScreenLyricLine] {
+        if !musicManager.syncedLyrics.isEmpty {
+            return musicManager.syncedLyrics.enumerated().map {
+                FullScreenLyricLine(id: $0.offset, time: $0.element.time, text: $0.element.text)
+            }
+        }
+        return musicManager.currentLyrics
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .enumerated()
+            .map { FullScreenLyricLine(id: $0.offset, time: nil, text: $0.element) }
+    }
+
+    private var lyricsFound: Bool {
+        !musicManager.syncedLyrics.isEmpty
+            || !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasMedia: Bool {
+        LockScreenMediaPanelManager.hasActiveMedia(musicManager)
+    }
+
+    /// Lyrics exist (or are loading for a track that follows one with lyrics), whether shown or not
+    private var lyricsAvailable: Bool {
+        guard hasMedia else { return false }
+        if lyricsFound { return true }
+        return musicManager.isFetchingLyrics && lastLookupFoundLyrics
+    }
+
+    private var showsLyrics: Bool {
+        showLyricsPreference && lyricsAvailable
+    }
+
+    /// Over an animated artwork the player sits at the bottom so the artwork stays visible; hiding the
+    /// lyrics then only slides it sideways
+    private var hasMotionArtwork: Bool {
+        manager.animatedArtworkURL != nil
+    }
+
+    /// Center of the player: the position settings span the left half next to the lyrics, the whole screen
+    /// without them. Equal top and bottom margins, so the default 0.5 is the exact vertical middle.
+    private func playerCenter(in size: CGSize) -> CGPoint {
+        let areaWidth = showsLyrics ? size.width / 2 : size.width
+        let sideMargin: CGFloat = 60
+        let topMargin: CGFloat = 70
+        let bottomMargin: CGFloat = 70
+        let horizontalRange = max(0, areaWidth - playerSize.width - 2 * sideMargin)
+        let verticalRange = max(0, size.height - playerSize.height - topMargin - bottomMargin)
+        let horizontal = CGFloat(min(max(horizontalPosition, 0), 1))
+        let vertical = CGFloat(min(max(verticalPosition, 0), 1))
+        let x = sideMargin + horizontalRange * horizontal + playerSize.width / 2
+        if hasMotionArtwork {
+            // A little above the bottom edge, about where the regular player sits
+            let lift = max(110, size.height * 0.11)
+            return CGPoint(x: x, y: size.height - lift - playerSize.height / 2)
+        }
+        return CGPoint(x: x, y: size.height - bottomMargin - verticalRange * vertical - playerSize.height / 2)
+    }
+
+    private var accent: Color {
+        Color(nsColor: musicManager.avgColor).ensureMinimumBrightness(factor: 0.65)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                LockScreenLyricsBackground(
+                    videoURL: manager.animatedArtworkURL,
+                    cover: artworkService.stillImage(for: trackKey) ?? musicManager.albumArt
+                )
+
+                // Without lyrics (none found, hidden, still loading, nothing playing) the same player moves
+                // across the whole screen; it slides into the left half once lyrics show
+                playerBlock(size: geo.size)
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: LockScreenPlayerSizeKey.self, value: proxy.size)
+                        }
+                    )
+                    .position(playerCenter(in: geo.size))
+
+                if showsLyrics {
+                    lyricsColumn(size: geo.size)
+                        .frame(width: geo.size.width / 2, height: geo.size.height)
+                        .position(x: geo.size.width * 0.75, y: geo.size.height / 2)
+                        .transition(.opacity.combined(with: .offset(x: 40)))
+                }
+
+                topBar(size: geo.size)
+            }
+            .animation(.spring(response: 0.6, dampingFraction: 0.86), value: showsLyrics)
+            .animation(.spring(response: 0.6, dampingFraction: 0.86), value: hasMotionArtwork)
+        }
+        .ignoresSafeArea()
+        .onPreferenceChange(LockScreenPlayerSizeKey.self) { playerSize = $0 }
+        .onChange(of: "\(musicManager.isFetchingLyrics)|\(lyricsFound)", initial: true) {
+            if !musicManager.isFetchingLyrics {
+                lastLookupFoundLyrics = lyricsFound
+            }
+        }
+    }
+
+    private func playerBlock(size: CGSize) -> some View {
+        let width = max(260, min(400, size.width / 2 - 120))
+        let artworkSize = min(width, size.height * 0.36)
+
+        return VStack(alignment: .leading, spacing: 16) {
+            // A motion artwork already fills the background, a still cover gets its own card
+            if manager.animatedArtworkURL == nil {
+                Image(nsImage: musicManager.albumArt)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: artworkSize, height: artworkSize)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+                    )
+                    .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
+                    .scaleEffect(musicManager.isPlaying ? 1 : 0.94, anchor: .bottomLeading)
+                    .animation(.spring(response: 0.45, dampingFraction: 0.8), value: musicManager.isPlaying)
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(hasMedia ? musicManager.songTitle : String(localized: "Nothing Playing"))
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    Text(hasMedia
+                        ? (musicManager.artistName.isEmpty ? String(localized: "Music") : musicManager.artistName)
+                        : String(localized: "Press Play to start listening"))
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if lyricsAvailable {
+                    Button {
+                        withAnimation(.spring(response: 0.6, dampingFraction: 0.86)) {
+                            showLyricsPreference.toggle()
+                        }
+                    } label: {
+                        Image(systemName: showLyricsPreference ? "quote.bubble.fill" : "quote.bubble")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(showLyricsPreference ? .white : .white.opacity(0.6))
+                            .padding(8)
+                            .background(Circle().fill(Color.white.opacity(showLyricsPreference ? 0.22 : 0.1)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Synced lyrics")
+                    .transition(.opacity)
+                }
+            }
+
+            TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.25 : 1.5)) { context in
+                LockScreenScrubBar(
+                    elapsed: musicManager.estimatedPlaybackPosition(at: context.date),
+                    duration: musicManager.songDuration,
+                    accentColor: accent,
+                    showRemainingTime: $showRemainingTime
+                )
+            }
+
+            LockScreenTransportControls(
+                hasMediaTrack: hasMedia,
+                albumAccent: accent,
+                showAudioDrawer: $showAudioDrawer,
+                onOpenAudioDrawer: { _ in }
+            )
+
+            if showAudioDrawer {
+                LockScreenAudioDrawer(accentColor: accent)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .frame(width: width, alignment: .leading)
+        .shadow(color: .black.opacity(0.25), radius: 10)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: showAudioDrawer)
+    }
+
+    @ViewBuilder
+    private func lyricsColumn(size: CGSize) -> some View {
+        let currentLines = lines
+        Group {
+            if currentLines.isEmpty {
+                Text(musicManager.isFetchingLyrics ? String(localized: "Loading lyrics…") : "♪")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            } else {
+                LockScreenFullLyricsView(lines: currentLines, isSynced: !musicManager.syncedLyrics.isEmpty)
+            }
+        }
+        .padding(.top, 96)
+        .padding(.bottom, size.height * 0.06)
+        .padding(.leading, 24)
+        .padding(.trailing, max(60, size.width * 0.06))
+    }
+
+    private func topBar(size: CGSize) -> some View {
+        VStack {
+            HStack(alignment: .top) {
+                if let onClosePreview {
+                    Button(action: onClosePreview) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 22))
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close preview")
+                }
+                Spacer()
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(context.date, format: .dateTime.hour().minute())
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                        Text(context.date, format: .dateTime.weekday(.abbreviated).day().month(.abbreviated))
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.62))
+                    }
+                    .shadow(color: .black.opacity(0.35), radius: 6, y: 1)
+                }
+            }
+            .padding(.top, 46)
+            .padding(.horizontal, max(60, size.width * 0.06))
+            Spacer()
+        }
+    }
+}
+
+private struct LockScreenLyricsBackground: View {
+    let videoURL: URL?
+    let cover: NSImage
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.black
+
+                Image(nsImage: cover)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+                    .blur(radius: videoURL == nil ? 80 : 0, opaque: true)
+                    .saturation(videoURL == nil ? 1.35 : 1)
+                    .scaleEffect(videoURL == nil ? 1.15 : 1)
+
+                if let videoURL {
+                    LoopingArtworkVideoView(url: videoURL)
+                        .id(videoURL)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+
+                Color.black.opacity(videoURL == nil ? 0.28 : 0.12)
+
+                // Keeps the lyrics, the clock and the controls readable over any artwork
+                LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .leading, endPoint: .trailing)
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.35), location: 0),
+                        .init(color: .clear, location: 0.2),
+                        .init(color: .clear, location: 0.55),
+                        .init(color: .black.opacity(0.55), location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+        .animation(.easeInOut(duration: 0.6), value: videoURL)
+    }
+}
+
+private struct LockScreenPlayerSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
+private struct LyricLineHeightsKey: PreferenceKey {
+    static var defaultValue: [Int: CGFloat] = [:]
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+/// Every line keeps its natural height; the column is shifted so the active line sits near the top, and
+/// each line follows with a small delay so the list moves like a wave. Lines blur and fade with their
+/// distance to the active one.
+private struct LockScreenFullLyricsView: View {
+    @ObservedObject private var musicManager = MusicManager.shared
+    let lines: [FullScreenLyricLine]
+    let isSynced: Bool
+
+    @State private var heights: [Int: CGFloat] = [:]
+    @State private var hoveredLine: Int?
+
+    private static let spacing: CGFloat = 24
+    private static let fontSize: CGFloat = 30
+    private static let estimatedHeight: CGFloat = 40
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.1 : 1.0)) { context in
+            let active = activeIndex(at: musicManager.estimatedPlaybackPosition(at: context.date))
+            GeometryReader { geo in
+                list(active: active, size: geo.size)
+            }
+        }
+        .onPreferenceChange(LyricLineHeightsKey.self) { heights = $0 }
+    }
+
+    private func list(active: Int, size: CGSize) -> some View {
+        var tops: [CGFloat] = []
+        var y: CGFloat = 0
+        for line in lines {
+            tops.append(y)
+            y += (heights[line.id] ?? Self.estimatedHeight) + Self.spacing
+        }
+        let shift = size.height * 0.16 - (tops.indices.contains(active) ? tops[active] : 0)
+
+        return ZStack(alignment: .topLeading) {
+            ForEach(lines) { line in
+                row(line, active: active, width: size.width)
+                    .offset(y: tops[line.id] + shift)
+                    .animation(
+                        .spring(response: 0.7, dampingFraction: 0.86).delay(waveDelay(for: line.id, active: active)),
+                        value: active
+                    )
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .clipped()
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black, location: 0.08),
+                    .init(color: .black, location: 0.72),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
+    }
+
+    @ViewBuilder
+    private func row(_ line: FullScreenLyricLine, active: Int, width: CGFloat) -> some View {
+        let distance = line.id - active
+        let isActive = distance == 0
+        let isVisible = distance >= -4 && distance <= 14
+        let isHovered = hoveredLine == line.id && line.time != nil
+        let text = line.text.isEmpty ? "♪" : line.text
+
+        Group {
+            if isActive && isSynced, let start = line.time {
+                LockScreenKaraokeLine(
+                    text: text,
+                    start: start,
+                    end: lineEnd(after: line.id, start: start),
+                    fontSize: Self.fontSize
+                )
+            } else {
+                Text(text)
+                    .font(.system(size: Self.fontSize, weight: .bold))
+                    .foregroundStyle(.white.opacity(isActive ? 1 : (isHovered ? 0.75 : inactiveOpacity(distance))))
+            }
+        }
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: width, alignment: .leading)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: LyricLineHeightsKey.self, value: [line.id: proxy.size.height])
+            }
+        )
+        .scaleEffect(isActive ? 1 : 0.96, anchor: .leading)
+        .blur(radius: (isActive || isHovered || !isVisible) ? 0 : min(CGFloat(abs(distance)) * 1.2, 5))
+        .shadow(color: isActive ? .white.opacity(0.18) : .clear, radius: 12)
+        .opacity(isVisible ? 1 : 0)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hoveredLine = inside ? line.id : (hoveredLine == line.id ? nil : hoveredLine)
+        }
+        .onTapGesture {
+            if let time = line.time {
+                musicManager.seek(to: time)
+            }
+        }
+    }
+
+    private func inactiveOpacity(_ distance: Int) -> Double {
+        if distance < 0 { return 0.32 }
+        return distance == 1 ? 0.5 : 0.38
+    }
+
+    private func waveDelay(for index: Int, active: Int) -> Double {
+        let distance = index - active
+        return distance > 0 ? Double(min(distance, 10)) * 0.035 : 0
+    }
+
+    private func lineEnd(after index: Int, start: Double) -> Double {
+        let next = index + 1 < lines.count ? lines[index + 1].time : nil
+        return next ?? (start + 5)
+    }
+
+    private func activeIndex(at elapsed: Double) -> Int {
+        guard !lines.isEmpty else { return 0 }
+        if isSynced {
+            var low = 0
+            var high = lines.count - 1
+            var index = 0
+            while low <= high {
+                let mid = (low + high) / 2
+                if (lines[mid].time ?? 0) <= elapsed {
+                    index = mid
+                    low = mid + 1
+                } else {
+                    high = mid - 1
+                }
+            }
+            return index
+        }
+        // Plain lyrics carry no timing: follow the track's progress
+        let duration = musicManager.songDuration
+        let ratio = duration > 0 ? min(0.999, max(0, elapsed / duration)) : 0
+        return min(lines.count - 1, Int(Double(lines.count) * ratio))
+    }
+}
+
+/// The active line, lit word by word.
+private struct LockScreenKaraokeLine: View {
+    @ObservedObject private var musicManager = MusicManager.shared
+    let text: String
+    let start: Double
+    let end: Double
+    let fontSize: CGFloat
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !musicManager.isPlaying)) { context in
+            styledText(at: musicManager.estimatedPlaybackPosition(at: context.date))
+                .font(.system(size: fontSize, weight: .bold))
+        }
+    }
+
+    /// LRCLIB only times whole lines, so the line is spread over its words, weighted by their length, to
+    /// estimate when each one is sung. A line is usually sung faster than the gap before the next one.
+    private func styledText(at elapsed: Double) -> Text {
+        let words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard !words.isEmpty else { return Text(verbatim: text).foregroundColor(.white) }
+        let gap = max(0.4, end - start)
+        let sungDuration = min(gap * 0.9, max(1.0, Double(text.count) * 0.11))
+        let weights = words.map { Double($0.count) + 1.5 }
+        let total = weights.reduce(0, +)
+
+        var cursor = start
+        var result = Text(verbatim: "")
+        for (index, word) in words.enumerated() {
+            let wordDuration = sungDuration * weights[index] / total
+            let progress = min(1, max(0, (elapsed - cursor) / max(0.08, wordDuration)))
+            let piece = Text(verbatim: index == 0 ? word : " " + word)
+                .foregroundColor(.white.opacity(0.38 + 0.62 * progress))
+            result = result + piece
+            cursor += wordDuration
+        }
+        return result
     }
 }
 
