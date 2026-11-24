@@ -5141,7 +5141,8 @@ final class AntigravityAgentMonitor: ObservableObject {
         from entry: CachedSessionEntry,
         now: Date,
         processRunning: Bool = true,
-        promptSuperseded: Bool = false
+        promptSuperseded: Bool = false,
+        turnAborted: Bool = false
     ) -> AgentSessionSnapshot {
         let s = entry.snapshot
         let age = max(0, now.timeIntervalSince(entry.lastEventDate))
@@ -5153,11 +5154,12 @@ final class AntigravityAgentMonitor: ObservableObject {
         // Mid-turn the transcript stays silent while a command, a search or a long thought runs,
         // so silence alone does not mean the agent stopped. Edits and questions are the exception:
         // there, silence means the agent is blocked on the user.
-        let midTurn = !entry.turnComplete && !abandonedPrompt
+        let midTurn = !entry.turnComplete && !abandonedPrompt && !turnAborted
         let pendingTool = entry.hasPendingTool ? (s.recentEvents.first?.toolName ?? "") : ""
         let blockedOnUser = entry.hasPendingTool && (entry.rawPhase == .editing || isUserPromptTool(pendingTool))
-        // A finished turn lingers only for the completion check (4 s), not as a ring that looks like work
-        let isActive = age < (midTurn ? (processRunning ? 600.0 : 45.0) : 8.0)
+        // A finished turn lingers only for the completion check (4 s), not as a ring that looks like work.
+        // A turn killed by an error ends at once, without the green check of a finished task.
+        let isActive = !turnAborted && age < (midTurn ? (processRunning ? 600.0 : 45.0) : 8.0)
         let isWorkingNow = processRunning && midTurn && age < (blockedOnUser ? 22.0 : 600.0)
         let workingPhase: AgentWorkPhase = entry.rawPhase == .waiting ? .thinking : entry.rawPhase
         let effectivePhase: AgentWorkPhase = (!midTurn || !isActive || !processRunning) ? .waiting : workingPhase
@@ -5512,12 +5514,58 @@ final class AntigravityAgentMonitor: ObservableObject {
             entries.append(entry)
         }
 
+        // A run killed by an error (no credits left, quota, network) writes nothing more to its
+        // transcript, which then looks mid-turn for 10 minutes; the error only lands in the agent's log.
+        let executorError = entries.contains { !$0.turnComplete }
+            ? latestAntigravityExecutorError(home: home, now: now)
+            : nil
+
         return entries.map { entry in
             let superseded = entry.awaitingFirstResponse && entries.contains {
                 $0.snapshot.id != entry.snapshot.id && $0.firstEventDate > entry.lastEventDate
             }
-            return resolveSnapshot(from: entry, now: now, promptSuperseded: superseded)
+            let aborted = !entry.turnComplete && (executorError.map { $0 > entry.lastEventDate } ?? false)
+            return resolveSnapshot(from: entry, now: now, promptSuperseded: superseded, turnAborted: aborted)
         }
+    }
+
+    /// Time of the last fatal "agent executor error" in the Antigravity agent logs written in the last
+    /// 15 minutes. Lines are glog formatted: "E1125 01:44:02.942183   86195 errorreport.go:282] agent executor error: ..."
+    private nonisolated static func latestAntigravityExecutorError(home: String, now: Date) -> Date? {
+        let logDir = URL(fileURLWithPath: home).appendingPathComponent(".gemini/antigravity/log")
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: logDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        let calendar = Calendar.current
+        let year = calendar.component(.year, from: now)
+        var latest: Date?
+        for file in files where file.lastPathComponent.hasPrefix("cli-") && file.pathExtension == "log" {
+            guard let mod = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                  now.timeIntervalSince(mod) < 900 else { continue }
+            for line in readTailLines(from: file, maxBytes: 32_768).reversed()
+            where line.hasPrefix("E") && line.contains("agent executor error") {
+                // "E1125 01:44:02.942183": month, day, then the local time
+                let chars = Array(line.prefix(21))
+                guard chars.count == 21,
+                      let month = Int(String(chars[1...2])), let day = Int(String(chars[3...4])),
+                      let hour = Int(String(chars[6...7])), let minute = Int(String(chars[9...10])),
+                      let second = Double(String(chars[12...20])) else { break }
+                var parts = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
+                parts.second = Int(second)
+                parts.nanosecond = Int((second - Double(Int(second))) * 1_000_000_000)
+                guard var date = calendar.date(from: parts) else { break }
+                // The log carries no year: a date ahead of now belongs to last year (31 Dec -> 1 Jan)
+                if date > now.addingTimeInterval(86_400), let previous = calendar.date(byAdding: .year, value: -1, to: date) {
+                    date = previous
+                }
+                if latest == nil || date > latest! { latest = date }
+                break
+            }
+        }
+        return latest
     }
 
     private nonisolated static func parseClaudeSessions(
