@@ -134,7 +134,7 @@
         </article>
         <article class="slide" aria-roledescription="diapositive" aria-label="5 sur 5">
           <div class="media media-wide"><video src="assets/video/ai_activity.mp4" poster="assets/video/ai_activity.jpg" muted playsinline preload="none"></video></div>
-          <p class="slide-cap" data-i18n="slide.5"><b>Agents IA.</b> Claude Code et Antigravity suivis en direct : étape, contexte, outils.</p>
+          <p class="slide-cap" data-i18n="slide.5"><b>Agents IA.</b> Claude Code et Antigravity suivis en direct : étape, contexte, outils et fichier modifié.</p>
         </article>
       </div>
 
@@ -163,7 +163,14 @@
             <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M5 4.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-8l-4.5 3.5V17.5H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7 9h10M7 12.5h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
             <div class="tile-body">
               <h3><span data-i18n="tile.l.t">Paroles plein écran</span> <span class="tile-new" data-i18n="tile.new">Nouveau</span></h3>
-              <p data-i18n="tile.l.d">Sur l'écran verrouillé, le lecteur à gauche et les paroles à droite, comme dans Apple Music : mot par mot, en vague, avec les points des pauses. Paroles de LRCLIB pour tous, ou d'Apple Music avec un abonnement, au timing exact.</p>
+              <p data-i18n="tile.l.d">Sur l'écran verrouillé, le lecteur à gauche et les paroles à droite, comme dans Apple Music : mot par mot, en vague, avec les points des pauses. Paroles de LRCLIB pour tous, mot par mot quand le morceau existe en version synchronisée au mot, ou d'Apple Music avec un abonnement, au timing exact.</p>
+            </div>
+          </div>
+          <div class="tile tile-wide reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M7 9.5l2.5 2.5L7 14.5M12 15h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="tile-body">
+              <h3><span data-i18n="tile.a.t">Agents IA</span> <span class="tile-new" data-i18n="tile.new">Nouveau</span></h3>
+              <p data-i18n="tile.a.d">Suivez Claude Code et Antigravity en direct dans l'onglet Agents : l'étape en cours, le contexte et les outils, avec le fichier en train d'être modifié et sa barre verte et rouge de lignes ajoutées et supprimées, désormais aussi pour Antigravity.</p>
             </div>
           </div>
           <div class="tile tile-wide reveal">
@@ -210,6 +217,13 @@
             <h3 data-i18n="tile.6.t">Calendrier</h3>
             <p data-i18n="tile.6.d">Vos prochains événements dans l'onglet Home, à côté de la musique en cours.</p>
           </div>
+          <div class="tile tile-wide reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5.5c0 4.4-3 8.2-7 9.5-4-1.3-7-5.1-7-9.5V6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.8 12.2l2.2 2.2 4.2-4.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="tile-body">
+              <h3 data-i18n="tile.r.t">Plus stable, plus léger</h3>
+              <p data-i18n="tile.r.d">Toute l'app a été passée au crible : la bonne pochette même quand vous changez vite de morceau, Spotify et YouTube Music plus fiables, des HUD et un écran verrouillé plus robustes, un Shelf et un OCR qui travaillent sans figer l'encoche, et moins de processeur utilisé en arrière-plan.</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -222,7 +236,7 @@
         <ol class="steps">
           <li class="reveal"><span class="num">1</span><h3 data-i18n="step.1.t">Installez et lancez l'app</h3><p data-i18n="step.1.d">Ouvrez <code>GravityNotch.dmg</code>, glissez l'app dans <b>Applications</b>, lancez-la une première fois puis fermez l'alerte.</p></li>
           <li class="reveal"><span class="num">2</span><h3 data-i18n="step.2.t">Autorisez dans les Réglages</h3><p data-i18n="step.2.d">Ouvrez <b>Réglages Système</b> → <b>Confidentialité et sécurité</b>, descendez <b>tout en bas</b> et cliquez sur <b>Ouvrir quand même</b>.</p></li>
-          <li class="reveal"><span class="num">3</span><h3 data-i18n="step.3.t">Autorisez l'Accessibilité</h3><p data-i18n="step.3.d">Suivez l'assistant au démarrage pour activer l'Accessibilité (requis pour les HUD volume et luminosité).</p></li>
+          <li class="reveal"><span class="num">3</span><h3 data-i18n="step.3.t">Autorisez l'Accessibilité</h3><p data-i18n="step.3.d">Suivez l'assistant au démarrage pour activer l'Accessibilité (requis pour les HUD volume et luminosité). Sur macOS 27, elle s'appelle «&nbsp;Contrôle de l'appareil et accès aux données&nbsp;».</p></li>
         </ol>
 
         <div class="terminal reveal">
@@ -263,7 +277,7 @@
           </details>
           <details>
             <summary data-i18n="faq.4.q">Pourquoi l'app demande-t-elle l'Accessibilité&nbsp;?</summary>
-            <p data-i18n="faq.4.a">Pour intercepter les touches de volume, de luminosité et de rétroéclairage, et afficher leur HUD dans l'encoche à la place des bulles de macOS.</p>
+            <p data-i18n="faq.4.a">Pour intercepter les touches de volume, de luminosité et de rétroéclairage, et afficher leur HUD dans l'encoche à la place des bulles de macOS. Sur macOS 27, Apple a renommé cette autorisation «&nbsp;Contrôle de l'appareil et accès aux données&nbsp;», dans Réglages Système &gt; Confidentialité et sécurité.</p>
           </details>
           <details>
             <summary data-i18n="faq.5.q">Quel est le lien avec Boring Notch&nbsp;?</summary>
@@ -271,7 +285,7 @@
           </details>
           <details>
             <summary data-i18n="faq.6.q">D'où viennent les paroles&nbsp;?</summary>
-            <p data-i18n="faq.6.a">Par défaut, de LRCLIB, une bibliothèque de paroles gratuite et open source qui fonctionne pour tout le monde, avec Spotify, YouTube Music ou Apple Music : les lignes sont synchronisées, les mots estimés. Dans Réglages &gt; Media &gt; Lyrics, vous pouvez choisir Apple Music pour avoir les paroles et le timing exacts de l'app Musique, syllabe par syllabe. Il faut un abonnement Apple Music et une connexion unique à votre compte Apple. Cette source passe par le lecteur web d'Apple Music, pas par une API officielle : elle peut cesser de fonctionner si Apple la modifie, et LRCLIB prend alors le relais.</p>
+            <p data-i18n="faq.6.a">Par défaut, de LRCLIB, une bibliothèque de paroles gratuite et open source qui fonctionne pour tout le monde, avec Spotify, YouTube Music ou Apple Music : les lignes sont synchronisées, et les mots aussi quand LRCLIB a une version synchronisée au mot (sinon ils sont estimés). Dans Réglages &gt; Media &gt; Lyrics, vous pouvez choisir Apple Music pour avoir les paroles et le timing exacts de l'app Musique, syllabe par syllabe. Il faut un abonnement Apple Music et une connexion unique à votre compte Apple. Cette source passe par le lecteur web d'Apple Music, pas par une API officielle : elle peut cesser de fonctionner si Apple la modifie, et LRCLIB prend alors le relais.</p>
           </details>
           <details>
             <summary data-i18n="faq.7.q">Pourquoi macOS me demande-t-il mon mot de passe pour le trousseau&nbsp;?</summary>

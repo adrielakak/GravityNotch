@@ -43,7 +43,7 @@ brew install --cask adrielakak/tap/gravitynotch
 
 1. Open `GravityNotch.dmg`, drag **GravityNotch** into the **Applications** folder, launch it once, and dismiss the macOS warning (**Done**).
 2. Open **System Settings > Privacy & Security**, scroll **all the way down** to the **Security** section, click **Open Anyway**, and confirm.
-3. Follow the startup guide to grant **Accessibility** permission (required to display volume and brightness HUDs in the notch).
+3. Follow the startup guide to grant **Accessibility** permission (required to display volume and brightness HUDs in the notch). On macOS 27 this permission is called **Device Control and Data Access**.
 
 If **Open Anyway** does not appear, run this command in Terminal and reopen the app:
 
