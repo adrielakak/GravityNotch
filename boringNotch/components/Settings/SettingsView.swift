@@ -941,7 +941,7 @@ struct Media: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Label("Your Apple Music session is kept in the macOS keychain, which only lets the app that saved it read it. After each GravityNotch update, macOS sees a new app and asks once for your Mac password to let it read the session again: choose Always Allow. With LRCLIB, the keychain is never used.", systemImage: "key.fill")
+                    Label("Your Apple Music session (an access token, never your Apple Account password) is kept in a GravityNotch file that only your Mac account can read, so updates never ask for your password. Sign Out deletes it.", systemImage: "lock.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

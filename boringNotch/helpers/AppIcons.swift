@@ -7674,9 +7674,8 @@ final class AppleMusicLyricsService: ObservableObject {
         case noWebToken
     }
 
-    /// The session token, read from the keychain at most once per launch. With a self-signed app, macOS asks
-    /// the user's password again for every new build reading the keychain item, so each read is a prompt.
-    /// nil: not read yet; .some(nil): read, nothing stored.
+    /// The session token, read from disk at most once per launch (the one-time move out of the keychain is a
+    /// password prompt). nil: not read yet; .some(nil): read, nothing stored.
     private var cachedUserToken: String??
     private var sourceObserver: AnyCancellable?
 
@@ -7693,7 +7692,7 @@ final class AppleMusicLyricsService: ObservableObject {
             }
     }
 
-    /// LRCLIB users never touch the keychain: no password prompt unless Apple Music is the chosen source
+    /// LRCLIB users never touch the session, nor the keychain of older versions
     func refreshSignInState() {
         isSignedIn = currentUserToken() != nil
     }
@@ -7920,7 +7919,52 @@ final class AppleMusicLyricsService: ObservableObject {
         return regex.matches(in: text, range: range).compactMap { Range($0.range, in: text).map { String(text[$0]) } }
     }
 
-    // MARK: Keychain
+    // MARK: Session storage
+
+    /// The session token lives in a file only the user's account can read (folder 700, file 600), not in the
+    /// keychain: a self-signed app gets a new identity with every update, so the keychain asked for the Mac
+    /// password after each one. It is an Apple Music access token, never the Apple Account password, and
+    /// Sign Out deletes it. Versions 1.3.0 and 1.3.1 kept it in the keychain: it is moved out once.
+    private static var sessionFileURL: URL {
+        let fm = FileManager.default
+        let support = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            ?? fm.temporaryDirectory
+        return support
+            .appendingPathComponent("boringNotch", isDirectory: true)
+            .appendingPathComponent("AppleMusic", isDirectory: true)
+            .appendingPathComponent("session")
+    }
+
+    private static func readUserToken() -> String? {
+        if let data = try? Data(contentsOf: sessionFileURL),
+           let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            return token
+        }
+        guard let legacyToken = readKeychainToken() else { return nil }
+        writeUserToken(legacyToken)
+        deleteKeychainToken()
+        logger.notice("Moved the Apple Music session out of the keychain")
+        return legacyToken
+    }
+
+    private static func writeUserToken(_ token: String) {
+        let fm = FileManager.default
+        let url = sessionFileURL
+        let folder = url.deletingLastPathComponent()
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        try? fm.removeItem(at: url)
+        // Created with its final permissions, so the token is never readable by others, even briefly
+        fm.createFile(atPath: url.path, contents: Data(token.utf8), attributes: [.posixPermissions: 0o600])
+    }
+
+    private static func deleteUserToken() {
+        try? FileManager.default.removeItem(at: sessionFileURL)
+        deleteKeychainToken()
+    }
+
+    // MARK: Keychain (1.3.0 and 1.3.1 only, read once to migrate)
 
     private static var keychainQuery: [String: Any] {
         [
@@ -7930,7 +7974,7 @@ final class AppleMusicLyricsService: ObservableObject {
         ]
     }
 
-    private static func readUserToken() -> String? {
+    private static func readKeychainToken() -> String? {
         var query = keychainQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -7941,21 +7985,13 @@ final class AppleMusicLyricsService: ObservableObject {
         return token
     }
 
-    private static func writeUserToken(_ token: String) {
-        deleteUserToken()
-        var query = keychainQuery
-        query[kSecValueData as String] = Data(token.utf8)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(query as CFDictionary, nil)
-    }
-
-    private static func deleteUserToken() {
+    private static func deleteKeychainToken() {
         SecItemDelete(keychainQuery as CFDictionary)
     }
 }
 
 /// The real music.apple.com page in a window: once the user signs in, the session token it sets is kept
-/// (in the keychain) and the window closes. The page's cookies live in a data store of their own, so Apple
+/// (in a file only the user can read) and the window closes. The page's cookies live in a data store of their own, so Apple
 /// remembers this Mac and a later sign in skips the verification code; signing out deletes them.
 /// Passkeys and iCloud Keychain AutoFill are reserved to browsers, hence the password.
 @MainActor
