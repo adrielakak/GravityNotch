@@ -8917,8 +8917,12 @@ final class AnimatedArtworkService: ObservableObject {
         album.isEmpty ? nil : "\(artist)|\(album)"
     }
 
+    /// A file the cache deleted is never handed to the player: it would show a frozen, unblurred low
+    /// resolution cover instead of the video
     func videoURL(for key: String, albumKey: String?) -> URL? {
-        videoURLs[key] ?? albumKey.flatMap { albumVideoURLs[$0] }
+        [videoURLs[key], albumKey.flatMap { albumVideoURLs[$0] }]
+            .compactMap { $0 }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     func stillImage(for key: String) -> NSImage? {
@@ -8952,7 +8956,10 @@ final class AnimatedArtworkService: ObservableObject {
             guard !withoutMotionArtwork.contains(key) else { return }
             await lookUpWithRetries(title: title, artist: artist, album: album, key: key, albumKey: albumKey)
         }
-        guard videoURL(for: key, albumKey: albumKey) != nil, stillImages[key] == nil else { return }
+        guard let videoFile = videoURL(for: key, albumKey: albumKey) else { return }
+        // Shown again: moves it to the front of the cache so skipping through other tracks keeps it
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: videoFile.path)
+        guard stillImages[key] == nil else { return }
         await prepareCover(key: key, artworkURL: artworkURLs[key], fallbackCover: fallbackCover, isAppleMusic: isAppleMusic)
     }
 
@@ -8976,6 +8983,7 @@ final class AnimatedArtworkService: ObservableObject {
                 if let albumKey { albumVideoURLs[albumKey] = videoFile }
                 videoURLs[key] = videoFile
                 artworkURLs[key] = artworkURL
+                pruneCache(keeping: 20, protecting: videoFile)
                 rememberOnDisk(videoFile, keys: [key, albumKey].compactMap { $0 })
                 return
             case .none:
@@ -9216,26 +9224,37 @@ final class AnimatedArtworkService: ObservableObject {
         do {
             try fileManager.moveItem(at: temporaryURL, to: destination)
         } catch {
-            return nil
+            // Two tracks of the same album downloaded it at the same time: the other copy is just as good
+            guard fileManager.fileExists(atPath: destination.path) else { return nil }
         }
-        pruneCache(in: folder, keeping: 10)
         return destination
     }
 
-    nonisolated private static func pruneCache(in folder: URL, keeping limit: Int) {
+    /// Deletes the least recently used videos and forgets them in memory too: a track whose video was
+    /// pruned is looked up and downloaded again instead of pointing the player at a missing file.
+    private func pruneCache(keeping limit: Int, protecting kept: URL) {
+        guard let folder = Self.indexURL?.deletingLastPathComponent() else { return }
         let fileManager = FileManager.default
         guard let files = try? fileManager.contentsOfDirectory(
             at: folder,
             includingPropertiesForKeys: [.contentModificationDateKey]
         ) else { return }
-        let sorted = files.sorted {
-            let first = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let second = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return first > second
+        let videos = files
+            .filter { $0.pathExtension == "mp4" }
+            .sorted {
+                let first = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let second = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return first > second
+            }
+        var removed: Set<String> = []
+        for file in videos.dropFirst(limit) where file.lastPathComponent != kept.lastPathComponent {
+            if (try? fileManager.removeItem(at: file)) != nil {
+                removed.insert(file.lastPathComponent)
+            }
         }
-        for file in sorted.dropFirst(limit) {
-            try? fileManager.removeItem(at: file)
-        }
+        guard !removed.isEmpty else { return }
+        videoURLs = videoURLs.filter { !removed.contains($0.value.lastPathComponent) }
+        albumVideoURLs = albumVideoURLs.filter { !removed.contains($0.value.lastPathComponent) }
     }
 
     /// Original artwork file of the track playing in Music (usually sharper than what MediaRemote reports).
