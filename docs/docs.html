@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title data-i18n="docs.meta.title">Documentation GravityNotch</title>
+  <meta name="description" data-i18n-attr="content:docs.meta.desc" content="Tout savoir sur GravityNotch : installation, autorisations, musique, paroles, écran verrouillé, HUD, outils, agents IA, vie privée et dépannage.">
+  <meta name="theme-color" content="#070910">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://adrielakak.github.io/GravityNotch/docs.html">
+  <meta property="og:title" content="GravityNotch, documentation">
+  <meta property="og:description" content="Installation, réglages et chaque fonction de GravityNotch expliqués.">
+  <meta property="og:image" content="https://adrielakak.github.io/GravityNotch/assets/og-preview.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="stylesheet" href="styles.css?v=12">
+  <script>document.documentElement.classList.add("js", "at-hero");</script>
+</head>
+<body class="docs-page">
+
+  <header class="nav" id="nav">
+    <div class="nav-inner">
+      <a class="brand" href="index.html" data-i18n-attr="aria-label:nav.home" aria-label="GravityNotch, accueil">
+        <img src="assets/icon.png" alt="" width="28" height="28">
+        <span class="brand-text">
+          <strong>GravityNotch</strong>
+          <small data-i18n="docs.tagline">Documentation</small>
+        </span>
+      </a>
+
+      <div class="island-status" id="island-status" role="button" tabindex="0" data-i18n-attr="aria-label:nav.open" aria-label="Ouvrir la navigation">
+        <span class="island-dot" aria-hidden="true"></span>
+        <span class="island-section-wrap" id="island-section-wrap">
+          <span class="island-index" id="island-index">00</span>
+          <span class="island-sep" aria-hidden="true">·</span>
+          <span class="island-section-name" id="island-section-name">Docs</span>
+        </span>
+        <span class="island-percent" id="island-percent">0%</span>
+      </div>
+
+      <nav class="nav-links" data-i18n-attr="aria-label:nav.main" aria-label="Navigation principale">
+        <a href="index.html" data-i18n="dnav.home">Accueil</a>
+        <a href="#start" data-section="start" data-i18n="dnav.start">Démarrer</a>
+        <a href="#music" data-section="music" data-i18n="dnav.music">Musique</a>
+        <a href="#tools" data-section="tools" data-i18n="dnav.tools">Outils</a>
+        <a href="#agents" data-section="agents" data-i18n="dnav.agents">Agents</a>
+        <a href="#trouble" data-section="trouble" data-i18n="dnav.help">Aide</a>
+      </nav>
+      <button class="nav-lang" id="lang-toggle" type="button" lang="en" aria-label="Switch to English">EN</button>
+      <a class="pill pill-sm pill-light nav-cta" href="https://github.com/adrielakak/GravityNotch/releases/latest/download/GravityNotch.dmg" data-i18n="nav.cta">Télécharger</a>
+    </div>
+    <div class="island-progress-track" aria-hidden="true">
+      <div class="island-progress-bar" id="island-progress-bar"></div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <section class="hero docs-hero" id="intro" data-island-index="00">
+      <div class="hero-bg" aria-hidden="true">
+        <div class="stipple stipple-a"></div>
+        <div class="stipple stipple-b"></div>
+        <div class="horizon"></div>
+      </div>
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="dot"></span> <span data-i18n="docs.eyebrow">Documentation · version 1.4</span></p>
+        <h1 class="display" data-i18n="docs.title"><span class="soft">Tout savoir</span> sur GravityNotch</h1>
+        <p class="lede" data-i18n="docs.lede">L'installation, les autorisations, chaque fonction et chaque réglage, ce qui reste sur votre Mac et ce qui passe par Internet. Pour les curieux, en clair.</p>
+        <div class="docs-quick">
+          <a class="pill pill-glass pill-sm" href="#start" data-i18n="docs.q1">Installer</a>
+          <a class="pill pill-glass pill-sm" href="#permissions" data-i18n="docs.q2" data-i18n-attr="href:docs.q2href">Autorisations</a>
+          <a class="pill pill-glass pill-sm" href="#privacy" data-i18n="docs.q3">Vie privée</a>
+          <a class="pill pill-glass pill-sm" href="#trouble" data-i18n="docs.q4">Dépannage</a>
+        </div>
+      </div>
+    </section>
+
+    <div class="docs-layout wrap">
+
+      <aside class="docs-toc">
+        <nav data-i18n-attr="aria-label:docs.toc" aria-label="Sommaire">
+          <p class="toc-title" data-i18n="docs.toc">Sommaire</p>
+          <ol id="toc">
+            <li><a href="#intro" data-i18n="sec.intro">Introduction</a></li>
+            <li><a href="#start" data-i18n="sec.start">Bien démarrer</a></li>
+            <li><a href="#notch" data-i18n="sec.notch">L'encoche</a></li>
+            <li><a href="#music" data-i18n="sec.music">Musique</a></li>
+            <li><a href="#lyrics" data-i18n="sec.lyrics">Paroles</a></li>
+            <li><a href="#lockscreen" data-i18n="sec.lockscreen">Écran verrouillé</a></li>
+            <li><a href="#hud" data-i18n="sec.hud">HUD et audio</a></li>
+            <li><a href="#tools" data-i18n="sec.tools">Outils</a></li>
+            <li><a href="#agents" data-i18n="sec.agents">Agents IA</a></li>
+            <li><a href="#privacy" data-i18n="sec.privacy">Vie privée</a></li>
+            <li><a href="#trouble" data-i18n="sec.trouble">Dépannage</a></li>
+          </ol>
+        </nav>
+      </aside>
+
+      <article class="docs-content">
+
+        <!-- 01 -->
+        <section class="doc-section" id="start" data-island-index="01">
+          <header class="doc-head"><span class="doc-num">01</span><h2 data-i18n="sec.start">Bien démarrer</h2></header>
+
+          <div data-lang="fr">
+            <p class="doc-lede">GravityNotch tourne sur macOS 14 Sonoma ou plus récent, sur Apple Silicon comme sur Intel. Pas besoin d'encoche : sur un écran qui n'en a pas, une île virtuelle s'affiche en haut de l'écran.</p>
+            <div class="doc-card">
+              <h3>Installer</h3>
+              <ol class="doc-steps">
+                <li>Téléchargez <code>GravityNotch.dmg</code>, ouvrez-le et glissez l'app dans <b>Applications</b>.</li>
+                <li>Lancez-la une fois. macOS la bloque, c'est normal : l'app est gratuite et n'est pas signée avec un certificat Apple payant. Fermez l'alerte.</li>
+                <li>Ouvrez <span class="path">Réglages Système › Confidentialité et sécurité</span>, descendez tout en bas et cliquez sur <b>Ouvrir quand même</b>.</li>
+              </ol>
+              <p>Avec Homebrew, une seule commande suffit, puis les étapes 2 et 3 :</p>
+              <pre class="doc-code"><code>brew install --cask adrielakak/tap/gravitynotch</code></pre>
+              <p class="doc-note">Si <b>Ouvrir quand même</b> n'apparaît pas, lancez <code>xattr -cr /Applications/GravityNotch.app</code> dans le Terminal, puis rouvrez l'app.</p>
+            </div>
+            <div class="doc-card" id="permissions">
+              <h3>Les autorisations, une par une</h3>
+              <p>Au premier lancement, un assistant vous les propose. Toutes sont facultatives : si vous en refusez une, seule la fonction qui en dépend reste éteinte.</p>
+              <div class="doc-table" role="table">
+                <div role="row"><b role="cell">Accessibilité</b><span role="cell">Afficher les HUD de volume, de luminosité et de rétroéclairage à la place des bulles de macOS. Sur macOS 27, Apple l'appelle <b>Contrôle de l'appareil et accès aux données</b>.</span></div>
+                <div role="row"><b role="cell">Automatisation</b><span role="cell">Lire et piloter Musique ou Spotify. macOS la demande la première fois que GravityNotch leur parle.</span></div>
+                <div role="row"><b role="cell">Enregistrement de l'écran</b><span role="cell">La capture de texte (OCR) et les captures envoyées dans le Shelf.</span></div>
+                <div role="row"><b role="cell">Calendrier et Rappels</b><span role="cell">Vos prochains événements et rappels dans l'onglet Home.</span></div>
+                <div role="row"><b role="cell">Caméra</b><span role="cell">Le miroir de l'onglet Home, seulement si vous l'activez.</span></div>
+              </div>
+            </div>
+            <div class="doc-card">
+              <h3>Mises à jour</h3>
+              <p>GravityNotch vérifie les nouvelles versions toutes les heures. Quand une mise à jour est téléchargée, l'encoche affiche «&nbsp;GravityNotch est prêt&nbsp;» : un clic redémarre l'app sur la nouvelle version. Avec Homebrew, <code>brew upgrade --cask gravitynotch</code> fait la même chose.</p>
+            </div>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <p class="doc-lede">GravityNotch runs on macOS 14 Sonoma or later, on Apple Silicon and Intel. No notch needed: on a display without one, a virtual island shows at the top of the screen.</p>
+            <div class="doc-card">
+              <h3>Install</h3>
+              <ol class="doc-steps">
+                <li>Download <code>GravityNotch.dmg</code>, open it and drag the app into <b>Applications</b>.</li>
+                <li>Launch it once. macOS blocks it, which is expected: the app is free and not signed with a paid Apple certificate. Dismiss the alert.</li>
+                <li>Open <span class="path">System Settings › Privacy &amp; Security</span>, scroll all the way down and click <b>Open Anyway</b>.</li>
+              </ol>
+              <p>With Homebrew, one command does it, then steps 2 and 3:</p>
+              <pre class="doc-code"><code>brew install --cask adrielakak/tap/gravitynotch</code></pre>
+              <p class="doc-note">If <b>Open Anyway</b> does not show up, run <code>xattr -cr /Applications/GravityNotch.app</code> in Terminal and open the app again.</p>
+            </div>
+            <div class="doc-card" id="permissions-en">
+              <h3>Permissions, one by one</h3>
+              <p>A startup guide offers them on first launch. All of them are optional: refuse one and only the feature that needs it stays off.</p>
+              <div class="doc-table" role="table">
+                <div role="row"><b role="cell">Accessibility</b><span role="cell">Show the volume, brightness and keyboard backlight HUDs instead of the macOS bubbles. On macOS 27, Apple calls it <b>Device Control and Data Access</b>.</span></div>
+                <div role="row"><b role="cell">Automation</b><span role="cell">Read and control Music or Spotify. macOS asks the first time GravityNotch talks to them.</span></div>
+                <div role="row"><b role="cell">Screen Recording</b><span role="cell">Text capture (OCR) and the screenshots sent to the Shelf.</span></div>
+                <div role="row"><b role="cell">Calendar and Reminders</b><span role="cell">Your upcoming events and reminders in the Home tab.</span></div>
+                <div role="row"><b role="cell">Camera</b><span role="cell">The mirror in the Home tab, only if you turn it on.</span></div>
+              </div>
+            </div>
+            <div class="doc-card">
+              <h3>Updates</h3>
+              <p>GravityNotch checks for new versions every hour. Once an update is downloaded, the notch says "GravityNotch is ready": one click restarts the app on the new version. With Homebrew, <code>brew upgrade --cask gravitynotch</code> does the same.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 02 -->
+        <section class="doc-section" id="notch" data-island-index="02">
+          <header class="doc-head"><span class="doc-num">02</span><h2 data-i18n="sec.notch">L'encoche</h2></header>
+
+          <div data-lang="fr">
+            <p class="doc-lede">Fermée, l'encoche montre ce qui se passe : la musique en cours, un HUD, un agent qui travaille. Ouverte, elle devient un petit centre de contrôle.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Ouvrir et fermer</h3>
+                <ul>
+                  <li>Survolez l'encoche (<span class="path">Réglages › Général › Ouvrir l'encoche au survol</span>) ou cliquez dessus.</li>
+                  <li>Au trackpad, glissez deux doigts vers le bas sur l'encoche pour l'ouvrir, vers le haut pour la fermer.</li>
+                  <li>Au clavier : <kbd>⇧</kbd><kbd>⌘</kbd><kbd>I</kbd>. L'aperçu rapide (sneak peek) : <kbd>⇧</kbd><kbd>⌘</kbd><kbd>H</kbd>. Les deux se changent dans <span class="path">Réglages › Raccourcis</span>.</li>
+                </ul>
+              </div>
+              <div class="doc-card">
+                <h3>Les onglets</h3>
+                <ul>
+                  <li><b>Home</b> : le lecteur, le calendrier et le miroir.</li>
+                  <li><b>Shelf</b> : les fichiers que vous y déposez.</li>
+                  <li><b>Clips</b> : l'historique du presse-papiers.</li>
+                  <li><b>Agents</b> : vos agents IA en direct.</li>
+                </ul>
+                <p>Choisissez ceux qui s'affichent dans <span class="path">Réglages › Apparence › Onglets de l'encoche</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>L'en-tête</h3>
+                <p>En haut de l'encoche ouverte : la capture de texte (clic droit pour plus d'options), Caféine, le minuteur et les réglages. Caféine et le minuteur se masquent dans <span class="path">Réglages › Apparence</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Plusieurs écrans</h3>
+                <p>Dans <span class="path">Réglages › Général</span>, affichez l'encoche sur tous les écrans, ou laissez-la suivre l'écran que vous utilisez.</p>
+              </div>
+            </div>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <p class="doc-lede">Closed, the notch shows what is going on: what's playing, a HUD, an agent at work. Open, it becomes a small control center.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Open and close</h3>
+                <ul>
+                  <li>Hover the notch (<span class="path">Settings › General › Open notch on hover</span>) or click it.</li>
+                  <li>On a trackpad, swipe down with two fingers on the notch to open it, up to close it.</li>
+                  <li>From the keyboard: <kbd>⇧</kbd><kbd>⌘</kbd><kbd>I</kbd>. The sneak peek: <kbd>⇧</kbd><kbd>⌘</kbd><kbd>H</kbd>. Change both in <span class="path">Settings › Shortcuts</span>.</li>
+                </ul>
+              </div>
+              <div class="doc-card">
+                <h3>Tabs</h3>
+                <ul>
+                  <li><b>Home</b>: the player, the calendar and the mirror.</li>
+                  <li><b>Shelf</b>: the files you drop in.</li>
+                  <li><b>Clips</b>: your clipboard history.</li>
+                  <li><b>Agents</b>: your AI agents, live.</li>
+                </ul>
+                <p>Pick the ones you want in <span class="path">Settings › Appearance › Notch Tabs</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>The header</h3>
+                <p>At the top of the open notch: text capture (right-click for more), Caffeine, the timer and settings. Caffeine and the timer can be hidden in <span class="path">Settings › Appearance</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Several displays</h3>
+                <p>In <span class="path">Settings › General</span>, show the notch on every display, or let it follow the one you are using.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 03 -->
+        <section class="doc-section" id="music" data-island-index="03">
+          <header class="doc-head"><span class="doc-num">03</span><h2 data-i18n="sec.music">Musique</h2></header>
+
+          <div data-lang="fr">
+            <p class="doc-lede">Le lecteur suit ce que vous écoutez, avec la pochette, la progression et vos commandes préférées. Fermée, l'encoche garde la pochette et un petit visualiseur.</p>
+            <div class="doc-card">
+              <h3>Choisir la source</h3>
+              <p>Dans <span class="path">Réglages › Média › Source du média</span> :</p>
+              <div class="doc-table" role="table">
+                <div role="row"><b role="cell">Now Playing</b><span role="cell">Tout ce que macOS reconnaît comme lecture en cours : navigateurs, lecteurs vidéo, autres apps.</span></div>
+                <div role="row"><b role="cell">Apple Music</b><span role="cell">L'app Musique, avec favoris, pochettes animées et file d'attente.</span></div>
+                <div role="row"><b role="cell">Spotify</b><span role="cell">L'app Spotify pour Mac.</span></div>
+                <div role="row"><b role="cell">YouTube Music</b><span role="cell">L'app de bureau open source <a href="https://github.com/th-ch/youtube-music" target="_blank" rel="noopener">th-ch/youtube-music</a>, avec son serveur d'API activé.</span></div>
+              </div>
+            </div>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Vos commandes</h3>
+                <p>Dans <span class="path">Réglages › Média › Contrôles des médias</span>, glissez jusqu'à 6 commandes sur les emplacements : aléatoire, précédent, lecture, suivant, répétition, volume, favori, sortie audio, À suivre, <b>Reculer de 15 s</b> et <b>Avancer de 15 s</b>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>À suivre</h3>
+                <p>La file d'attente des prochains morceaux. Avec Apple Music, la lecture automatique n'est lisible que si la file d'attente est affichée dans l'app Musique : macOS ne la donne pas autrement.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Gestes et aperçus</h3>
+                <p>Glissez horizontalement sur l'encoche pour changer de morceau, et recevez un aperçu rapide à chaque changement de lecture. Les deux se règlent dans <span class="path">Réglages › Général</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Couleurs</h3>
+                <p>Le lecteur peut prendre la teinte de la pochette, avec un halo lumineux autour d'elle. À régler dans <span class="path">Réglages › Média</span> et <span class="path">Réglages › Apparence</span>.</p>
+              </div>
+            </div>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <p class="doc-lede">The player follows what you listen to, with the cover, the progress and your favorite controls. Closed, the notch keeps the cover and a small visualizer.</p>
+            <div class="doc-card">
+              <h3>Pick the source</h3>
+              <p>In <span class="path">Settings › Media › Media Source</span>:</p>
+              <div class="doc-table" role="table">
+                <div role="row"><b role="cell">Now Playing</b><span role="cell">Anything macOS sees as playing: browsers, video players, other apps.</span></div>
+                <div role="row"><b role="cell">Apple Music</b><span role="cell">The Music app, with favorites, animated covers and the queue.</span></div>
+                <div role="row"><b role="cell">Spotify</b><span role="cell">The Spotify app for Mac.</span></div>
+                <div role="row"><b role="cell">YouTube Music</b><span role="cell">The open source desktop app <a href="https://github.com/th-ch/youtube-music" target="_blank" rel="noopener">th-ch/youtube-music</a>, with its API server turned on.</span></div>
+              </div>
+            </div>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Your controls</h3>
+                <p>In <span class="path">Settings › Media › Media controls</span>, drag up to 6 controls onto the slots: shuffle, previous, play, next, repeat, volume, favorite, audio output, Playing Next, <b>Backward 15s</b> and <b>Forward 15s</b>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Playing Next</h3>
+                <p>The queue of upcoming tracks. With Apple Music, Autoplay can only be read while the queue is shown in the Music app: macOS does not expose it otherwise.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Gestures and previews</h3>
+                <p>Swipe sideways on the notch to change tracks, and get a quick preview whenever playback changes. Both live in <span class="path">Settings › General</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Colors</h3>
+                <p>The player can take the tint of the cover, with a soft glow around it. Set it in <span class="path">Settings › Media</span> and <span class="path">Settings › Appearance</span>.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 04 -->
+        <section class="doc-section" id="lyrics" data-island-index="04">
+          <header class="doc-head"><span class="doc-num">04</span><h2 data-i18n="sec.lyrics">Paroles</h2></header>
+
+          <div data-lang="fr">
+            <p class="doc-lede">Les paroles synchronisées s'affichent sous le nom de l'artiste et sur l'écran verrouillé. Elles se choisissent dans <span class="path">Réglages › Média › Paroles</span>.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>LRCLIB, par défaut</h3>
+                <p>Une bibliothèque de paroles gratuite et open source, pour tout le monde et avec tous les lecteurs. Les lignes sont synchronisées. Quand le morceau existe en version synchronisée au mot, chaque mot s'allume à son vrai moment ; sinon, le rythme des mots est estimé.</p>
+                <p>Pour éviter les mauvaises paroles, GravityNotch vérifie le titre et la durée du morceau (à 4 secondes près).</p>
+              </div>
+              <div class="doc-card">
+                <h3>Apple Music, au timing exact</h3>
+                <p>Les paroles de l'app Musique, syllabe par syllabe. Il faut un abonnement Apple Music et une connexion unique à votre compte Apple depuis les réglages.</p>
+                <p>Cette source passe par le lecteur web d'Apple Music, pas par une API officielle : si Apple la modifie, LRCLIB prend le relais automatiquement.</p>
+              </div>
+            </div>
+            <p class="doc-note">Pendant une pause instrumentale de plus de 5 secondes, trois points patientent à la place des paroles.</p>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <p class="doc-lede">Synced lyrics show below the artist name and on the lock screen. Pick their source in <span class="path">Settings › Media › Lyrics</span>.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>LRCLIB, the default</h3>
+                <p>A free and open source lyrics library, for everyone and with every player. Lines are timed. When the song has a word synced version, each word lights up at its real time; otherwise the words are paced by estimate.</p>
+                <p>To avoid wrong lyrics, GravityNotch checks the title and the length of the song (within 4 seconds).</p>
+              </div>
+              <div class="doc-card">
+                <h3>Apple Music, exact timing</h3>
+                <p>The lyrics of the Music app, syllable by syllable. It needs an Apple Music subscription and a one-time sign in to your Apple Account from the settings.</p>
+                <p>This source goes through the Apple Music web player, not an official API: if Apple changes it, LRCLIB takes over on its own.</p>
+              </div>
+            </div>
+            <p class="doc-note">During an instrumental break longer than 5 seconds, three dots wait in place of the lyrics.</p>
+          </div>
+        </section>
+
+        <!-- 05 -->
+        <section class="doc-section" id="lockscreen" data-island-index="05">
+          <header class="doc-head"><span class="doc-num">05</span><h2 data-i18n="sec.lockscreen">Écran verrouillé</h2></header>
+
+          <div data-lang="fr">
+            <p class="doc-lede">Même Mac verrouillé, la musique reste à portée de main. Activez-le dans <span class="path">Réglages › Média › Lecteur de musique sur l'écran verrouillé</span>.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Deux dispositions</h3>
+                <p><b>Carte</b> : un lecteur compact avec pochette, commandes et paroles. <b>Plein écran</b> : le lecteur à gauche et les paroles à droite, comme dans Apple Music, mot par mot et en vague.</p>
+                <p>Seules les paroles synchronisées s'affichent ; un morceau sans paroles synchronisées garde un lecteur simple.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Pochettes animées</h3>
+                <p>Avec Apple Music, quand un album a une pochette animée, elle bouge aussi sur l'écran verrouillé. Elle est préparée dès le début du morceau, et les 20 dernières restent en cache pour s'afficher tout de suite.</p>
+              </div>
+            </div>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <p class="doc-lede">Even with your Mac locked, the music stays at hand. Turn it on in <span class="path">Settings › Media › Lock Screen Music Player</span>.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Two layouts</h3>
+                <p><b>Card</b>: a compact player with cover, controls and lyrics. <b>Full screen</b>: the player on the left and the lyrics on the right, like in Apple Music, word by word, in a wave.</p>
+                <p>Only synced lyrics are shown; a song without synced lyrics keeps a simple player.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Animated covers</h3>
+                <p>With Apple Music, when an album has an animated cover, it moves on the lock screen too. It is prepared as soon as the song starts, and the last 20 stay cached so they show at once.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 06 -->
+        <section class="doc-section" id="hud" data-island-index="06">
+          <header class="doc-head"><span class="doc-num">06</span><h2 data-i18n="sec.hud">HUD et audio</h2></header>
+
+          <div data-lang="fr">
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Volume, luminosité, clavier</h3>
+                <p>Les touches de volume, de luminosité et de rétroéclairage affichent leur niveau dans l'encoche au lieu des bulles de macOS. À activer dans <span class="path">Réglages › HUDs › Remplacer le HUD système</span>, avec l'autorisation Accessibilité.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Verr. Maj</h3>
+                <p>Un indicateur discret apparaît dans l'encoche quand le verrouillage des majuscules s'active.</p>
+              </div>
+              <div class="doc-card">
+                <h3>AirPods et Bluetooth</h3>
+                <p>À la connexion, l'encoche montre le modèle et un anneau de batterie, avec le détail gauche, droite et boîtier au survol. Les changements de mode d'écoute s'affichent aussi. À régler dans <span class="path">Réglages › HUDs › AirPods &amp; Bluetooth</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Sortie audio</h3>
+                <p>Passez des haut-parleurs aux AirPods ou à un écran en un clic, depuis la commande du lecteur ou le clic droit sur le bouton de capture.</p>
+              </div>
+            </div>
+            <p class="doc-note">Sous macOS 27, la bannière «&nbsp;Connectés&nbsp;» d'Apple ne peut plus être masquée par aucune app : elle s'affiche à côté de l'animation de GravityNotch.</p>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Volume, brightness, keyboard</h3>
+                <p>The volume, brightness and keyboard backlight keys show their level in the notch instead of the macOS bubbles. Turn it on in <span class="path">Settings › HUDs › Replace system HUD</span>, with the Accessibility permission.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Caps Lock</h3>
+                <p>A subtle indicator shows in the notch when Caps Lock turns on.</p>
+              </div>
+              <div class="doc-card">
+                <h3>AirPods and Bluetooth</h3>
+                <p>When they connect, the notch shows the model and a battery ring, with the left, right and case detail on hover. Listening mode changes show up too. Set it in <span class="path">Settings › HUDs › AirPods &amp; Bluetooth</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Audio output</h3>
+                <p>Switch from the speakers to AirPods or a display in one click, from the player control or by right-clicking the capture button.</p>
+              </div>
+            </div>
+            <p class="doc-note">On macOS 27, Apple's "Connected" banner can no longer be hidden by any app: it shows next to the GravityNotch animation.</p>
+          </div>
+        </section>
+
+        <!-- 07 -->
+        <section class="doc-section" id="tools" data-island-index="07">
+          <header class="doc-head"><span class="doc-num">07</span><h2 data-i18n="sec.tools">Outils</h2></header>
+
+          <div data-lang="fr">
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Shelf</h3>
+                <p>Déposez un fichier sur l'encoche pour le garder sous la main. Ensuite : extraire le texte (OCR), créer un ZIP, convertir en PNG, supprimer le fond d'une image, ou partager par AirDrop.</p>
+                <p class="doc-note">Le <b>Partage rapide</b> envoie le fichier sur 0x0.st et vous donne un lien public : n'y mettez rien de privé.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Clips</h3>
+                <p>L'historique du presse-papiers : textes, liens, fichiers et couleurs, avec recherche et épinglage. Les mots de passe copiés depuis un gestionnaire de mots de passe ne sont jamais enregistrés. Gardez l'historique après un redémarrage dans <span class="path">Réglages › Apparence</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Capture de texte</h3>
+                <p>Cliquez sur le bouton de capture de l'en-tête, sélectionnez une zone de l'écran : le texte reconnu est déjà dans le presse-papiers. Clic droit pour capturer une zone ou une fenêtre directement dans le Shelf.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Caféine</h3>
+                <p>Empêchez la mise en veille de 5 minutes à 8 heures avec la réglette, ou sans limite.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Minuteur</h3>
+                <p>Choisissez une durée en glissant la réglette. Le compte à rebours reste dans l'encoche, avec pause et arrêt, et sonne à la fin.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Calendrier, rappels, miroir</h3>
+                <p>L'onglet Home montre vos prochains événements et rappels (choisissez les calendriers dans <span class="path">Réglages › Calendrier</span>), et peut afficher votre caméra comme un miroir.</p>
+              </div>
+            </div>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Shelf</h3>
+                <p>Drop a file on the notch to keep it at hand. Then: extract its text (OCR), make a ZIP, convert to PNG, remove an image's background, or share with AirDrop.</p>
+                <p class="doc-note"><b>Quick Share</b> uploads the file to 0x0.st and gives you a public link: never put anything private there.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Clips</h3>
+                <p>Your clipboard history: text, links, files and colors, with search and pinning. Passwords copied from a password manager are never saved. Keep the history across restarts in <span class="path">Settings › Appearance</span>.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Text capture</h3>
+                <p>Click the capture button in the header and select an area of the screen: the recognized text is already on your clipboard. Right-click to capture an area or a window straight into the Shelf.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Caffeine</h3>
+                <p>Keep your Mac awake from 5 minutes to 8 hours with the ruler, or with no limit.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Timer</h3>
+                <p>Pick a duration by dragging the ruler. The countdown stays in the notch, with pause and stop, and rings when it's done.</p>
+              </div>
+              <div class="doc-card">
+                <h3>Calendar, reminders, mirror</h3>
+                <p>The Home tab shows your upcoming events and reminders (pick the calendars in <span class="path">Settings › Calendar</span>), and can show your camera as a mirror.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 08 -->
+        <section class="doc-section" id="agents" data-island-index="08">
+          <header class="doc-head"><span class="doc-num">08</span><h2 data-i18n="sec.agents">Agents IA</h2></header>
+
+          <div data-lang="fr">
+            <p class="doc-lede">GravityNotch suit <b>Claude Code</b>, <b>Codex CLI</b> et <b>Antigravity</b> (l'app comme l'IDE) pendant qu'ils travaillent, sans que vous ayez à garder leur fenêtre ouverte.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>Ce que vous voyez</h3>
+                <ul>
+                  <li>Dans l'encoche fermée : un anneau aux couleurs de l'agent tant qu'il travaille, puis une coche verte quand il a fini.</li>
+                  <li>Dans l'onglet Agents : le projet, l'étape en cours, le contexte utilisé, les outils appelés.</li>
+                  <li>Le fichier en train d'être modifié, avec sa barre verte et rouge de lignes ajoutées et supprimées.</li>
+                </ul>
+              </div>
+              <div class="doc-card">
+                <h3>Quand il a besoin de vous</h3>
+                <p>Une bulle apparaît quand un agent termine ou attend une réponse ; un clic ramène l'app où il tourne. Si un agent s'arrête sur une erreur (plus de crédits, quota atteint), l'anneau s'arrête aussitôt, sans coche verte.</p>
+              </div>
+            </div>
+            <div class="doc-card">
+              <h3>Réglages</h3>
+              <p>Dans <span class="path">Réglages › Apparence › Agents de code</span> : afficher l'onglet Agents, montrer les agents dans l'encoche fermée, la bulle de fin, donner la priorité aux agents quand la musique est en pause, et ouvrir l'onglet Agents automatiquement quand un agent travaille.</p>
+              <p class="doc-note">Tout se passe en local : GravityNotch lit seulement les journaux que ces outils écrivent déjà sur votre Mac (<code>~/.claude</code>, <code>~/.codex</code>, <code>~/.gemini/antigravity</code>). Il ne les modifie pas et n'envoie rien.</p>
+            </div>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <p class="doc-lede">GravityNotch follows <b>Claude Code</b>, <b>Codex CLI</b> and <b>Antigravity</b> (both the app and the IDE) while they work, without keeping their window open.</p>
+            <div class="doc-grid">
+              <div class="doc-card">
+                <h3>What you see</h3>
+                <ul>
+                  <li>In the closed notch: a ring in the agent's colors while it works, then a green check when it's done.</li>
+                  <li>In the Agents tab: the project, the current step, the context used, the tools called.</li>
+                  <li>The file being edited, with its green and red bar of added and removed lines.</li>
+                </ul>
+              </div>
+              <div class="doc-card">
+                <h3>When it needs you</h3>
+                <p>A bubble shows up when an agent finishes or waits for an answer; one click brings back the app it runs in. If an agent stops on an error (no credits left, quota reached), the ring stops at once, without the green check.</p>
+              </div>
+            </div>
+            <div class="doc-card">
+              <h3>Settings</h3>
+              <p>In <span class="path">Settings › Appearance › Coding Agents</span>: show the Agents tab, show agents in the closed notch, the speech bubble, prioritize agents when music is paused, and open the Agents tab automatically while an agent works.</p>
+              <p class="doc-note">Everything stays local: GravityNotch only reads the logs these tools already write on your Mac (<code>~/.claude</code>, <code>~/.codex</code>, <code>~/.gemini/antigravity</code>). It never changes them and sends nothing.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 09 -->
+        <section class="doc-section" id="privacy" data-island-index="09">
+          <header class="doc-head"><span class="doc-num">09</span><h2 data-i18n="sec.privacy">Vie privée</h2></header>
+
+          <div data-lang="fr">
+            <p class="doc-lede">Pas de compte, pas de publicité, pas de statistiques d'usage. Le code est public sur <a href="https://github.com/adrielakak/GravityNotch" target="_blank" rel="noopener">GitHub</a> : vous pouvez tout vérifier.</p>
+            <div class="doc-card">
+              <h3>Ce qui passe par Internet, et quand</h3>
+              <div class="doc-table" role="table">
+                <div role="row"><b role="cell">LRCLIB</b><span role="cell">Le titre, l'artiste, l'album et la durée du morceau, pour trouver ses paroles.</span></div>
+                <div role="row"><b role="cell">Apple</b><span role="cell">Les paroles Apple Music si vous avez choisi cette source, et les pochettes animées des albums Apple Music.</span></div>
+                <div role="row"><b role="cell">Pochettes</b><span role="cell">Les images de pochette que Spotify et YouTube Music indiquent.</span></div>
+                <div role="row"><b role="cell">Mises à jour</b><span role="cell">Une vérification par heure sur ce site, puis le téléchargement depuis GitHub.</span></div>
+                <div role="row"><b role="cell">0x0.st</b><span role="cell">Uniquement le fichier que vous partagez avec le Partage rapide.</span></div>
+              </div>
+            </div>
+            <p class="doc-note">Votre session Apple Music (un jeton d'accès, jamais le mot de passe de votre compte Apple) est gardée dans un fichier privé de GravityNotch. La déconnexion le supprime.</p>
+          </div>
+
+          <div data-lang="en" lang="en">
+            <p class="doc-lede">No account, no ads, no usage statistics. The code is public on <a href="https://github.com/adrielakak/GravityNotch" target="_blank" rel="noopener">GitHub</a>: you can check everything.</p>
+            <div class="doc-card">
+              <h3>What goes over the Internet, and when</h3>
+              <div class="doc-table" role="table">
+                <div role="row"><b role="cell">LRCLIB</b><span role="cell">The song's title, artist, album and length, to find its lyrics.</span></div>
+                <div role="row"><b role="cell">Apple</b><span role="cell">Apple Music lyrics if you picked that source, and the animated covers of Apple Music albums.</span></div>
+                <div role="row"><b role="cell">Covers</b><span role="cell">The cover images Spotify and YouTube Music point to.</span></div>
+                <div role="row"><b role="cell">Updates</b><span role="cell">One check per hour on this website, then the download from GitHub.</span></div>
+                <div role="row"><b role="cell">0x0.st</b><span role="cell">Only the file you share with Quick Share.</span></div>
+              </div>
+            </div>
+            <p class="doc-note">Your Apple Music session (an access token, never your Apple Account password) is kept in a private GravityNotch file. Signing out deletes it.</p>
+          </div>
+        </section>
+
+        <!-- 10 -->
+        <section class="doc-section" id="trouble" data-island-index="10">
+          <header class="doc-head"><span class="doc-num">10</span><h2 data-i18n="sec.trouble">Dépannage</h2></header>
+
+          <div data-lang="fr" class="faq">
+            <details>
+              <summary>macOS refuse d'ouvrir l'app</summary>
+              <p>C'est l'alerte normale pour une app sans certificat Apple payant. Ouvrez <span class="path">Réglages Système › Confidentialité et sécurité</span> et cliquez sur <b>Ouvrir quand même</b> tout en bas. S'il n'apparaît pas, lancez <code>xattr -cr /Applications/GravityNotch.app</code> dans le Terminal.</p>
+            </details>
+            <details>
+              <summary>Les bulles de volume de macOS s'affichent encore</summary>
+              <p>Vérifiez que GravityNotch est coché dans <span class="path">Réglages Système › Confidentialité et sécurité › Accessibilité</span> (sur macOS 27 : <b>Contrôle de l'appareil et accès aux données</b>), et que <span class="path">Réglages › HUDs › Remplacer le HUD système</span> est activé. Si c'est déjà le cas, retirez GravityNotch de la liste avec «&nbsp;−&nbsp;», ajoutez-le de nouveau avec «&nbsp;+&nbsp;», puis relancez l'app.</p>
+            </details>
+            <details>
+              <summary>Ma musique n'apparaît pas</summary>
+              <p>Choisissez la bonne source dans <span class="path">Réglages › Média › Source du média</span>. Pour Musique et Spotify, autorisez GravityNotch dans <span class="path">Réglages Système › Confidentialité et sécurité › Automatisation</span>. Pour YouTube Music, activez le serveur d'API de l'app de bureau.</p>
+            </details>
+            <details>
+              <summary>Pas de paroles pour un morceau</summary>
+              <p>LRCLIB n'a peut-être pas ce morceau, ou pas dans une version de la même durée. Avec un abonnement, essayez la source Apple Music dans <span class="path">Réglages › Média › Paroles</span>.</p>
+            </details>
+            <details>
+              <summary>Signaler un bug</summary>
+              <p>Ouvrez une issue sur <a href="https://github.com/adrielakak/GravityNotch/issues" target="_blank" rel="noopener">GitHub</a> avec votre version de macOS, celle de GravityNotch (<span class="path">Réglages › À propos</span>) et, si possible, une capture d'écran.</p>
+            </details>
+          </div>
+
+          <div data-lang="en" lang="en" class="faq">
+            <details>
+              <summary>macOS won't open the app</summary>
+              <p>That's the usual alert for an app without a paid Apple certificate. Open <span class="path">System Settings › Privacy &amp; Security</span> and click <b>Open Anyway</b> at the very bottom. If it doesn't show up, run <code>xattr -cr /Applications/GravityNotch.app</code> in Terminal.</p>
+            </details>
+            <details>
+              <summary>The macOS volume bubbles still show</summary>
+              <p>Check that GravityNotch is turned on in <span class="path">System Settings › Privacy &amp; Security › Accessibility</span> (on macOS 27: <b>Device Control and Data Access</b>), and that <span class="path">Settings › HUDs › Replace system HUD</span> is on. If it already is, remove GravityNotch from the list with "−", add it back with "+", then relaunch the app.</p>
+            </details>
+            <details>
+              <summary>My music doesn't show</summary>
+              <p>Pick the right source in <span class="path">Settings › Media › Media Source</span>. For Music and Spotify, allow GravityNotch in <span class="path">System Settings › Privacy &amp; Security › Automation</span>. For YouTube Music, turn on the desktop app's API server.</p>
+            </details>
+            <details>
+              <summary>No lyrics for a song</summary>
+              <p>LRCLIB may not have that song, or not in a version of the same length. With a subscription, try the Apple Music source in <span class="path">Settings › Media › Lyrics</span>.</p>
+            </details>
+            <details>
+              <summary>Report a bug</summary>
+              <p>Open an issue on <a href="https://github.com/adrielakak/GravityNotch/issues" target="_blank" rel="noopener">GitHub</a> with your macOS version, your GravityNotch version (<span class="path">Settings › About</span>) and, if you can, a screenshot.</p>
+            </details>
+          </div>
+        </section>
+
+      </article>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <div class="brand">
+        <img src="assets/icon.png" alt="" width="24" height="24">
+        <strong>GravityNotch</strong>
+      </div>
+      <p data-i18n="footer.text">Fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a>, distribué sous licence GPL-3.0. Non affilié à Apple.</p>
+      <div class="footer-links">
+        <a href="index.html" data-i18n="dnav.home">Accueil</a>
+        <a href="https://github.com/adrielakak/GravityNotch" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/adrielakak/GravityNotch/releases" target="_blank" rel="noopener">Releases</a>
+        <a href="https://github.com/adrielakak/GravityNotch/issues" target="_blank" rel="noopener" data-i18n="footer.bug">Signaler un bug</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="i18n.js?v=12"></script>
+  <script src="script.js?v=12"></script>
+  <script>
+    (() => {
+      const links = [...document.querySelectorAll("#toc a")];
+      const targets = links.map((a) => document.querySelector(a.getAttribute("href")));
+      let pending = false;
+      const update = () => {
+        pending = false;
+        const probe = window.scrollY + window.innerHeight * 0.35;
+        const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 24;
+        let active = 0;
+        targets.forEach((el, i) => { if (el && el.getBoundingClientRect().top + window.scrollY <= probe) active = i; });
+        if (atEnd) active = targets.length - 1;
+        links.forEach((a, i) => a.classList.toggle("is-active", i === active));
+      };
+      const schedule = () => { if (!pending) { pending = true; requestAnimationFrame(update); } };
+      window.addEventListener("scroll", schedule, { passive: true });
+      window.addEventListener("resize", schedule, { passive: true });
+      update();
+    })();
+  </script>
+</body>
+</html>

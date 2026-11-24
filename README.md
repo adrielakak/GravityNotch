@@ -51,6 +51,8 @@ If **Open Anyway** does not appear, run this command in Terminal and reopen the 
 xattr -cr /Applications/GravityNotch.app
 ```
 
+Curious about a feature, a permission or what goes over the network? Everything is explained in the [documentation](https://adrielakak.github.io/GravityNotch/docs.html).
+
 All releases are available on the [Releases](https://github.com/adrielakak/GravityNotch/releases) page. Starting with **v1.2.6**, built-in Sparkle updates check and install new versions automatically from GitHub.
 
 ---

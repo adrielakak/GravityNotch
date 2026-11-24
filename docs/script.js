@@ -82,13 +82,16 @@
 
   if (nav && indexEl && nameEl && percentEl && progressBar && statusBtn) {
     const navLinks = [...nav.querySelectorAll(".nav-links a[data-section]")];
-    const sections = [
+    // A page can declare its own tracked sections with data-island-index (the docs page does)
+    const declared = [...document.querySelectorAll("[data-island-index]")]
+      .map((el) => ({ id: el.id, index: el.dataset.islandIndex }));
+    const sections = (declared.length ? declared : [
       { id: "hero", index: "00" },
       { id: "demo", index: "01" },
       { id: "features", index: "02" },
       { id: "install", index: "03" },
       { id: "faq", index: "04" }
-    ].map((s) => ({ ...s, el: document.getElementById(s.id) })).filter((s) => s.el);
+    ]).map((s) => ({ ...s, el: document.getElementById(s.id) })).filter((s) => s.el);
 
     const hoverMedia = window.matchMedia("(hover: hover) and (pointer: fine)");
     let lastSectionId = null;
