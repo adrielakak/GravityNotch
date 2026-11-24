@@ -7517,7 +7517,7 @@ struct LockScreenArtworkWallpaperView: View {
     }
 }
 
-// MARK: - Apple Music lyrics (word timing from the Apple Music catalog)
+// MARK: - Word timed lyrics (Apple Music catalog, or LRCLIB entries with word sync)
 
 struct TimedLyricWord: Equatable {
     let begin: Double
@@ -7666,6 +7666,98 @@ final class AppleLyricsTTMLParser: NSObject, XMLParserDelegate {
         default:
             break
         }
+    }
+}
+
+/// Reads LRCLIB's `lyricsfile`, a YAML document whose `lines` list holds `text`, `start_ms`, `end_ms` and, on
+/// entries marked `hasWordSync`, a `words` list where each word only has a `start_ms`: a word ends when the
+/// next one starts, the last one with its line. Returns nothing unless at least one line is timed by word.
+enum LRCLibLyricsFileParser {
+    static func parse(_ yaml: String) -> [TimedLyricLine] {
+        struct Line {
+            var text = ""
+            var start: Double?
+            var end: Double?
+            var words: [(text: String, start: Double?)] = []
+        }
+        var lines: [Line] = []
+        var inLines = false
+
+        for raw in yaml.split(separator: "\n", omittingEmptySubsequences: false) {
+            let row = String(raw)
+            if let first = row.first, first != " ", first != "-" {
+                inLines = row.hasPrefix("lines:")
+                continue
+            }
+            guard inLines else { continue }
+            if let value = Self.value(row, key: "- text:", indent: 0) {
+                lines.append(Line(text: unquoted(value)))
+            } else if lines.isEmpty {
+                continue
+            } else if let value = Self.value(row, key: "start_ms:", indent: 2) {
+                lines[lines.count - 1].start = milliseconds(value)
+            } else if let value = Self.value(row, key: "end_ms:", indent: 2) {
+                lines[lines.count - 1].end = milliseconds(value)
+            } else if let value = Self.value(row, key: "- text:", indent: 2) {
+                lines[lines.count - 1].words.append((unquoted(value), nil))
+            } else if let value = Self.value(row, key: "start_ms:", indent: 4), !lines[lines.count - 1].words.isEmpty {
+                let last = lines[lines.count - 1].words.count - 1
+                lines[lines.count - 1].words[last].start = milliseconds(value)
+            }
+        }
+
+        var result: [TimedLyricLine] = []
+        for (index, line) in lines.enumerated() {
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, let begin = line.start else { continue }
+            let nextStart = lines[(index + 1)...].lazy.compactMap(\.start).first ?? .infinity
+
+            let timed = line.words.compactMap { word in word.start.map { (text: word.text, start: $0) } }
+            var starts = timed.map(\.start)
+            // end_ms often lands right on the last word's start: give that word at least a typical word length
+            let spans = zip(starts, starts.dropFirst()).map { $1 - $0 }.sorted()
+            let typical = min(1, max(0.3, spans.isEmpty ? 0.5 : spans[spans.count / 2]))
+            let sungEnd = min(nextStart, max(line.end ?? begin, (starts.last ?? begin) + typical))
+            starts.append(sungEnd)
+
+            var words: [TimedLyricWord] = []
+            for (position, word) in timed.enumerated() {
+                let wordText = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !wordText.isEmpty else { continue }
+                words.append(TimedLyricWord(begin: word.start, end: max(word.start, starts[position + 1]),
+                                            text: wordText, followedBySpace: word.text.last?.isWhitespace ?? false))
+            }
+            // A held note is not an instrumental break: the line runs on to the next one unless 5 s of
+            // silence remain once the last word is given time to ring out
+            let end = nextStart - (sungEnd + 1.5) >= 5 ? sungEnd + 1.5 : nextStart
+            result.append(TimedLyricLine(begin: begin, end: max(begin, end), text: text, words: words))
+        }
+        guard result.contains(where: { !$0.words.isEmpty }) else { return [] }
+        return result.sorted { $0.begin < $1.begin }
+    }
+
+    /// The value after `key` when the row starts with exactly `indent` spaces then `key`
+    private static func value(_ row: String, key: String, indent: Int) -> String? {
+        let prefix = String(repeating: " ", count: indent) + key
+        guard row.hasPrefix(prefix) else { return nil }
+        return String(row.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func milliseconds(_ value: String) -> Double? {
+        Double(unquoted(value)).map { $0 / 1000 }
+    }
+
+    /// YAML scalars as LRCLIB writes them: plain, 'single quoted' (with '' for a quote) or "double quoted"
+    private static func unquoted(_ value: String) -> String {
+        if value.count >= 2, value.hasPrefix("'"), value.hasSuffix("'") {
+            return String(value.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'")
+        }
+        if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\""),
+           let data = value.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(String.self, from: data) {
+            return decoded
+        }
+        return value
     }
 }
 
@@ -8134,10 +8226,10 @@ private struct FullScreenLyricLine: Identifiable, Equatable {
     var isInterlude: Bool = false
     /// When the line stops, if known (an interlude, or a line followed by one)
     var end: Double? = nil
-    /// Real word (or syllable) timing, from Apple Music lyrics only
+    /// Real word (or syllable) timing, from Apple Music or a word synced LRCLIB entry
     var words: [TimedLyricWord] = []
 
-    /// Apple Music gives the real end of every line, so the breaks are known exactly
+    /// Apple Music and word synced LRCLIB entries give the real end of every line, so the breaks are known exactly
     static func fromTimed(_ timed: [TimedLyricLine]) -> [FullScreenLyricLine] {
         var result: [FullScreenLyricLine] = []
         func add(_ line: FullScreenLyricLine) {
@@ -8406,14 +8498,15 @@ struct LockScreenLyricsLayoutView: View {
                     .font(.system(size: 30, weight: .bold))
                     .foregroundStyle(.white.opacity(0.4))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .padding(.horizontal, LockScreenFullLyricsView.edgeMargin)
             } else {
                 LockScreenFullLyricsView(lines: currentLines, isSynced: !musicManager.syncedLyrics.isEmpty)
             }
         }
         .padding(.top, 96)
         .padding(.bottom, size.height * 0.06)
-        .padding(.leading, 24)
-        .padding(.trailing, max(60, size.width * 0.06))
+        .padding(.leading, 24 - LockScreenFullLyricsView.edgeMargin)
+        .padding(.trailing, max(60, size.width * 0.06) - LockScreenFullLyricsView.edgeMargin)
     }
 
     private func topBar(size: CGSize) -> some View {
@@ -8524,6 +8617,9 @@ private struct LockScreenFullLyricsView: View {
     private static let fontSize: CGFloat = 30
     private static let estimatedHeight: CGFloat = 40
     private static let interludeHeight: CGFloat = 30
+    /// Room on both sides of the text inside the clipped column, so the blur of the inactive lines and the
+    /// glow of the active one fade out instead of being cut along a hard vertical edge
+    static let edgeMargin: CGFloat = 24
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.1 : 1.0)) { context in
@@ -8552,8 +8648,8 @@ private struct LockScreenFullLyricsView: View {
 
         return ZStack(alignment: .topLeading) {
             ForEach(lines) { line in
-                row(line, active: active, width: size.width)
-                    .offset(y: tops[line.id] + shift)
+                row(line, active: active, width: max(0, size.width - 2 * Self.edgeMargin))
+                    .offset(x: Self.edgeMargin, y: tops[line.id] + shift)
                     .animation(
                         .spring(response: 0.7, dampingFraction: 0.86).delay(waveDelay(for: line.id, active: active)),
                         value: active
@@ -8686,7 +8782,7 @@ private struct LockScreenKaraokeLine: View {
     let text: String
     let start: Double
     let end: Double
-    /// Real timing from Apple Music; empty with LRCLIB, where it is estimated
+    /// Real timing (Apple Music, or LRCLIB word sync); empty when only lines are timed, where it is estimated
     var words: [TimedLyricWord] = []
     let fontSize: CGFloat
 
@@ -8698,7 +8794,7 @@ private struct LockScreenKaraokeLine: View {
         }
     }
 
-    /// Each word or syllable lights up over the exact time Apple Music gives for it
+    /// Each word or syllable lights up over its exact time
     private func timedText(at elapsed: Double) -> Text {
         var result = Text(verbatim: "")
         for (index, word) in words.enumerated() {
@@ -8710,7 +8806,7 @@ private struct LockScreenKaraokeLine: View {
         return result
     }
 
-    /// LRCLIB only times whole lines, so the line is spread over its words, weighted by their length, to
+    /// Most LRCLIB entries only time whole lines, so the line is spread over its words, weighted by their length, to
     /// estimate when each one is sung. A line is usually sung faster than the gap before the next one.
     private func estimatedText(at elapsed: Double) -> Text {
         let words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)

@@ -27983,18 +27983,18 @@
         }
       }
     },
-    "LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, words are estimated.": {
+    "LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, and words too when the song has word sync; otherwise they are estimated.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, words are estimated."
+            "value": "LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, and words too when the song has word sync; otherwise they are estimated."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "LRCLIB est une bibliothèque de paroles gratuite et open source qui fonctionne pour tout le monde. Les lignes sont synchronisées, les mots sont estimés."
+            "value": "LRCLIB est une bibliothèque de paroles gratuite et open source qui fonctionne pour tout le monde. Les lignes sont synchronisées, et les mots aussi quand la chanson a une synchro mot à mot ; sinon ils sont estimés."
           }
         }
       }

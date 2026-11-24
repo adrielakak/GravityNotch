@@ -51,7 +51,8 @@ class MusicManager: ObservableObject {
     @Published var currentLyrics: String = ""
     @Published var isFetchingLyrics: Bool = false
     @Published var syncedLyrics: [(time: Double, text: String)] = []
-    /// Apple Music lyrics with the real begin and end of every line and word; empty with LRCLIB lyrics
+    /// Lyrics with the real begin and end of every line and word: Apple Music, or an LRCLIB entry timed word by
+    /// word. Empty when only lines are timed.
     @Published var timedLyrics: [TimedLyricLine] = []
     private var timedLyricsCache: [String: [TimedLyricLine]] = [:]
     /// Skipping tracks starts overlapping lookups: only the latest one may publish its result.
@@ -436,7 +437,6 @@ class MusicManager: ObservableObject {
                 self.timedLyrics = timed
                 self.syncedLyrics = timed.map { (time: $0.begin, text: $0.text) }
                 self.currentLyrics = timed.map(\.text).joined(separator: "\n")
-                self.timedLyricsCache[key] = timed
                 self.storeLyricsLookup(key: key)
                 self.isFetchingLyrics = false
                 return
@@ -503,6 +503,7 @@ class MusicManager: ObservableObject {
             timedLyricsCache.removeAll()
         }
         lyricsCache[key] = (currentLyrics, syncedLyrics)
+        timedLyricsCache[key] = timedLyrics.isEmpty ? nil : timedLyrics
     }
 
     private func normalizedQuery(_ string: String) -> String {
@@ -578,11 +579,21 @@ class MusicManager: ObservableObject {
                 return true
             }
             guard !jsonArray.isEmpty else { return false }
-            // Prefer an entry that has syncedLyrics
-            let bestMatch = jsonArray.first(where: {
+            // Prefer an entry timed word by word, then one with syncedLyrics
+            let hasSynced: ([String: Any]) -> Bool = {
                 guard let s = $0["syncedLyrics"] as? String else { return false }
                 return !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }) ?? jsonArray.first!
+            }
+            var wordTimed: [TimedLyricLine] = []
+            var bestMatch = jsonArray.first(where: hasSynced) ?? jsonArray.first!
+            for entry in jsonArray where entry["hasWordSync"] as? Bool == true && hasSynced(entry) {
+                let parsed = LRCLibLyricsFileParser.parse(entry["lyricsfile"] as? String ?? "")
+                if !parsed.isEmpty {
+                    wordTimed = parsed
+                    bestMatch = entry
+                    break
+                }
+            }
 
             let plain = (bestMatch["plainLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let synced = (bestMatch["syncedLyrics"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -590,7 +601,10 @@ class MusicManager: ObservableObject {
             guard !resolved.isEmpty else { return false }
 
             self.currentLyrics = resolved
-            if !synced.isEmpty {
+            self.timedLyrics = wordTimed
+            if !wordTimed.isEmpty {
+                self.syncedLyrics = wordTimed.map { (time: $0.begin, text: $0.text) }
+            } else if !synced.isEmpty {
                 self.syncedLyrics = self.parseLRC(synced)
             } else {
                 self.syncedLyrics = []

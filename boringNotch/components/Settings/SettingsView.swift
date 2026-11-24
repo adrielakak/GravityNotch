@@ -949,7 +949,7 @@ struct Media: View {
                 Text("Lyrics")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, words are estimated.")
+                    Text("LRCLIB is a free, open source lyrics library that works for everyone. Lines are timed, and words too when the song has word sync; otherwise they are estimated.")
                     Text("Apple Music gives the exact lyrics and timing of the Music app, word by word, with the instrumental breaks. It needs an Apple Music subscription; songs outside the Apple Music catalog keep LRCLIB. It relies on the Apple Music web player, so it may stop working if Apple changes it.")
                 }
                 .font(.caption)
