@@ -869,7 +869,6 @@ kbd {
 .doc-shot-photo { padding: 0; overflow: hidden; background: var(--shadow-ink); }
 .doc-shot-photo figcaption { margin: 0; padding: 12px 18px 14px; }
 .doc-shot-photo img { aspect-ratio: 16 / 10; object-fit: cover; }
-.doc-shot-single { margin-bottom: 16px; }
 .docs-content .faq { margin-top: 0; }
 .docs-content .faq summary { font-size: 17px; }
 
