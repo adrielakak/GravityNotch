@@ -28030,6 +28030,22 @@
           }
         }
       }
+    },
+    "Your Apple Music session is kept in the macOS keychain, which only lets the app that saved it read it. After each GravityNotch update, macOS sees a new app and asks once for your Mac password to let it read the session again: choose Always Allow. With LRCLIB, the keychain is never used.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your Apple Music session is kept in the macOS keychain, which only lets the app that saved it read it. After each GravityNotch update, macOS sees a new app and asks once for your Mac password to let it read the session again: choose Always Allow. With LRCLIB, the keychain is never used."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Votre session Apple Music est gardée dans le trousseau macOS, qui ne laisse que l'app qui l'a enregistrée la lire. Après chaque mise à jour de GravityNotch, macOS voit une nouvelle app et demande une fois le mot de passe de votre Mac pour l'autoriser à relire la session : choisissez Toujours autoriser. Avec LRCLIB, le trousseau n'est jamais utilisé."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

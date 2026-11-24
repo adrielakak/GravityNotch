@@ -118,7 +118,7 @@
       <div class="rail" id="rail" data-i18n-attr="aria-roledescription:demo.carousel" aria-roledescription="carrousel">
         <article class="slide" aria-roledescription="diapositive" aria-label="1 sur 5">
           <div class="media media-full media-lock"><video src="assets/video/lock_screen.mp4" poster="assets/video/lock_screen.jpg" muted playsinline preload="none"></video></div>
-          <p class="slide-cap" data-i18n="slide.1"><b>Écran verrouillé.</b> Pochette (animée avec Apple Music uniquement), commandes et paroles synchronisées, même Mac verrouillé.</p>
+          <p class="slide-cap" data-i18n="slide.1"><b>Écran verrouillé.</b> Pochette (animée avec Apple Music uniquement), commandes et paroles synchronisées, même Mac verrouillé, en carte ou en plein écran.</p>
         </article>
         <article class="slide" aria-roledescription="diapositive" aria-label="2 sur 5">
           <div class="media media-wide"><video src="assets/video/musique.mp4" poster="assets/video/musique.jpg" muted playsinline preload="none"></video></div>
@@ -159,6 +159,13 @@
         <p class="sub reveal" data-i18n="feat.sub">Natif, écrit en Swift et SwiftUI. Il se fait oublier jusqu'au moment où vous en avez besoin.</p>
 
         <div class="grid">
+          <div class="tile tile-wide reveal">
+            <div class="tile-icon"><svg viewBox="0 0 24 24"><path d="M5 4.5h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-8l-4.5 3.5V17.5H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7 9h10M7 12.5h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+            <div class="tile-body">
+              <h3><span data-i18n="tile.l.t">Paroles plein écran</span> <span class="tile-new" data-i18n="tile.new">Nouveau</span></h3>
+              <p data-i18n="tile.l.d">Sur l'écran verrouillé, le lecteur à gauche et les paroles à droite, comme dans Apple Music : mot par mot, en vague, avec les points des pauses. Paroles de LRCLIB pour tous, ou d'Apple Music avec un abonnement, au timing exact.</p>
+            </div>
+          </div>
           <div class="tile tile-wide reveal">
             <div class="tile-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 13.5V9.5M10 3h4M18.5 6.5l1.5-1.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></div>
             <div class="tile-body">
@@ -261,6 +268,18 @@
           <details>
             <summary data-i18n="faq.5.q">Quel est le lien avec Boring Notch&nbsp;?</summary>
             <p data-i18n="faq.5.a">GravityNotch est un fork de <a href="https://github.com/TheBoredTeam/boring.notch" target="_blank" rel="noopener">boring.notch</a> par TheBoredTeam, à qui revient l'architecture d'origine. GravityNotch y ajoute l'écran verrouillé, Playing Next, l'OCR, Clips, Agents et plus encore.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq.6.q">D'où viennent les paroles&nbsp;?</summary>
+            <p data-i18n="faq.6.a">Par défaut, de LRCLIB, une bibliothèque de paroles gratuite et open source qui fonctionne pour tout le monde, avec Spotify, YouTube Music ou Apple Music : les lignes sont synchronisées, les mots estimés. Dans Réglages &gt; Media &gt; Lyrics, vous pouvez choisir Apple Music pour avoir les paroles et le timing exacts de l'app Musique, syllabe par syllabe. Il faut un abonnement Apple Music et une connexion unique à votre compte Apple. Cette source passe par le lecteur web d'Apple Music, pas par une API officielle : elle peut cesser de fonctionner si Apple la modifie, et LRCLIB prend alors le relais.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq.7.q">Pourquoi macOS me demande-t-il mon mot de passe pour le trousseau&nbsp;?</summary>
+            <p data-i18n="faq.7.a">Seulement si vous utilisez les paroles Apple Music. Votre session Apple Music est rangée dans le trousseau de macOS, qui ne la laisse lire qu'à l'app qui l'a enregistrée. Comme GravityNotch n'est pas signé avec un certificat Apple payant, macOS considère chaque mise à jour comme une nouvelle app et demande une fois votre mot de passe pour l'autoriser à relire la session. Choisissez «&nbsp;Toujours autoriser&nbsp;» : la question ne revient qu'à la mise à jour suivante. Avec LRCLIB, le trousseau n'est jamais utilisé.</p>
+          </details>
+          <details>
+            <summary data-i18n="faq.8.q">Pourquoi la bannière AirPods d'Apple s'affiche-t-elle sous macOS 27&nbsp;?</summary>
+            <p data-i18n="faq.8.a">Jusqu'à macOS 26, GravityNotch masque la bannière «&nbsp;Connectés&nbsp;» d'Apple et affiche sa propre animation dans l'encoche. macOS 27 ne permet plus à aucune app de masquer cette bannière : elle s'affiche donc à côté de l'animation. Les détails sont dans <a href="https://github.com/adrielakak/GravityNotch/issues/18" target="_blank" rel="noopener">l'issue #18</a>.</p>
           </details>
         </div>
       </div>
