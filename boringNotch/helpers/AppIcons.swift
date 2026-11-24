@@ -7674,15 +7674,43 @@ final class AppleMusicLyricsService: ObservableObject {
         case noWebToken
     }
 
+    /// The session token, read from the keychain at most once per launch. With a self-signed app, macOS asks
+    /// the user's password again for every new build reading the keychain item, so each read is a prompt.
+    /// nil: not read yet; .some(nil): read, nothing stored.
+    private var cachedUserToken: String??
+    private var sourceObserver: AnyCancellable?
+
     private init() {
-        isSignedIn = Self.readUserToken() != nil
         webToken = UserDefaults.standard.string(forKey: Self.webTokenDefaultsKey)
+        isSignedIn = false
+        refreshSignInState()
+        sourceObserver = Defaults.publisher(.lyricsSource, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.refreshSignInState()
+                }
+            }
+    }
+
+    /// LRCLIB users never touch the keychain: no password prompt unless Apple Music is the chosen source
+    func refreshSignInState() {
+        isSignedIn = currentUserToken() != nil
+    }
+
+    private func currentUserToken() -> String? {
+        guard Defaults[.lyricsSource] == .appleMusic else { return nil }
+        if let cachedUserToken { return cachedUserToken }
+        let token = Self.readUserToken()
+        cachedUserToken = .some(token)
+        return token
     }
 
     // MARK: Session
 
     func storeUserToken(_ token: String) {
         Self.writeUserToken(token)
+        cachedUserToken = .some(token)
         storefront = nil
         isSignedIn = true
         Self.logger.notice("Signed in to Apple Music")
@@ -7693,6 +7721,7 @@ final class AppleMusicLyricsService: ObservableObject {
     /// lets the next sign in skip the verification code
     func signOut(forgetWebSession: Bool = true) {
         Self.deleteUserToken()
+        cachedUserToken = .some(nil)
         storefront = nil
         isSignedIn = false
         if forgetWebSession {
@@ -7704,7 +7733,7 @@ final class AppleMusicLyricsService: ObservableObject {
 
     /// Lyrics of the catalog song matching the track, word timed when Apple has it, nil otherwise.
     func lyrics(title: String, artist: String, duration: Double) async -> [TimedLyricLine]? {
-        guard Defaults[.lyricsSource] == .appleMusic, let userToken = Self.readUserToken() else { return nil }
+        guard let userToken = currentUserToken() else { return nil }
         do {
             let storefront = try await currentStorefront(userToken: userToken)
             guard let songID = try await findSong(title: title, artist: artist, duration: duration, storefront: storefront) else {
