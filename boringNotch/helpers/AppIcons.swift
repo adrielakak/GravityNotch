@@ -4374,6 +4374,7 @@ enum AgentWorkPhase: String, Equatable {
     case running = "Running"
     case reading = "Reading"
     case searching = "Searching"
+    case deleting = "Deleting"
     case waiting = "Ready"
     case idle = "Idle"
 
@@ -4384,6 +4385,7 @@ enum AgentWorkPhase: String, Equatable {
         case .running: return String(localized: "In Progress")
         case .reading: return String(localized: "Reading")
         case .searching: return String(localized: "Searching")
+        case .deleting: return String(localized: "Deleting")
         case .waiting: return String(localized: "Ready")
         case .idle: return String(localized: "Idle")
         }
@@ -4396,6 +4398,7 @@ enum AgentWorkPhase: String, Equatable {
         case .running: return "RUN"
         case .reading: return "READ"
         case .searching: return "FIND"
+        case .deleting: return "DEL"
         case .waiting: return "DONE"
         case .idle: return "IDLE"
         }
@@ -4408,6 +4411,7 @@ enum AgentWorkPhase: String, Equatable {
         case .running: return "terminal.fill"
         case .reading: return "doc.text.magnifyingglass"
         case .searching: return "magnifyingglass"
+        case .deleting: return "trash.fill"
         case .waiting: return "checkmark.circle.fill"
         case .idle: return "cpu.fill"
         }
@@ -4420,6 +4424,7 @@ enum AgentWorkPhase: String, Equatable {
         case .running: return Color(red: 0.98, green: 0.65, blue: 0.25)
         case .reading: return Color(red: 0.36, green: 0.78, blue: 0.98)
         case .searching: return Color(red: 0.48, green: 0.64, blue: 0.98)
+        case .deleting: return Color(red: 0.98, green: 0.45, blue: 0.42)
         case .waiting: return Color.white.opacity(0.65)
         case .idle: return Color.gray
         }
@@ -4440,6 +4445,113 @@ enum AgentWorkPhase: String, Equatable {
             return .searching
         }
         return .thinking
+    }
+}
+
+/// Finds what a shell command deletes (rm, rmdir, unlink, trash, git rm), so a deletion an agent runs in its
+/// terminal shows in the notch like an edit does. A deletion leaves no patch in the transcript, only the command,
+/// so the paths are read from the command itself: quotes, escapes and chained commands (&&, ;, |) are honored,
+/// and a quoted "rm" inside another command (echo "rm x") is never taken for one.
+enum AgentDeletionParser {
+    struct Deletion: Equatable {
+        let name: String
+        let count: Int
+    }
+
+    static func deletion(in command: String) -> Deletion? {
+        let targets = targets(in: command)
+        guard let first = targets.first else { return nil }
+        let name = (first as NSString).lastPathComponent
+        return Deletion(name: name.isEmpty ? first : name, count: targets.count)
+    }
+
+    static func targets(in command: String) -> [String] {
+        var result: [String] = []
+        for segment in segments(of: command) {
+            var tokens = segment[...]
+            // Leading "VAR=value" assignments and wrappers that run the next command
+            while let first = tokens.first,
+                  (first.contains("=") && !first.hasPrefix("-") && !first.contains("/"))
+                    || ["sudo", "command", "nohup", "time", "exec"].contains(first) {
+                tokens = tokens.dropFirst()
+            }
+            guard let head = tokens.first else { continue }
+            let args: ArraySlice<String>
+            switch (head as NSString).lastPathComponent {
+            case "rm", "rmdir", "unlink", "trash", "srm":
+                args = tokens.dropFirst()
+            case "git" where tokens.dropFirst().first == "rm":
+                args = tokens.dropFirst(2)
+            default:
+                continue
+            }
+            var optionsEnded = false
+            for arg in args where !arg.isEmpty && !arg.contains(">") && !arg.contains("<") {
+                if !optionsEnded {
+                    if arg == "--" { optionsEnded = true; continue }
+                    if arg.hasPrefix("-") { continue }
+                }
+                result.append(arg)
+            }
+        }
+        return result
+    }
+
+    /// Splits a command line into simple commands, each as its list of words
+    private static func segments(of command: String) -> [[String]] {
+        var segments: [[String]] = []
+        var words: [String] = []
+        var word = ""
+        var inWord = false
+        var quote: Character?
+        var escaped = false
+
+        func endWord() {
+            if inWord { words.append(word) }
+            word = ""
+            inWord = false
+        }
+        func endSegment() {
+            endWord()
+            if !words.isEmpty { segments.append(words) }
+            words = []
+        }
+
+        for ch in command {
+            if escaped {
+                word.append(ch)
+                inWord = true
+                escaped = false
+                continue
+            }
+            if let q = quote {
+                if ch == q {
+                    quote = nil
+                } else if ch == "\\" && q == "\"" {
+                    escaped = true
+                } else {
+                    word.append(ch)
+                }
+                continue
+            }
+            switch ch {
+            case "\\":
+                escaped = true
+                inWord = true
+            case "'", "\"":
+                quote = ch
+                inWord = true
+            case " ", "\t":
+                endWord()
+            case "\n", ";", "&", "|", "(", ")":
+                endSegment()
+            default:
+                word.append(ch)
+                inWord = true
+            }
+        }
+        endSegment()
+        return segments
     }
 }
 
@@ -4783,6 +4895,10 @@ struct AgentSessionSnapshot: Identifiable, Equatable {
     var fileLinesAdded: Int = 0
     var fileLinesRemoved: Int = 0
     var editSerial: Int = 0
+    /// The last thing an agent deleted from its terminal, until it edits a file again
+    var deletedName: String? = nil
+    var deletedCount: Int = 0
+    var deletionSerial: Int = 0
     /// Working directory of the session, used to find the app the agent runs in
     var projectPath: String? = nil
 
@@ -5047,21 +5163,32 @@ final class AntigravityAgentMonitor: ObservableObject {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
         defer { try? handle.close() }
         let fileSize = (try? handle.seekToEnd()) ?? 0
-        let offset = fileSize > maxBytes ? fileSize - maxBytes : 0
-        try? handle.seek(toOffset: offset)
-        guard let data = try? handle.readToEnd(), !data.isEmpty else { return [] }
-        // Advance past the first newline on raw bytes when seeking mid-file so we never fail UTF-8
-        // decoding on a split multibyte sequence (e.g. emoji or accented paths).
-        var slice = data[data.startIndex..<data.endIndex]
-        if offset > 0 {
-            guard let firstNewline = slice.firstIndex(of: 0x0A) else { return [] }
-            slice = slice[slice.index(after: firstNewline)...]
-        }
-        return slice.split(separator: 0x0A).compactMap { lineBytes in
-            guard !lineBytes.isEmpty else { return nil }
-            let trimmed = lineBytes.last == 0x0D ? lineBytes.dropLast() : lineBytes
-            guard !trimmed.isEmpty else { return nil }
-            return String(decoding: trimmed, as: UTF8.self)
+        // A single transcript line can be bigger than the window (an image an agent read is stored
+        // as base64, 300 KB and more). The window then held no complete line, the session was
+        // skipped and its live indicator vanished until the next line came in, so widen it instead.
+        var window = maxBytes
+        while true {
+            let offset = fileSize > window ? fileSize - window : 0
+            try? handle.seek(toOffset: offset)
+            guard let data = try? handle.readToEnd(), !data.isEmpty else { return [] }
+            // Advance past the first newline on raw bytes when seeking mid-file so we never fail UTF-8
+            // decoding on a split multibyte sequence (e.g. emoji or accented paths).
+            var slice = data[data.startIndex..<data.endIndex]
+            if offset > 0, let firstNewline = slice.firstIndex(of: 0x0A) {
+                slice = slice[slice.index(after: firstNewline)...]
+            } else if offset > 0 {
+                slice = slice[slice.endIndex...]
+            }
+            let lines: [String] = slice.split(separator: 0x0A).compactMap { lineBytes in
+                guard !lineBytes.isEmpty else { return nil }
+                let trimmed = lineBytes.last == 0x0D ? lineBytes.dropLast() : lineBytes
+                guard !trimmed.isEmpty else { return nil }
+                return String(decoding: trimmed, as: UTF8.self)
+            }
+            if lines.count >= 2 || offset == 0 || window >= 3_145_728 {
+                return lines
+            }
+            window *= 4
         }
     }
 
@@ -5189,8 +5316,20 @@ final class AntigravityAgentMonitor: ObservableObject {
             fileLinesAdded: s.fileLinesAdded,
             fileLinesRemoved: s.fileLinesRemoved,
             editSerial: s.editSerial,
+            deletedName: s.deletedName,
+            deletedCount: s.deletedCount,
+            deletionSerial: s.deletionSerial,
             projectPath: s.projectPath
         )
+    }
+
+    /// Antigravity stores tool arguments as JSON string literals inside the JSON record
+    /// ("CommandLine": "\"git status\""), so decode that inner literal once more
+    nonisolated static func decodeAntigravityArgument(_ raw: String) -> String {
+        guard raw.hasPrefix("\""),
+              let decoded = try? JSONSerialization.jsonObject(with: Data(raw.utf8), options: .fragmentsAllowed) as? String
+        else { return raw }
+        return decoded
     }
 
     private nonisolated static func inferProjectName(fromPath path: String) -> String {
@@ -5281,6 +5420,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             var pendingToolCalls = 0
             var activeBatch: [ParsedBatchTool] = []
             var activeBatchDone = 0
+            var deletion: AgentDeletionParser.Deletion? = nil
+            var deletionSerial = 0
 
             func emitBatch(upTo count: Int) {
                 guard !activeBatch.isEmpty else { return }
@@ -5343,7 +5484,16 @@ final class AntigravityAgentMonitor: ObservableObject {
                     for tc in toolCalls {
                         let name = (tc["name"] as? String) ?? "tool"
                         let args = (tc["args"] as? [String: Any]) ?? [:]
-                        let phase = AgentWorkPhase.classify(toolName: name)
+                        var phase = AgentWorkPhase.classify(toolName: name)
+                        if phase == .editing {
+                            deletion = nil
+                        } else if phase == .running,
+                                  let command = (args["CommandLine"] as? String).map(Self.decodeAntigravityArgument),
+                                  let found = AgentDeletionParser.deletion(in: command) {
+                            phase = .deleting
+                            deletion = found
+                            deletionSerial += 1
+                        }
 
                         var targetFile: String? = nil
                         if let path = (args["Path"] as? String)
@@ -5496,7 +5646,10 @@ final class AntigravityAgentMonitor: ObservableObject {
                 recentEvents: Array(events.suffix(12).reversed()),
                 fileLinesAdded: fileDiff?.added ?? 0,
                 fileLinesRemoved: fileDiff?.removed ?? 0,
-                editSerial: tally.liveEditSerial
+                editSerial: tally.liveEditSerial,
+                deletedName: deletion?.name,
+                deletedCount: deletion?.count ?? 0,
+                deletionSerial: deletionSerial
             )
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
@@ -5634,6 +5787,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             var lastTurnComplete = false
             var justSawCompactBoundary = false
             var hasPendingTool = false
+            var deletion: AgentDeletionParser.Deletion? = nil
+            var deletionSerial = 0
 
             for line in lines.suffix(180) {
                 guard let lineData = line.data(using: .utf8),
@@ -5750,8 +5905,17 @@ final class AntigravityAgentMonitor: ObservableObject {
                             hasPendingTool = true
                             let name = (item["name"] as? String) ?? "Tool"
                             let input = (item["input"] as? [String: Any]) ?? [:]
-                            let phase = AgentWorkPhase.classify(toolName: name)
-                            if phase == .editing { editCount += 1 }
+                            var phase = AgentWorkPhase.classify(toolName: name)
+                            if phase == .editing {
+                                editCount += 1
+                                deletion = nil
+                            } else if phase == .running,
+                                      let command = input["command"] as? String,
+                                      let found = AgentDeletionParser.deletion(in: command) {
+                                phase = .deleting
+                                deletion = found
+                                deletionSerial += 1
+                            }
 
                             var targetFile: String? = nil
                             if let fp = input["file_path"] as? String, !fp.isEmpty {
@@ -5822,6 +5986,9 @@ final class AntigravityAgentMonitor: ObservableObject {
                 fileLinesAdded: fileDiff?.added ?? 0,
                 fileLinesRemoved: fileDiff?.removed ?? 0,
                 editSerial: tally.editCount,
+                deletedName: deletion?.name,
+                deletedCount: deletion?.count ?? 0,
+                deletionSerial: deletionSerial,
                 projectPath: projectPath
             )
             let entry = CachedSessionEntry(
@@ -6683,7 +6850,12 @@ private struct AgentFocusColumn: View {
 
     private var accent: Color { session.kind.accentColor }
 
-    private var focusTitle: String { session.currentFile ?? session.currentActionTitle }
+    /// A deletion is shown until the agent edits a file again (the parsers clear it then)
+    private var isDeletion: Bool { session.deletedName != nil }
+
+    private var focusTitle: String { session.deletedName ?? session.currentFile ?? session.currentActionTitle }
+
+    private var deletionRed: Color { Color(red: 0.98, green: 0.45, blue: 0.42) }
 
     private var statusLine: String {
         let detail = session.currentActionDetail
@@ -6699,18 +6871,26 @@ private struct AgentFocusColumn: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
-                    Image(systemName: session.currentFile != nil ? "doc.text.fill" : session.phase.iconName)
+                    Image(systemName: isDeletion ? "trash.fill" : (session.currentFile != nil ? "doc.text.fill" : session.phase.iconName))
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(accent)
+                        .foregroundStyle(isDeletion ? deletionRed : accent)
+                        .contentTransition(.symbolEffect(.replace))
                     Text(focusTitle)
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundStyle(accent)
+                        .foregroundStyle(isDeletion ? deletionRed : accent)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .contentTransition(.opacity)
                         .animation(.easeInOut(duration: 0.2), value: focusTitle)
                     Spacer(minLength: 4)
-                    if hasDiff {
+                    if isDeletion {
+                        Text(String(localized: "\(max(1, session.deletedCount)) deleted"))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(deletionRed)
+                            .contentTransition(.numericText())
+                            .animation(.spring(response: 0.42, dampingFraction: 0.88), value: session.deletedCount)
+                            .fixedSize()
+                    } else if hasDiff {
                         HStack(spacing: 4) {
                             if session.fileLinesAdded > 0 || session.fileLinesRemoved == 0 {
                                 Text("+\(session.fileLinesAdded)")
@@ -6745,7 +6925,17 @@ private struct AgentFocusColumn: View {
                 }
 
                 ZStack {
-                    if hasDiff {
+                    if isDeletion {
+                        // All red: what was removed, sized like an edit of ~30 lines per deleted item
+                        AgentDiffBar(
+                            added: 0,
+                            removed: min(150, 30 * max(1, session.deletedCount)),
+                            editSerial: session.deletionSerial,
+                            color: accent
+                        )
+                        .id("deletion-\(session.id)")
+                        .transition(.opacity)
+                    } else if hasDiff {
                         AgentDiffBar(
                             added: session.fileLinesAdded,
                             removed: session.fileLinesRemoved,
@@ -6769,6 +6959,7 @@ private struct AgentFocusColumn: View {
                 .clipShape(Capsule())
                 .padding(.top, 1)
                 .animation(.easeInOut(duration: 0.25), value: hasDiff)
+                .animation(.easeInOut(duration: 0.25), value: isDeletion)
                 .animation(.easeInOut(duration: 0.25), value: session.isWorkingNow)
             }
             .padding(.horizontal, 12)
