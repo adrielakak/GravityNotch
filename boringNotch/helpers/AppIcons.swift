@@ -6663,9 +6663,9 @@ private struct LockScreenMediaCardContainer: View {
         LockScreenMediaPanelManager.hasActiveMedia(musicManager)
     }
 
+    /// Only synced lyrics count: text alone cannot follow the song, so the lyrics stay closed
     private var lyricsFound: Bool {
         !musicManager.syncedLyrics.isEmpty
-            || !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var showsLyricsCard: Bool {
@@ -7533,6 +7533,20 @@ struct TimedLyricLine: Equatable {
     let text: String
     /// Empty when the lyrics are timed by line only
     let words: [TimedLyricWord]
+    /// First line of a verse or chorus, kept to lay out lyrics Apple only has as text
+    var startsStanza = false
+
+    /// Lines without any timing: Apple has only the text of the song
+    static func areUntimed(_ lines: [TimedLyricLine]) -> Bool {
+        !lines.contains { $0.begin > 0 || $0.end > 0 }
+    }
+
+    /// The text with a blank line between stanzas, as Apple Music shows it
+    static func plainText(_ lines: [TimedLyricLine]) -> String {
+        lines.enumerated().map { index, line in
+            (index > 0 && line.startsStanza ? "\n" : "") + line.text
+        }.joined(separator: "\n")
+    }
 }
 
 /// Reads Apple Music's TTML lyrics: one `<p begin end>` per line, holding either the line text or one
@@ -7548,6 +7562,7 @@ final class AppleLyricsTTMLParser: NSObject, XMLParserDelegate {
     private var spans: [(begin: Double?, end: Double?, skip: Bool)] = []
     private var spanText = ""
     private var skippedDepth = 0
+    private var nextStartsStanza = false
 
     static func parse(_ ttml: String) -> [TimedLyricLine] {
         guard let data = ttml.data(using: .utf8) else { return [] }
@@ -7556,7 +7571,10 @@ final class AppleLyricsTTMLParser: NSObject, XMLParserDelegate {
         parser.delegate = delegate
         parser.shouldProcessNamespaces = false
         guard parser.parse() else { return [] }
-        return delegate.lines.sorted { $0.begin < $1.begin }
+        // Stable, so lyrics without timing (every line at 0) keep their order
+        return delegate.lines.enumerated()
+            .sorted { ($0.element.begin, $0.offset) < ($1.element.begin, $1.offset) }
+            .map(\.element)
     }
 
     /// "1:02.345", "0:01:02.345", "62.345" or "62.345s"
@@ -7582,6 +7600,8 @@ final class AppleLyricsTTMLParser: NSObject, XMLParserDelegate {
             return
         }
         switch name {
+        case "div":
+            nextStartsStanza = true
         case "p":
             inParagraph = true
             paragraphBegin = Self.seconds(attributeDict["begin"]) ?? 0
@@ -7640,7 +7660,9 @@ final class AppleLyricsTTMLParser: NSObject, XMLParserDelegate {
                 }.joined()
             }
             guard !text.isEmpty else { return }
-            lines.append(TimedLyricLine(begin: paragraphBegin, end: max(paragraphEnd, paragraphBegin), text: text, words: words))
+            lines.append(TimedLyricLine(begin: paragraphBegin, end: max(paragraphEnd, paragraphBegin), text: text,
+                                        words: words, startsStanza: nextStartsStanza))
+            nextStartsStanza = false
         default:
             break
         }
@@ -8205,9 +8227,9 @@ struct LockScreenLyricsLayoutView: View {
             .map { FullScreenLyricLine(id: $0.offset, time: nil, text: $0.element) }
     }
 
+    /// Only synced lyrics count: text alone cannot follow the song, so the lyrics stay closed
     private var lyricsFound: Bool {
         !musicManager.syncedLyrics.isEmpty
-            || !musicManager.currentLyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var hasMedia: Bool {

@@ -421,6 +421,18 @@ class MusicManager: ObservableObject {
             // 0. Apple Music lyrics when chosen in the settings: the real timing of every word
             if let timed = await AppleMusicLyricsService.shared.lyrics(title: title, artist: artist, duration: self.songDuration) {
                 guard requestID == self.lyricsRequestID else { return }
+                if TimedLyricLine.areUntimed(timed) {
+                    // Apple only has the text of this song: LRCLIB may still have it synced
+                    await self.fetchLyricsFromWeb(title: title, artist: artist, requestID: requestID)
+                    guard requestID == self.lyricsRequestID else { return }
+                    if self.syncedLyrics.isEmpty {
+                        self.currentLyrics = TimedLyricLine.plainText(timed)
+                        self.lyricsLookupFailed = false
+                    }
+                    self.storeLyricsLookup(key: key)
+                    self.isFetchingLyrics = false
+                    return
+                }
                 self.timedLyrics = timed
                 self.syncedLyrics = timed.map { (time: $0.begin, text: $0.text) }
                 self.currentLyrics = timed.map(\.text).joined(separator: "\n")
@@ -509,6 +521,18 @@ class MusicManager: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// "Song (Slowed) - Artist" and "song" give the same key: the base title, without case, accents,
+    /// punctuation, bracketed tags or a trailing " - ..." part
+    static func lyricsTitleKey(_ title: String) -> String {
+        var base = title.replacingOccurrences(of: #"\s*[\(\[][^\)\]]*[\)\]]"#, with: "", options: .regularExpression)
+        if let dash = base.range(of: " - ") { base = String(base[..<dash.lowerBound]) }
+        return base
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     @MainActor
     private func fetchLyricsFromWeb(title: String, artist: String, requestID: Int) async {
         if await queryLRCLib(title: title, artist: artist, requestID: requestID) {
@@ -539,10 +563,21 @@ class MusicManager: ObservableObject {
                 lyricsLookupFailed = true
                 return false
             }
-            guard let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-                  !jsonArray.isEmpty else {
+            guard let results = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
                 return false
             }
+            // The search is fuzzy ("PERTO" also returns "SEMPRE PERTO", same length, other lyrics): keep the
+            // same title, and the same length when known so a slowed or sped up edit is not taken either
+            let wantedTitle = Self.lyricsTitleKey(title)
+            let wantedDuration = songDuration
+            let jsonArray = results.filter { entry in
+                guard Self.lyricsTitleKey(entry["trackName"] as? String ?? "") == wantedTitle else { return false }
+                if wantedDuration > 0, let duration = entry["duration"] as? Double, abs(duration - wantedDuration) > 4 {
+                    return false
+                }
+                return true
+            }
+            guard !jsonArray.isEmpty else { return false }
             // Prefer an entry that has syncedLyrics
             let bestMatch = jsonArray.first(where: {
                 guard let s = $0["syncedLyrics"] as? String else { return false }
