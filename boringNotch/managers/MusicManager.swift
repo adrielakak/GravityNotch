@@ -251,6 +251,12 @@ class MusicManager: ObservableObject {
 
             // Fetch lyrics on content change
             self.fetchLyricsIfAvailable(bundleIdentifier: state.bundleIdentifier, title: state.title, artist: state.artist)
+
+            // Look the animated artwork up now, so it is ready by the time the Mac locks
+            let (title, artist, album) = (state.title, state.artist, state.album)
+            Task { @MainActor in
+                AnimatedArtworkService.shared.prefetch(title: title, artist: artist, album: album)
+            }
         }
 
         let timeChanged = state.currentTime != self.elapsedTime

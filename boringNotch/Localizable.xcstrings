@@ -28031,18 +28031,18 @@
         }
       }
     },
-    "Your Apple Music session (an access token, never your Apple Account password) is kept in a GravityNotch file that only your Mac account can read, so updates never ask for your password. Sign Out deletes it.": {
+    "Your Apple Music session (an access token, never your Apple Account password) is kept in a private GravityNotch file rather than the keychain, so updates never ask for your password. Other users of this Mac cannot read it, but apps running in your account could. Sign Out deletes it.": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Your Apple Music session (an access token, never your Apple Account password) is kept in a GravityNotch file that only your Mac account can read, so updates never ask for your password. Sign Out deletes it."
+            "value": "Your Apple Music session (an access token, never your Apple Account password) is kept in a private GravityNotch file rather than the keychain, so updates never ask for your password. Other users of this Mac cannot read it, but apps running in your account could. Sign Out deletes it."
           }
         },
         "fr": {
           "stringUnit": {
             "state": "translated",
-            "value": "Votre session Apple Music (un jeton d'accès, jamais le mot de passe de votre compte Apple) est gardée dans un fichier de GravityNotch que seul votre compte Mac peut lire : les mises à jour ne demandent donc jamais votre mot de passe. Se déconnecter le supprime."
+            "value": "Votre session Apple Music (un jeton d'accès, jamais le mot de passe de votre compte Apple) est gardée dans un fichier privé de GravityNotch plutôt que dans le trousseau : les mises à jour ne demandent donc jamais votre mot de passe. Les autres utilisateurs de ce Mac ne peuvent pas la lire, mais les apps lancées dans votre session le pourraient. Se déconnecter la supprime."
           }
         }
       }

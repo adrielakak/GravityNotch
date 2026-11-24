@@ -941,7 +941,7 @@ struct Media: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Label("Your Apple Music session (an access token, never your Apple Account password) is kept in a GravityNotch file that only your Mac account can read, so updates never ask for your password. Sign Out deletes it.", systemImage: "lock.fill")
+                    Label("Your Apple Music session (an access token, never your Apple Account password) is kept in a private GravityNotch file rather than the keychain, so updates never ask for your password. Other users of this Mac cannot read it, but apps running in your account could. Sign Out deletes it.", systemImage: "lock.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

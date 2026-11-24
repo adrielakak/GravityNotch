@@ -7921,7 +7921,7 @@ final class AppleMusicLyricsService: ObservableObject {
 
     // MARK: Session storage
 
-    /// The session token lives in a file only the user's account can read (folder 700, file 600), not in the
+    /// The session token lives in a file other users of the Mac cannot read (folder 700, file 600), not in the
     /// keychain: a self-signed app gets a new identity with every update, so the keychain asked for the Mac
     /// password after each one. It is an Apple Music access token, never the Apple Account password, and
     /// Sign Out deletes it. Versions 1.3.0 and 1.3.1 kept it in the keychain: it is moved out once.
@@ -8758,14 +8758,45 @@ final class AnimatedArtworkService: ObservableObject {
     /// Tracks of one album share its animated cover, so the next track gets it without waiting for a lookup
     private var albumVideoURLs: [String: URL] = [:]
     @Published private var stillImages: [String: NSImage] = [:]
-    /// Last lookup per track. A failed lookup (network hiccup, slow catalog) is retried later instead of
-    /// leaving the track without its animated cover until the app restarts.
-    private var lastAttempts: [String: Date] = [:]
+    /// Lookups in progress. They belong to the service, not to the lock screen view: unlocking mid download
+    /// no longer cancels it, and the next lock finds the video ready.
+    private var inFlight: [String: Task<LookupOutcome, Never>] = [:]
+    /// Tracks whose album was looked up successfully and has no animated cover, so they are not searched
+    /// again on every lock (a network failure is never recorded here)
+    private var withoutMotionArtwork: Set<String> = []
+    /// Downloaded videos per track and album key, kept on disk so they show at once after a relaunch
+    private var diskIndex: [String: String] = [:]
+    /// High resolution cover found with the video, shown under it until its first frame
+    private var artworkURLs: [String: URL] = [:]
 
     private struct Candidate {
         let pageURL: URL
         let artworkURL: URL?
         let albumMatches: Bool
+    }
+
+    private enum LookupOutcome {
+        case found(URL, artworkURL: URL?)
+        case none
+        case failed
+    }
+
+    private enum PlaylistResult {
+        case playlist(URL)
+        case noMotionArtwork
+        case failed
+    }
+
+    private init() {
+        loadDiskIndex()
+    }
+
+    static func trackKey(title: String, artist: String, album: String) -> String {
+        "\(title)|\(artist)|\(album)"
+    }
+
+    static func albumKey(artist: String, album: String) -> String? {
+        album.isEmpty ? nil : "\(artist)|\(album)"
     }
 
     func videoURL(for key: String, albumKey: String?) -> URL? {
@@ -8774,6 +8805,19 @@ final class AnimatedArtworkService: ObservableObject {
 
     func stillImage(for key: String) -> NSImage? {
         stillImages[key]
+    }
+
+    /// Called when a track starts: finds and downloads its animated cover in the background, so it is
+    /// already there when the Mac locks. Only when the lock screen shows the animated artwork.
+    func prefetch(title: String, artist: String, album: String) {
+        guard Defaults[.showOnLockScreen], Defaults[.lockScreenMediaPlayer], Defaults[.lockScreenAnimatedArtwork],
+              !title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let key = Self.trackKey(title: title, artist: artist, album: album)
+        let albumKey = Self.albumKey(artist: artist, album: album)
+        guard videoURL(for: key, albumKey: albumKey) == nil, !withoutMotionArtwork.contains(key) else { return }
+        Task { [weak self] in
+            await self?.lookUpWithRetries(title: title, artist: artist, album: album, key: key, albumKey: albumKey)
+        }
     }
 
     func load(
@@ -8785,39 +8829,128 @@ final class AnimatedArtworkService: ObservableObject {
         fallbackCover: NSImage,
         isAppleMusic: Bool
     ) async {
-        guard !title.isEmpty, videoURLs[key] == nil else { return }
-        if let last = lastAttempts[key], Date().timeIntervalSince(last) < 45 { return }
-        lastAttempts[key] = Date()
+        guard !title.isEmpty else { return }
+        if videoURL(for: key, albumKey: albumKey) == nil {
+            guard !withoutMotionArtwork.contains(key) else { return }
+            await lookUpWithRetries(title: title, artist: artist, album: album, key: key, albumKey: albumKey)
+        }
+        guard videoURL(for: key, albumKey: albumKey) != nil, stillImages[key] == nil else { return }
+        await prepareCover(key: key, artworkURL: artworkURLs[key], fallbackCover: fallbackCover, isAppleMusic: isAppleMusic)
+    }
 
-        var candidates = await Self.searchCandidates(title: title, artist: artist, album: album)
+    /// A failed lookup (network hiccup, slow connection) is tried again after 8, 16, 32 then 64 s, as long
+    /// as the caller still wants it, instead of waiting for the next track.
+    private func lookUpWithRetries(title: String, artist: String, album: String, key: String, albumKey: String?) async {
+        var delay: Double = 8
+        for _ in 0..<5 {
+            let task: Task<LookupOutcome, Never>
+            if let running = inFlight[key] {
+                task = running
+            } else {
+                task = Task { await Self.lookUp(title: title, artist: artist, album: album) }
+                inFlight[key] = task
+            }
+            let outcome = await task.value
+            inFlight[key] = nil
+
+            switch outcome {
+            case .found(let videoFile, let artworkURL):
+                if let albumKey { albumVideoURLs[albumKey] = videoFile }
+                videoURLs[key] = videoFile
+                artworkURLs[key] = artworkURL
+                rememberOnDisk(videoFile, keys: [key, albumKey].compactMap { $0 })
+                return
+            case .none:
+                withoutMotionArtwork.insert(key)
+                return
+            case .failed:
+                if Task.isCancelled || videoURL(for: key, albumKey: albumKey) != nil { return }
+                try? await Task.sleep(for: .seconds(delay))
+                if Task.isCancelled { return }
+                delay *= 2
+            }
+        }
+    }
+
+    nonisolated private static func lookUp(title: String, artist: String, album: String) async -> LookupOutcome {
+        guard var candidates = await searchCandidates(title: title, artist: artist, album: album) else { return .failed }
         var usedWebAlbum = false
+        var networkFailed = false
         if !candidates.contains(where: { $0.albumMatches }),
            let webAlbum = await AppleMusicWebCatalog.shared.album(title: title, album: album) {
             candidates.insert(Candidate(pageURL: webAlbum.pageURL, artworkURL: webAlbum.artworkURL, albumMatches: true), at: 0)
             usedWebAlbum = true
         }
 
-        var videoFile: URL?
         for candidate in candidates.prefix(3) {
-            guard let playlistURL = await Self.motionPlaylistURL(pageURL: candidate.pageURL) else { continue }
-            videoFile = await Self.cachedVideoFile(masterPlaylistURL: playlistURL)
-            break
+            switch await motionPlaylistURL(pageURL: candidate.pageURL) {
+            case .playlist(let playlistURL):
+                guard let videoFile = await cachedVideoFile(masterPlaylistURL: playlistURL) else { return .failed }
+                return .found(videoFile, artworkURL: candidates.first(where: { $0.albumMatches })?.artworkURL)
+            case .failed:
+                networkFailed = true
+            case .noMotionArtwork:
+                continue
+            }
         }
         // The iTunes search can return another edition of the album (clean instead of explicit) that has
         // no motion artwork, so give the edition listed by the Apple Music web catalog a chance too.
-        if videoFile == nil, !usedWebAlbum,
-           let webAlbum = await AppleMusicWebCatalog.shared.album(title: title, album: album),
-           let playlistURL = await Self.motionPlaylistURL(pageURL: webAlbum.pageURL) {
-            videoFile = await Self.cachedVideoFile(masterPlaylistURL: playlistURL)
+        if !usedWebAlbum, let webAlbum = await AppleMusicWebCatalog.shared.album(title: title, album: album) {
+            switch await motionPlaylistURL(pageURL: webAlbum.pageURL) {
+            case .playlist(let playlistURL):
+                guard let videoFile = await cachedVideoFile(masterPlaylistURL: playlistURL) else { return .failed }
+                return .found(videoFile, artworkURL: webAlbum.artworkURL)
+            case .failed:
+                networkFailed = true
+            case .noMotionArtwork:
+                break
+            }
         }
-        // No animated artwork: the cover stays in the player, nothing else to prepare
-        guard let videoFile else { return }
-        if let albumKey { albumVideoURLs[albumKey] = videoFile }
-        videoURLs[key] = videoFile
+        return networkFailed ? .failed : .none
+    }
 
-        // High resolution still shown under the video until its first frame is ready
+    // MARK: Disk index
+
+    private static var indexURL: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("GravityNotch/MotionArtwork/index.json")
+    }
+
+    private func loadDiskIndex() {
+        guard let url = Self.indexURL,
+              let data = try? Data(contentsOf: url),
+              let index = try? JSONDecoder().decode([String: String].self, from: data) else { return }
+        let folder = url.deletingLastPathComponent()
+        for (key, fileName) in index {
+            let file = folder.appendingPathComponent(fileName)
+            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+            diskIndex[key] = fileName
+            // Keys holding one "|" are album keys, track keys hold two
+            if key.filter({ $0 == "|" }).count == 1 {
+                albumVideoURLs[key] = file
+            } else {
+                videoURLs[key] = file
+            }
+        }
+    }
+
+    private func rememberOnDisk(_ videoFile: URL, keys: [String]) {
+        guard let url = Self.indexURL else { return }
+        let folder = url.deletingLastPathComponent()
+        for key in keys { diskIndex[key] = videoFile.lastPathComponent }
+        // Forget videos the cache pruned
+        diskIndex = diskIndex.filter { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0.value).path) }
+        if let data = try? JSONEncoder().encode(diskIndex) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    // MARK: Cover
+
+    /// High resolution still shown under the video until its first frame is ready
+    private func prepareCover(key: String, artworkURL: URL?, fallbackCover: NSImage, isAppleMusic: Bool) async {
         var cover: NSImage?
-        if let artworkURL = candidates.first(where: { $0.albumMatches })?.artworkURL {
+        if let artworkURL {
             cover = await Self.fetchImage(artworkURL)
         }
         if cover == nil {
@@ -8835,7 +8968,8 @@ final class AnimatedArtworkService: ObservableObject {
         }
     }
 
-    nonisolated private static func searchCandidates(title: String, artist: String, album: String) async -> [Candidate] {
+    /// nil when the search could not be done (network), an empty list when it found nothing
+    nonisolated private static func searchCandidates(title: String, artist: String, album: String) async -> [Candidate]? {
         var components = URLComponents(string: "https://itunes.apple.com/search")
         components?.queryItems = [
             URLQueryItem(name: "term", value: "\(title) \(artist)"),
@@ -8845,10 +8979,11 @@ final class AnimatedArtworkService: ObservableObject {
         ]
         guard
             let searchURL = components?.url,
-            let (data, _) = try? await URLSession.shared.data(from: searchURL),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let results = json["results"] as? [[String: Any]]
-        else { return [] }
+            let (data, response) = try? await URLSession.shared.data(from: searchURL),
+            (response as? HTTPURLResponse)?.statusCode == 200,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        guard let results = json["results"] as? [[String: Any]] else { return [] }
 
         let wantedTitle = simplified(title)
         let wantedAlbum = simplified(album)
@@ -8878,25 +9013,27 @@ final class AnimatedArtworkService: ObservableObject {
         return matching + others
     }
 
-    nonisolated private static func motionPlaylistURL(pageURL: URL) async -> URL? {
+    nonisolated private static func motionPlaylistURL(pageURL: URL) async -> PlaylistResult {
         var request = URLRequest(url: pageURL)
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
             forHTTPHeaderField: "User-Agent"
         )
         guard
-            let (data, _) = try? await URLSession.shared.data(for: request),
+            let (data, response) = try? await URLSession.shared.data(for: request),
+            (response as? HTTPURLResponse)?.statusCode == 200,
             let html = String(data: data, encoding: .utf8)
-        else { return nil }
+        else { return .failed }
 
         for marker in ["\"motionDetailSquare\"", "\"motionDetailTall\""] {
             guard let markerRange = html.range(of: marker) else { continue }
             let tail = html[markerRange.upperBound...]
-            if let match = tail.range(of: #"https://[^"\\]+?\.m3u8"#, options: .regularExpression) {
-                return URL(string: String(tail[match]))
+            if let match = tail.range(of: #"https://[^"\\]+?\.m3u8"#, options: .regularExpression),
+               let url = URL(string: String(tail[match])) {
+                return .playlist(url)
             }
         }
-        return nil
+        return .noMotionArtwork
     }
 
     /// Picks the sharpest SDR variant (up to 2160p, around 9 Mbps) and downloads its MP4 into the caches folder.
