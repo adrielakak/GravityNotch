@@ -37,6 +37,10 @@ struct ShelfView: View {
             }
         }
         .quickLookPresenter(using: quickLookService)
+        .onDisappear {
+            quickLookService.hide()
+            vm.dragDetectorTargeting = false
+        }
     }
     
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
@@ -126,9 +130,7 @@ struct ShelfView: View {
                     isDestructive: true,
                     isDisabled: selectedItems.isEmpty
                 ) {
-                    for item in selectedItems {
-                        ShelfActionService.remove(item)
-                    }
+                    ShelfStateViewModel.shared.remove(selectedItems)
                     withAnimation(.easeInOut(duration: 0.15)) {
                         selection.exitSelectionMode()
                     }
@@ -145,9 +147,7 @@ struct ShelfView: View {
                         title: LocalizedStringKey("Delete (\(selectedItems.count))"),
                         isDestructive: true
                     ) {
-                        for item in selectedItems {
-                            ShelfActionService.remove(item)
-                        }
+                        ShelfStateViewModel.shared.remove(selectedItems)
                         selection.clear()
                         withAnimation(.easeInOut(duration: 0.15)) {
                             showingClearOptions = false
@@ -161,9 +161,7 @@ struct ShelfView: View {
                     }
                 }
                 quickActionPill(icon: "trash", title: LocalizedStringKey("Clear all"), isDestructive: true) {
-                    for item in tvm.items {
-                        ShelfActionService.remove(item)
-                    }
+                    ShelfStateViewModel.shared.remove(tvm.items)
                     selection.clear()
                     withAnimation(.easeInOut(duration: 0.15)) {
                         showingClearOptions = false
@@ -199,7 +197,7 @@ struct ShelfView: View {
                 if !targetURLs.isEmpty {
                     quickActionPill(icon: "doc.zipper", title: LocalizedStringKey("ZIP")) {
                         Task {
-                            if let zipURL = try? await targetURLs.accessSecurityScopedResources(accessor: { urls in
+                            if let zipURL = await targetURLs.accessSecurityScopedResources(accessor: { urls in
                                 await TemporaryFileStorageService.shared.createZip(from: urls)
                             }), let bookmark = try? Bookmark(url: zipURL) {
                                 let newItem = ShelfItem(kind: .file(bookmark: bookmark.data), isTemporary: true)
@@ -213,7 +211,10 @@ struct ShelfView: View {
                         }
                     }
                     quickActionPill(icon: "airplayaudio", title: LocalizedStringKey("AirDrop")) {
-                        NSSharingService(named: .sendViaAirDrop)?.perform(withItems: targetURLs)
+                        Task {
+                            let airDrop = QuickShareProvider(id: "AirDrop", imageData: nil, supportsRawText: false)
+                            await QuickShareService.shared.shareFilesOrText(targetURLs, using: airDrop, from: NSApp.keyWindow?.contentView)
+                        }
                     }
                 }
                 quickActionPill(icon: "trash", title: LocalizedStringKey("Clear"), isDestructive: true) {

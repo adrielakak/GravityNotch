@@ -101,40 +101,75 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
     }
     // MARK: - Screen Brightness (moved from client app into helper)
 
+    /// Try the main display first; when an external monitor without backlight control is primary,
+    /// fall back to the built-in display and then any other active display.
+    private func candidateDisplayIDs() -> [CGDirectDisplayID] {
+        var ids: [CGDirectDisplayID] = [CGMainDisplayID()]
+        var activeCount: UInt32 = 0
+        if CGGetActiveDisplayList(0, nil, &activeCount) == .success, activeCount > 0 {
+            var active = [CGDirectDisplayID](repeating: 0, count: Int(activeCount))
+            if CGGetActiveDisplayList(activeCount, &active, &activeCount) == .success {
+                let builtin = active.filter { CGDisplayIsBuiltin($0) != 0 }
+                let others = active.filter { CGDisplayIsBuiltin($0) == 0 }
+                for id in builtin + others where !ids.contains(id) {
+                    ids.append(id)
+                }
+            }
+        }
+        return ids
+    }
+
     @objc func isScreenBrightnessAvailable(with reply: @escaping (Bool) -> Void) {
         var b: Float = 0
-        reply(displayServicesGetBrightness(displayID: CGMainDisplayID(), out: &b) || ioServiceFor(displayID: CGMainDisplayID()) != nil)
+        for displayID in candidateDisplayIDs() {
+            if displayServicesGetBrightness(displayID: displayID, out: &b) {
+                reply(true)
+                return
+            }
+            if let io = ioServiceFor(displayID: displayID) {
+                IOObjectRelease(io)
+                reply(true)
+                return
+            }
+        }
+        reply(false)
     }
 
     @objc func currentScreenBrightness(with reply: @escaping (NSNumber?) -> Void) {
         var b: Float = 0
-        if displayServicesGetBrightness(displayID: CGMainDisplayID(), out: &b) {
-            reply(NSNumber(value: b))
-            return
-        }
-        if let io = ioServiceFor(displayID: CGMainDisplayID()) {
-            var level: Float = 0
-            if IODisplayGetFloatParameter(io, 0, kIODisplayBrightnessKey as CFString, &level) == kIOReturnSuccess {
-                IOObjectRelease(io)
-                reply(NSNumber(value: level))
+        for displayID in candidateDisplayIDs() {
+            if displayServicesGetBrightness(displayID: displayID, out: &b) {
+                reply(NSNumber(value: b))
                 return
             }
-            IOObjectRelease(io)
+            if let io = ioServiceFor(displayID: displayID) {
+                var level: Float = 0
+                let status = IODisplayGetFloatParameter(io, 0, kIODisplayBrightnessKey as CFString, &level)
+                IOObjectRelease(io)
+                if status == kIOReturnSuccess {
+                    reply(NSNumber(value: level))
+                    return
+                }
+            }
         }
         reply(nil)
     }
 
     @objc func setScreenBrightness(_ value: Float, with reply: @escaping (Bool) -> Void) {
         let clamped = max(0, min(1, value))
-        if displayServicesSetBrightness(displayID: CGMainDisplayID(), value: clamped) {
-            reply(true)
-            return
-        }
-        if let io = ioServiceFor(displayID: CGMainDisplayID()) {
-            let ok = IODisplaySetFloatParameter(io, 0, kIODisplayBrightnessKey as CFString, clamped) == kIOReturnSuccess
-            IOObjectRelease(io)
-            reply(ok)
-            return
+        for displayID in candidateDisplayIDs() {
+            if displayServicesSetBrightness(displayID: displayID, value: clamped) {
+                reply(true)
+                return
+            }
+            if let io = ioServiceFor(displayID: displayID) {
+                let ok = IODisplaySetFloatParameter(io, 0, kIODisplayBrightnessKey as CFString, clamped) == kIOReturnSuccess
+                IOObjectRelease(io)
+                if ok {
+                    reply(true)
+                    return
+                }
+            }
         }
         reply(false)
     }

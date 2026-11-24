@@ -25,8 +25,9 @@ extension NSImage {
                 return
             }
             
-            let width = cgImage.width
-            let height = cgImage.height
+            // The average of a small thumbnail is the same color, without walking 9 million pixels
+            let width = max(1, min(cgImage.width, 32))
+            let height = max(1, min(cgImage.height, 32))
             let totalPixels = width * height
             
             guard let context = CGContext(data: nil,

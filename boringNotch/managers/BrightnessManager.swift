@@ -30,9 +30,11 @@ final class BrightnessManager: ObservableObject {
 	private lazy var burst = RelativeLevelBurst(
 		read: { [client] in await client.currentScreenBrightness() },
 		write: { [client] in await client.setScreenBrightness($0) },
-		onTarget: { @MainActor [weak self] target in
+		onTarget: { @MainActor [weak self] target, showHUD in
 			self?.publish(brightness: target, touchDate: true)
-			BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .brightness, value: CGFloat(target))
+			if showHUD {
+				BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .brightness, value: CGFloat(target))
+			}
 		},
 		onWriteFailed: { [weak self] in self?.refresh() }
 	)
@@ -42,14 +44,8 @@ final class BrightnessManager: ObservableObject {
 	}
 
 	func setAbsolute(value: Float) {
-		let clamped = max(0, min(1, value))
 		Task { @MainActor in
-			let ok = await client.setScreenBrightness(clamped)
-			if ok {
-				publish(brightness: clamped, touchDate: true)
-			} else {
-				refresh()
-			}
+			burst.setAbsolute(value)
 		}
 	}
 
@@ -91,9 +87,11 @@ final class KeyboardBacklightManager: ObservableObject {
 	private lazy var burst = RelativeLevelBurst(
 		read: { [client] in await client.currentKeyboardBrightness() },
 		write: { [client] in await client.setKeyboardBrightness($0) },
-		onTarget: { @MainActor [weak self] target in
+		onTarget: { @MainActor [weak self] target, showHUD in
 			self?.publish(brightness: target, touchDate: true)
-			BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .backlight, value: CGFloat(target))
+			if showHUD {
+				BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .backlight, value: CGFloat(target))
+			}
 		},
 		onWriteFailed: { [weak self] in self?.refresh() }
 	)
@@ -103,14 +101,8 @@ final class KeyboardBacklightManager: ObservableObject {
 	}
 
 	func setAbsolute(value: Float) {
-		let clamped = max(0, min(1, value))
 		Task { @MainActor in
-			let ok = await client.setKeyboardBrightness(clamped)
-			if ok {
-				publish(brightness: clamped, touchDate: true)
-			} else {
-				refresh()
-			}
+			burst.setAbsolute(value)
 		}
 	}
 
@@ -134,7 +126,7 @@ final class KeyboardBacklightManager: ObservableObject {
 final class RelativeLevelBurst {
 	private let read: () async -> Float?
 	private let write: (Float) async -> Bool
-	private let onTarget: @MainActor (Float) -> Void
+	private let onTarget: @MainActor (Float, Bool) -> Void
 	private let onWriteFailed: () -> Void
 
 	private static let burstWindow: TimeInterval = 1.5
@@ -148,7 +140,7 @@ final class RelativeLevelBurst {
 	init(
 		read: @escaping () async -> Float?,
 		write: @escaping (Float) async -> Bool,
-		onTarget: @escaping @MainActor (Float) -> Void,
+		onTarget: @escaping @MainActor (Float, Bool) -> Void,
 		onWriteFailed: @escaping () -> Void
 	) {
 		self.read = read
@@ -159,7 +151,7 @@ final class RelativeLevelBurst {
 
 	@MainActor func step(by delta: Float, fallback: Float) {
 		if let target, Date() < burstEndsAt {
-			apply(target + delta)
+			apply(target + delta, showHUD: true)
 			return
 		}
 		deltaWhileReading += delta
@@ -170,15 +162,20 @@ final class RelativeLevelBurst {
 			isReadingBase = false
 			let delta = deltaWhileReading
 			deltaWhileReading = 0
-			apply(base + delta)
+			apply(base + delta, showHUD: true)
 		}
 	}
 
-	@MainActor private func apply(_ value: Float) {
+	@MainActor func setAbsolute(_ value: Float) {
+		deltaWhileReading = 0
+		apply(value, showHUD: false)
+	}
+
+	@MainActor private func apply(_ value: Float, showHUD: Bool) {
 		let clamped = max(0, min(1, value))
 		target = clamped
 		burstEndsAt = Date().addingTimeInterval(Self.burstWindow)
-		onTarget(clamped)
+		onTarget(clamped, showHUD)
 		pendingWrite = clamped
 		guard !isWriting else { return }
 		isWriting = true

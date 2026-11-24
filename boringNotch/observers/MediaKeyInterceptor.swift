@@ -40,6 +40,7 @@ final class MediaKeyInterceptor: ObservableObject {
 
     // Event tap resources (synchronized with stateLock; never touched via blocking IPC in callback)
     private let stateLock = NSLock()
+    private var isInstallingTap: Bool = false
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var eventTapThread: Thread?
@@ -52,9 +53,11 @@ final class MediaKeyInterceptor: ObservableObject {
     // Off-main trust watchdog + TCC database stat stamp + DistributedNotification observer + 30s safety debug timer
     private let watchdogQueue = DispatchQueue(label: "com.gravitynotch.TrustWatchdog", qos: .userInteractive)
     private var permissionWatchdog: DispatchSourceTimer?
-    private var lastIdleTrustCheck: CFAbsoluteTime = 0
+    private var currentWatchdogInterval: TimeInterval = 0
+    private var lastTapRecoveryAttempt: CFAbsoluteTime = 0
     private var lastTCCStamp: TCCStamp?
     private var accessibilityDistributedObserver: Any?
+    private var wakeObserver: NSObjectProtocol?
     private var safetyCountdownTimer: Timer?
     private var safetyDeadline: Date?
     private var lastKnownTrust: Bool = MediaKeyInterceptor.isTrustedForActiveTap()
@@ -190,6 +193,7 @@ final class MediaKeyInterceptor: ObservableObject {
         watchdogQueue.async { [weak self] in
             guard let self, self.permissionWatchdog == nil else { return }
             let timer = DispatchSource.makeTimerSource(queue: self.watchdogQueue)
+            self.currentWatchdogInterval = Self.activeWatchdogInterval
             timer.schedule(deadline: .now(), repeating: Self.activeWatchdogInterval, leeway: .milliseconds(50))
             timer.setEventHandler { [weak self] in
                 self?.checkTrustOnWatchdogQueue(force: false)
@@ -199,16 +203,52 @@ final class MediaKeyInterceptor: ObservableObject {
         }
 
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.accessibilityDistributedObserver == nil else { return }
-            self.accessibilityDistributedObserver = DistributedNotificationCenter.default().addObserver(
-                forName: NSNotification.Name("com.apple.accessibility.api"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                guard let self else { return }
-                self.watchdogQueue.async { self.checkTrustOnWatchdogQueue(force: true) }
+            guard let self else { return }
+            if self.accessibilityDistributedObserver == nil {
+                self.accessibilityDistributedObserver = DistributedNotificationCenter.default().addObserver(
+                    forName: NSNotification.Name("com.apple.accessibility.api"),
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    guard let self else { return }
+                    self.watchdogQueue.async { self.checkTrustOnWatchdogQueue(force: true) }
+                }
+            }
+            if self.wakeObserver == nil {
+                self.wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                    forName: NSWorkspace.didWakeNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    guard let self else { return }
+                    self.watchdogQueue.async { self.checkTrustOnWatchdogQueue(force: true) }
+                }
             }
         }
+    }
+
+    private func updateWatchdogCadence(tapActive: Bool, hudEnabled: Bool) {
+        let desired: TimeInterval
+        let leewayMs: Int
+        if tapActive {
+            desired = Self.activeWatchdogInterval
+            leewayMs = 50
+        } else if hudEnabled {
+            desired = Self.idleWatchdogInterval
+            leewayMs = 250
+        } else {
+            desired = 3.0
+            leewayMs = 1000
+        }
+        guard desired != currentWatchdogInterval, let timer = permissionWatchdog else { return }
+        currentWatchdogInterval = desired
+        timer.schedule(deadline: .now() + desired, repeating: desired, leeway: .milliseconds(leewayMs))
+    }
+
+    fileprivate func currentEventTap() -> CFMachPort? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return eventTap
     }
 
     private var hasTapReference: Bool {
@@ -229,6 +269,12 @@ final class MediaKeyInterceptor: ObservableObject {
     /// (such as clicking "-" in Accessibility) in <= 100 ms, bypassing in-process TCC caching.
     private func checkTrustOnWatchdogQueue(force: Bool) {
         let tapActive = hasValidActiveTap
+        let hudEnabled = Defaults[.hudReplacement]
+        updateWatchdogCadence(tapActive: tapActive, hudEnabled: hudEnabled)
+
+        if !force && !hudEnabled && !tapActive && lastTCCStamp != nil {
+            return
+        }
 
         let now = CFAbsoluteTimeGetCurrent()
         let currentStamp = Self.readTCCStamp()
@@ -245,10 +291,19 @@ final class MediaKeyInterceptor: ObservableObject {
             if tapActive {
                 // TCC database unchanged: refresh callback fail-closed lease
                 lastTrustConfirmation = now
+                return
+            }
+            // If the tap dropped transiently (e.g. wake from sleep or timeout burst) while trust holds,
+            // recover automatically instead of staying permanently stuck in degraded mode.
+            if hudEnabled && cachedTrustForCallback && !isSafetyHoldActive && (now - lastTapRecoveryAttempt) >= 2.0 {
+                lastTapRecoveryAttempt = now
+                lastTrustConfirmation = now
+                DispatchQueue.main.async { [weak self] in
+                    self?.applyTrustState(true, freshVerified: false)
+                }
             }
             return
         }
-        lastIdleTrustCheck = now
 
         // If TCC changed while an active tap is installed, tear down the Mach port IMMEDIATELY
         // before spawning the fresh probe so WindowServer cannot drop a single mouse click.
@@ -387,8 +442,13 @@ final class MediaKeyInterceptor: ObservableObject {
         Task { @MainActor in
             self.isDisabledBySafetyTimeout = false
         }
-        if Defaults[.hudReplacement] {
-            _ = installEventTapIfAuthorized(trustAlreadyVerified: false)
+        guard Defaults[.hudReplacement] else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            let trusted = Self.isTrustedFreshViaSubprocess()
+            await MainActor.run {
+                self.applyTrustState(trusted, freshVerified: true)
+            }
         }
     }
 
@@ -427,13 +487,25 @@ final class MediaKeyInterceptor: ObservableObject {
         }
 
         stateLock.lock()
+        if isInstallingTap {
+            stateLock.unlock()
+            return false
+        }
         let existingTap = eventTap
+        if let existingTap, CFMachPortIsValid(existingTap) {
+            stateLock.unlock()
+            return true
+        }
+        isInstallingTap = true
         stateLock.unlock()
 
-        if let existingTap {
-            if CFMachPortIsValid(existingTap) {
-                return true
-            }
+        defer {
+            stateLock.lock()
+            isInstallingTap = false
+            stateLock.unlock()
+        }
+
+        if existingTap != nil {
             tearDownActiveTap(reason: "Stale invalid CFMachPort detected", enterSafetyHold: false)
         }
 
@@ -449,7 +521,7 @@ final class MediaKeyInterceptor: ObservableObject {
                 // Never re-enable on user/system revocation: disable immediately and tear down async.
                 // Never call any TCC check (sync IPC) inside a CGEventTap callback.
                 interceptor.cachedTrustForCallback = false
-                if let tap = interceptor.eventTap {
+                if let tap = interceptor.currentEventTap() {
                     CGEvent.tapEnable(tap: tap, enable: false)
                 }
                 MediaKeyInterceptor.logger.warning("CGEventTap received tapDisabledByUserInput; disabling and tearing down immediately.")
@@ -475,11 +547,11 @@ final class MediaKeyInterceptor: ObservableObject {
                     && !interceptor.isSafetyHoldActive
                     && interceptor.consecutiveTimeoutCount < 2
 
-                if shouldReenable, let tap = interceptor.eventTap, CFMachPortIsValid(tap) {
+                if shouldReenable, let tap = interceptor.currentEventTap(), CFMachPortIsValid(tap) {
                     CGEvent.tapEnable(tap: tap, enable: true)
                     MediaKeyInterceptor.logger.notice("Re-enabled CGEventTap after transient tapDisabledByTimeout")
                 } else {
-                    if let tap = interceptor.eventTap {
+                    if let tap = interceptor.currentEventTap() {
                         CGEvent.tapEnable(tap: tap, enable: false)
                     }
                     MediaKeyInterceptor.logger.warning("CGEventTap disabled after tapDisabledByTimeout; tearing down.")
@@ -498,7 +570,7 @@ final class MediaKeyInterceptor: ObservableObject {
             let trustIsFresh = CFAbsoluteTimeGetCurrent() - interceptor.lastTrustConfirmation
                 < MediaKeyInterceptor.trustStalenessLimit
             if !interceptor.cachedTrustForCallback || !trustIsFresh {
-                if let tap = interceptor.eventTap {
+                if let tap = interceptor.currentEventTap() {
                     CGEvent.tapEnable(tap: tap, enable: false)
                 }
                 DispatchQueue.main.async {
@@ -561,18 +633,35 @@ final class MediaKeyInterceptor: ObservableObject {
         thread.name = "com.gravitynotch.MediaKeyTap"
         thread.qualityOfService = .userInteractive
 
-        stateLock.lock()
-        eventTap = tap
-        runLoopSource = source
-        eventTapThread = thread
-        stateLock.unlock()
-
         thread.start()
         threadReady.wait()
 
         stateLock.lock()
-        eventTapRunLoop = capturedRunLoop
+        let aborted = !Defaults[.hudReplacement] || isSafetyHoldActive || !cachedTrustForCallback || eventTap != nil
+        if !aborted {
+            eventTap = tap
+            runLoopSource = source
+            eventTapThread = thread
+            eventTapRunLoop = capturedRunLoop
+        }
         stateLock.unlock()
+
+        if aborted {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            if let rl = capturedRunLoop {
+                CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) {
+                    CFRunLoopRemoveSource(rl, source, .commonModes)
+                    CFRunLoopStop(rl)
+                }
+                CFRunLoopWakeUp(rl)
+            }
+            return false
+        }
+
+        watchdogQueue.async { [weak self] in
+            self?.updateWatchdogCadence(tapActive: true, hudEnabled: true)
+        }
 
         Self.logger.notice("Active CGEventTap installed and enabled on dedicated Thread run loop (mask=NSSystemDefined only).")
 
@@ -686,9 +775,16 @@ final class MediaKeyInterceptor: ObservableObject {
     }
 
     private func disarmSafetyTimer() {
-        safetyCountdownTimer?.invalidate()
-        safetyCountdownTimer = nil
-        safetyDeadline = nil
+        let cleanup = { [weak self] in
+            self?.safetyCountdownTimer?.invalidate()
+            self?.safetyCountdownTimer = nil
+            self?.safetyDeadline = nil
+        }
+        if Thread.isMainThread {
+            cleanup()
+        } else {
+            DispatchQueue.main.async(execute: cleanup)
+        }
     }
 
     // MARK: - Passive Degraded Mode Monitors (Listen-Only)
@@ -764,7 +860,7 @@ final class MediaKeyInterceptor: ObservableObject {
 
         // 4. Verify cached permission and safety hold before swallowing any event (zero sync IPC here).
         if isSafetyHoldActive || !cachedTrustForCallback {
-            if let tap = eventTap {
+            if let tap = currentEventTap() {
                 CGEvent.tapEnable(tap: tap, enable: false)
             }
             DispatchQueue.main.async { [weak self] in
@@ -892,18 +988,18 @@ final class MediaKeyInterceptor: ObservableObject {
         Task { @MainActor in
             switch keyType {
             case .soundUp, .soundDown, .mute:
-                let v = VolumeManager.shared.rawVolume
+                let v = VolumeManager.shared.isMuted ? 0 : VolumeManager.shared.rawVolume
                 BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .volume, value: CGFloat(v))
             case .brightnessUp, .brightnessDown:
                 if command {
-                    let v = KeyboardBacklightManager.shared.rawBrightness
+                    let v = await XPCHelperClient.shared.currentKeyboardBrightness() ?? KeyboardBacklightManager.shared.rawBrightness
                     BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .backlight, value: CGFloat(v))
                 } else {
-                    let v = BrightnessManager.shared.rawBrightness
+                    let v = await XPCHelperClient.shared.currentScreenBrightness() ?? BrightnessManager.shared.rawBrightness
                     BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .brightness, value: CGFloat(v))
                 }
             case .keyboardBrightnessUp, .keyboardBrightnessDown:
-                let v = KeyboardBacklightManager.shared.rawBrightness
+                let v = await XPCHelperClient.shared.currentKeyboardBrightness() ?? KeyboardBacklightManager.shared.rawBrightness
                 BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .backlight, value: CGFloat(v))
             }
         }

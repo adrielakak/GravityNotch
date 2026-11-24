@@ -12,6 +12,7 @@ struct PermissionRequestView: View {
     let title: LocalizedStringKey
     let description: LocalizedStringKey
     let privacyNote: LocalizedStringKey?
+    var footnote: LocalizedStringKey? = nil
     let onAllow: () -> Void
     let onSkip: () -> Void
 
@@ -31,6 +32,13 @@ struct PermissionRequestView: View {
             Text(description)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
+
+            if let footnote {
+                Text(footnote)
+                    .font(.subheadline.weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+            }
 
             if let privacyNote = privacyNote {
                 HStack(spacing: 8) {

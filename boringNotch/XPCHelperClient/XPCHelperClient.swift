@@ -96,15 +96,11 @@ final class XPCHelperClient: NSObject {
     }
     
     // MARK: - Accessibility
-    
+    // Accessibility belongs to the main app process (which owns the CGEventTap), never the XPC helper.
+
     nonisolated func requestAccessibilityAuthorization() {
-        Task {
-            let service = await MainActor.run {
-                ensureRemoteService()
-            }
-            try? await service.withService { service in
-                service.requestAccessibilityAuthorization()
-            }
+        Task { @MainActor in
+            MediaKeyInterceptor.shared.requestAccessibilityAuthorization()
         }
     }
     
@@ -117,22 +113,19 @@ final class XPCHelperClient: NSObject {
     }
     
     nonisolated func ensureAccessibilityAuthorization(promptIfNeeded: Bool) async -> Bool {
-        do {
-            let service = await MainActor.run {
-                ensureRemoteService()
-            }
-            let result: Bool = try await service.withContinuation { service, continuation in
-                service.ensureAccessibilityAuthorization(promptIfNeeded) { authorized in
-                    continuation.resume(returning: authorized)
-                }
-            }
-            await MainActor.run {
-                notifyAuthorizationChange(result)
-            }
-            return result
-        } catch {
-            return false
+        if MediaKeyInterceptor.isTrustedFreshViaSubprocess() {
+            await MainActor.run { notifyAuthorizationChange(true) }
+            return true
         }
+        if promptIfNeeded {
+            await MainActor.run {
+                MediaKeyInterceptor.shared.requestAccessibilityAuthorization()
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(500))
+        let granted = MediaKeyInterceptor.isTrustedFreshViaSubprocess()
+        await MainActor.run { notifyAuthorizationChange(granted) }
+        return granted
     }
     
     // MARK: - Keyboard Brightness

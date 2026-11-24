@@ -110,6 +110,9 @@ struct OnboardingView: View {
                     title: "Enable Accessibility Access",
                     description: "Accessibility access is required to replace system notifications with the Boring Notch HUD. This allows the app to intercept media and brightness events to display custom HUD overlays.",
                     privacyNote: "Accessibility access is used only to improve media and brightness notifications. No data is collected or shared.",
+                    footnote: ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+                        ? "On macOS 27, this permission is called Device Control and Data Access, in System Settings > Privacy & Security."
+                        : nil,
                     onAllow: {
                         Task {
                             await requestAccessibilityPermission()

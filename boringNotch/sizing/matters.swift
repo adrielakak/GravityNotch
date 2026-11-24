@@ -63,13 +63,19 @@ enum MusicPlayerImageSizes {
             if Defaults[.notchHeightMode] == .matchRealNotchSize {
                 notchHeight = screen.safeAreaInsets.top
             } else if Defaults[.notchHeightMode] == .matchMenuBar {
-                notchHeight = screen.frame.maxY - screen.visibleFrame.maxY
+                let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
+                if menuBarHeight > 0 {
+                    notchHeight = menuBarHeight
+                }
             }
         } else {
             // This is a display WITHOUT a notch - use non-notch height settings
             notchHeight = Defaults[.nonNotchHeight]
             if Defaults[.nonNotchHeightMode] == .matchMenuBar {
-                notchHeight = screen.frame.maxY - screen.visibleFrame.maxY
+                let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
+                if menuBarHeight > 0 {
+                    notchHeight = menuBarHeight
+                }
             }
         }
     }

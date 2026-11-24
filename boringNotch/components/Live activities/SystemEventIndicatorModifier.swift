@@ -11,14 +11,7 @@ import Defaults
 struct SystemEventIndicatorModifier: View {
     @EnvironmentObject var vm: BoringViewModel
     @Binding var eventType: SneakContentType
-    @Binding var value: CGFloat {
-        didSet {
-            DispatchQueue.main.async {
-                self.sendEventBack(value)
-                self.vm.objectWillChange.send()
-            }
-        }
-    }
+    @Binding var value: CGFloat
     @Binding var icon: String
     let showSlider: Bool = false
     var sendEventBack: (CGFloat) -> Void
@@ -45,7 +38,7 @@ struct SystemEventIndicatorModifier: View {
                         .frame(width: 20, height: 15)
                         .foregroundStyle(.white)
                 case .backlight:
-                    Image(systemName: value > 0.5 ? "light.max" : "light.min")
+                    Image(systemName: icon.isEmpty ? (value > 0.5 ? "light.max" : "light.min") : icon)
                         .contentTransition(.interpolate)
                         .frame(width: 20, height: 15)
                         .foregroundStyle(.white)
@@ -59,7 +52,9 @@ struct SystemEventIndicatorModifier: View {
                     EmptyView()
             }
             if (eventType != .mic) {
-                DraggableProgressBar(value: $value)
+                DraggableProgressBar(value: $value, onChange: { newVal in
+                    sendEventBack(newVal)
+                })
                 if Defaults[.showClosedNotchHUDPercentage] {
                     Text("\(Int(value * 100))%")
                         .font(.system(size: 12, weight: .medium))
@@ -150,8 +145,10 @@ struct DraggableProgressBar: View {
     }
     
     private func updateValue(gesture: DragGesture.Value, in geometry: GeometryProxy) {
+        guard geometry.size.width > 0 else { return }
         let dragPosition = gesture.location.x
         let newValue = dragPosition / geometry.size.width
+        guard newValue.isFinite else { return }
         
         value = max(0, min(newValue, 1))
         onChange?(value)

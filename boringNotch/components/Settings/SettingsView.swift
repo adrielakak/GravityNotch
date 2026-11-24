@@ -196,7 +196,7 @@ struct GeneralSettings: View {
                         Text(screen.name).tag(screen.uuid as String?)
                     }
                 }
-                .onChange(of: NSScreen.screens) {
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
                     screens = NSScreen.screens.compactMap { screen in
                         guard let uuid = screen.displayUUID else { return nil }
                         return (uuid, screen.localizedName)
@@ -399,11 +399,6 @@ struct Charge: View {
                 Text("Battery Information")
             }
         }
-        .onAppear {
-            Task { @MainActor in
-                await XPCHelperClient.shared.isAccessibilityAuthorized()
-            }
-        }
         .accentColor(.effectiveAccent)
         .navigationTitle("Battery")
     }
@@ -501,7 +496,7 @@ struct HUD: View {
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
     @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
-    @State private var accessibilityAuthorized = MediaKeyInterceptor.isTrustedFreshViaSubprocess()
+    @State private var accessibilityAuthorized = MediaKeyInterceptor.shared.isAccessibilityGranted
 
     /// From macOS 27 MenuBarAgent hosts the AirPods banner and ignores Accessibility moves (issue #18)
     private var systemBannerHidingUnsupported: Bool {
@@ -542,6 +537,11 @@ struct HUD: View {
                         Text("Accessibility access is required to replace the system HUD.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+                            Text("On macOS 27, this permission is called Device Control and Data Access, in System Settings > Privacy & Security.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
 
                         HStack(spacing: 12) {
                             Button("Open System Settings") {
@@ -1277,10 +1277,6 @@ struct Shelf: View {
         quickShareService.availableProviders.first(where: { $0.id == quickShareProvider })
     }
     
-    init() {
-        Task { await QuickShareService.shared.discoverAvailableProviders() }
-    }
-    
     var body: some View {
         Form {
             Section {
@@ -1372,6 +1368,9 @@ struct Shelf: View {
         }
         .accentColor(.effectiveAccent)
         .navigationTitle("Shelf")
+        .task {
+            await QuickShareService.shared.discoverAvailableProviders()
+        }
     }
 }
 

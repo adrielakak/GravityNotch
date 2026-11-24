@@ -22,6 +22,11 @@ struct BoringHeader: View {
     @Default(.showAgentsTab) private var showAgentsTab
     @Default(.showTimerButton) private var showTimerButton
     @Default(.showCaffeineButton) private var showCaffeineButton
+    @Default(.showOpenNotchHUD) private var showOpenNotchHUD
+    @Default(.hudReplacement) private var hudReplacement
+    @Default(.showMirror) private var showMirror
+    @Default(.settingsIconInNotch) private var settingsIconInNotch
+    @Default(.showBatteryIndicator) private var showBatteryIndicator
 
     private var hasExtraTabs: Bool {
         boringShelf || showClipboardTab || showAgentsTab
@@ -43,7 +48,7 @@ struct BoringHeader: View {
 
             if vm.notchState == .open {
                 Rectangle()
-                    .fill(NSScreen.screen(withUUID: coordinator.selectedScreenUUID)?.safeAreaInsets.top ?? 0 > 0 ? .black : .clear)
+                    .fill(NSScreen.screen(withUUID: vm.screenUUID ?? coordinator.selectedScreenUUID)?.safeAreaInsets.top ?? 0 > 0 ? .black : .clear)
                     .frame(width: vm.closedNotchSize.width)
                     .mask {
                         NotchShape()
@@ -52,11 +57,11 @@ struct BoringHeader: View {
 
             HStack(spacing: 4) {
                 if vm.notchState == .open {
-                    if isHUDType(coordinator.sneakPeek.type) && coordinator.sneakPeek.show && Defaults[.showOpenNotchHUD] {
+                    if isHUDType(coordinator.sneakPeek.type) && coordinator.sneakPeek.show && showOpenNotchHUD {
                         OpenNotchHUD(type: $coordinator.sneakPeek.type, value: $coordinator.sneakPeek.value, icon: $coordinator.sneakPeek.icon)
                             .transition(.scale(scale: 0.8).combined(with: .opacity))
                     } else {
-                        if Defaults[.hudReplacement] && !mediaKeyInterceptor.isAccessibilityGranted {
+                        if hudReplacement && !mediaKeyInterceptor.isAccessibilityGranted {
                             Button(action: {
                                 mediaKeyInterceptor.openAccessibilitySystemSettings()
                             }) {
@@ -83,7 +88,7 @@ struct BoringHeader: View {
                             .buttonStyle(PlainButtonStyle())
                             .help("Accessibility permission required - Click to open System Settings")
                         }
-                        if Defaults[.showMirror] {
+                        if showMirror {
                             Button(action: {
                                 vm.toggleCameraPreview()
                             }) {
@@ -179,7 +184,7 @@ struct BoringHeader: View {
                         if updateReady.showsNotice {
                             UpdateReadyPill()
                                 .transition(.scale(scale: 0.8).combined(with: .opacity))
-                        } else if Defaults[.settingsIconInNotch] {
+                        } else if settingsIconInNotch {
                             Button(action: {
                                 DispatchQueue.main.async {
                                     SettingsWindowController.shared.showWindow()
@@ -198,7 +203,7 @@ struct BoringHeader: View {
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
-                        if Defaults[.showBatteryIndicator] {
+                        if showBatteryIndicator {
                             BoringBatteryView(
                                 batteryWidth: 30,
                                 isCharging: batteryModel.isCharging,

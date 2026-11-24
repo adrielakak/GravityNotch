@@ -42,6 +42,9 @@ class BoringViewModel: NSObject, ObservableObject {
     @Published var isRequestingAuthorization: Bool = false
     
     deinit {
+        if notchState == .open {
+            Self.openNotchCount = max(0, Self.openNotchCount - 1)
+        }
         destroy()
     }
 
@@ -63,8 +66,7 @@ class BoringViewModel: NSObject, ObservableObject {
             .map { shelf, drag, general in
                 shelf || drag || general
             }
-            .assign(to: \.anyDropZoneTargeting, on: self)
-            .store(in: &cancellables)
+            .assign(to: &$anyDropZoneTargeting)
         
         setupDetectorObserver()
     }
@@ -205,29 +207,48 @@ class BoringViewModel: NSObject, ObservableObject {
         if Defaults[.enableLyrics] { MusicManager.shared.refreshLyrics() }
     }
 
-    func close() {
-        // Do not close while a share picker or sharing service is active
-        if SharingStateManager.shared.preventNotchClose {
+    func close(force: Bool = false) {
+        // Do not close while a share picker or sharing service is active unless forced (e.g. screen lock)
+        if !force && SharingStateManager.shared.preventNotchClose {
             return
         }
-        if notchState == .open { Self.openNotchCount = max(0, Self.openNotchCount - 1) }
+        let wasOpen = (notchState == .open)
+        if wasOpen {
+            Self.openNotchCount = max(0, Self.openNotchCount - 1)
+        }
         self.notchSize = getClosedNotchSize(screenUUID: self.screenUUID)
         self.closedNotchSize = self.notchSize
         self.notchState = .closed
-        MainActor.assumeIsolated {
-            AgentSpeechBubbleController.shared.notchDidClose(self)
-            AudioOutputRoutingMenu.shared.showPanelInHome = false
+        self.dragDetectorTargeting = false
+        self.generalDropTargeting = false
+        self.dropZoneTargeting = false
+        self.dropEvent = false
+        self.isHoveringCalendar = false
+        if self.isCameraExpanded {
+            self.webcamManager.stopSession()
+            self.isCameraExpanded = false
         }
         self.isBatteryPopoverActive = false
-        self.coordinator.sneakPeek.show = false
         self.edgeAutoOpenActive = false
 
+        MainActor.assumeIsolated {
+            AgentSpeechBubbleController.shared.notchDidClose(self)
+        }
+
+        // Only reset shared singletons when closing an open notch and no other display's notch remains open
+        guard (wasOpen || force) && Self.openNotchCount == 0 else { return }
+
+        MainActor.assumeIsolated {
+            AudioOutputRoutingMenu.shared.showPanelInHome = false
+        }
+        self.coordinator.sneakPeek.show = false
+
         // Set the current view to shelf if it contains files and the user enables openShelfByDefault
-        // Otherwise, if the user has not enabled openLastShelfByDefault, set the view to home
-    if coordinator.currentView == .timer || coordinator.currentView == .caffeine {
+        // Otherwise, if the user has not enabled openLastTabByDefault, set the view to home
+        if coordinator.currentView == .timer || coordinator.currentView == .caffeine {
             coordinator.currentView = .home
         }
-    if !ShelfStateViewModel.shared.isEmpty && Defaults[.openShelfByDefault] {
+        if Defaults[.boringShelf] && !ShelfStateViewModel.shared.isEmpty && Defaults[.openShelfByDefault] {
             coordinator.currentView = .shelf
         } else if !coordinator.openLastTabByDefault {
             coordinator.currentView = .home

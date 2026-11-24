@@ -10,20 +10,37 @@ import SkyLightWindow
 import Defaults
 import Combine
 
+private enum SkyLightSymbols {
+    typealias F_SLSRemoveWindowsFromSpaces = @convention(c) (Int32, CFArray, CFArray) -> Int32
+
+    private static let handle: UnsafeMutableRawPointer? = dlopen(
+        "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
+        RTLD_NOW
+    )
+
+    /// Verifies all private symbols required by SkyLightWindow before instantiating `SkyLightOperator.shared`.
+    static let isAvailable: Bool = {
+        guard let handle else { return false }
+        let required = [
+            "SLSMainConnectionID",
+            "SLSSpaceCreate",
+            "SLSSpaceSetAbsoluteLevel",
+            "SLSShowSpaces",
+            "SLSSpaceAddWindowsAndRemoveFromSpaces"
+        ]
+        return required.allSatisfy { dlsym(handle, $0) != nil }
+    }()
+
+    static let removeWindowsFromSpaces: F_SLSRemoveWindowsFromSpaces? = {
+        guard let handle, let sym = dlsym(handle, "SLSRemoveWindowsFromSpaces") else { return nil }
+        return unsafeBitCast(sym, to: F_SLSRemoveWindowsFromSpaces.self)
+    }()
+}
+
 extension SkyLightOperator {
     func undelegateWindow(_ window: NSWindow) {
-        typealias F_SLSRemoveWindowsFromSpaces = @convention(c) (Int32, CFArray, CFArray) -> Int32
-        
-        let handler = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight", RTLD_NOW)
-        guard let SLSRemoveWindowsFromSpaces = unsafeBitCast(
-            dlsym(handler, "SLSRemoveWindowsFromSpaces"),
-            to: F_SLSRemoveWindowsFromSpaces?.self
-        ) else {
-            return
-        }
-        
-        // Remove the window from the SkyLight space
-        _ = SLSRemoveWindowsFromSpaces(
+        guard let removeWindows = SkyLightSymbols.removeWindowsFromSpaces else { return }
+        _ = removeWindows(
             connection,
             [window.windowNumber] as CFArray,
             [space] as CFArray
@@ -33,6 +50,8 @@ extension SkyLightOperator {
 
 class BoringNotchSkyLightWindow: NSPanel {
     private var isSkyLightEnabled: Bool = false
+    /// Only the interactive notch panel opts into becoming key (on demand for TextField inputs like Clips search).
+    var allowsKeyWindow: Bool = false
     
     override init(
         contentRect: NSRect,
@@ -53,6 +72,7 @@ class BoringNotchSkyLightWindow: NSPanel {
     
     private func configureWindow() {
         isFloatingPanel = true
+        becomesKeyOnlyIfNeeded = true
         isOpaque = false
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
@@ -94,6 +114,7 @@ class BoringNotchSkyLightWindow: NSPanel {
     }
     
     func enableSkyLight() {
+        guard SkyLightSymbols.isAvailable else { return }
         if !isSkyLightEnabled {
             SkyLightOperator.shared.delegateWindow(self)
             isSkyLightEnabled = true
@@ -109,6 +130,6 @@ class BoringNotchSkyLightWindow: NSPanel {
     
     private var observers: Set<AnyCancellable> = []
     
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { allowsKeyWindow && !isSkyLightEnabled && BoringViewModel.openNotchCount > 0 }
     override var canBecomeMain: Bool { false }
 }

@@ -17,6 +17,7 @@ final class YouTubeMusicController: MediaControllerProtocol {
     )
 
     private var artworkFetchTask: Task<Void, Never>?
+    private var lastArtworkURL: String?
     
     var playbackStatePublisher: AnyPublisher<PlaybackState, Never> {
         $playbackState.eraseToAnyPublisher()
@@ -28,6 +29,9 @@ final class YouTubeMusicController: MediaControllerProtocol {
 
     var supportsFavorite: Bool { true }
 
+    // playbackState is only mutated on the main actor: it used to be written from the WebSocket, the
+    // polling and the commands on several threads at once
+    @MainActor
     func setFavorite(_ favorite: Bool) async {
         do {
             let token = try await authManager.authenticate()
@@ -63,6 +67,15 @@ final class YouTubeMusicController: MediaControllerProtocol {
         
         Task {
             await initializeIfAppActive()
+        }
+    }
+
+    deinit {
+        appStateObserver?.cancel()
+        artworkFetchTask?.cancel()
+        updateTimer?.invalidate()
+        if let webSocketClient {
+            Task { await webSocketClient.disconnect() }
         }
     }
     
@@ -103,6 +116,7 @@ final class YouTubeMusicController: MediaControllerProtocol {
         }
     }
     
+    @MainActor
     func updatePlaybackInfo() async {
         guard isActive() else {
             resetPlaybackState()
@@ -183,17 +197,20 @@ final class YouTubeMusicController: MediaControllerProtocol {
             return
         }
         
-        Task { @MainActor in
+        // The launch and quit observer stays alive: cancelling it here meant a relaunched app was never seen
+        await MainActor.run {
             stopPeriodicUpdates()
-            appStateObserver?.cancel()
+            artworkFetchTask?.cancel()
+            artworkFetchTask = nil
+            lastArtworkURL = nil
         }
-        
+
         Task {
             await webSocketClient?.disconnect()
             webSocketClient = nil
         }
-        
-        resetPlaybackState()
+
+        await resetPlaybackState()
     }
     
     private func initializeIfAppActive() async {
@@ -228,7 +245,7 @@ final class YouTubeMusicController: MediaControllerProtocol {
         do {
             try await client.connect(to: wsURL, with: token)
             webSocketClient = client
-            stopPeriodicUpdates() // WebSocket will provide real-time updates
+            await stopPeriodicUpdates() // WebSocket will provide real-time updates
             reconnectDelay = configuration.reconnectDelay.lowerBound
         } catch {
             print("[YouTubeMusicController] WebSocket connection failed: \(error)")
@@ -236,6 +253,7 @@ final class YouTubeMusicController: MediaControllerProtocol {
         }
     }
     
+    @MainActor
     private func handleWebSocketMessage(_ data: Data) async {
         guard let message = WebSocketMessage(from: data) else {
             if let response = try? JSONDecoder().decode(PlaybackResponse.self, from: data) {
@@ -317,6 +335,8 @@ final class YouTubeMusicController: MediaControllerProtocol {
         }
     }
     
+    // Main actor: a Timer needs a running run loop, it never fired from a cooperative thread
+    @MainActor
     private func startPeriodicUpdates() async {
         guard isActive() && webSocketClient == nil else { return }
         
@@ -329,11 +349,13 @@ final class YouTubeMusicController: MediaControllerProtocol {
         }
     }
     
+    @MainActor
     private func stopPeriodicUpdates() {
         updateTimer?.invalidate()
         updateTimer = nil
     }
 
+    @MainActor
     func pollPlaybackState() async {
         if !isActive() {
             return
@@ -344,6 +366,7 @@ final class YouTubeMusicController: MediaControllerProtocol {
         await updatePlaybackInfo()
     }
     
+    @MainActor
     private func sendCommand(
         endpoint: String,
         method: String = "POST",
@@ -390,6 +413,7 @@ final class YouTubeMusicController: MediaControllerProtocol {
         }
     }
     
+    @MainActor
     private func updatePlaybackState(with response: PlaybackResponse) async {
         var newState = playbackState
         
@@ -436,25 +460,29 @@ final class YouTubeMusicController: MediaControllerProtocol {
 
         if newState != playbackState {
             playbackState = newState
+        }
 
+        // Only a new cover is downloaded: position updates used to restart the download every time
+        if let artworkURL = response.imageSrc, let url = URL(string: artworkURL),
+           artworkURL != lastArtworkURL || playbackState.artwork == nil {
+            guard artworkURL != lastArtworkURL || artworkFetchTask == nil else { return }
             artworkFetchTask?.cancel()
-            artworkFetchTask = nil
-
-            if let artworkURL = response.imageSrc,
-               let url = URL(string: artworkURL) {
-                artworkFetchTask = Task {
-                    do {
-                        let data = try await ImageService.shared.fetchImageData(from: url)
-                        await MainActor.run { [weak self] in
-                            self?.playbackState.artwork = data
-
-                        }
-                    } catch { /* ignore */ }
+            lastArtworkURL = artworkURL
+            let title = playbackState.title
+            artworkFetchTask = Task { @MainActor [weak self] in
+                let data = try? await ImageService.shared.fetchImageData(from: url)
+                guard !Task.isCancelled, let self else { return }
+                self.artworkFetchTask = nil
+                guard let data, self.lastArtworkURL == artworkURL, self.playbackState.title == title else {
+                    if data == nil { self.lastArtworkURL = nil }
+                    return
                 }
+                self.playbackState.artwork = data
             }
         }
     }
     
+    @MainActor
     private func resetPlaybackState() {
         playbackState = PlaybackState(
             bundleIdentifier: configuration.bundleIdentifier,
@@ -469,6 +497,7 @@ final class YouTubeMusicController: MediaControllerProtocol {
         NSWorkspace.shared.open(url)
     }
 
+     @MainActor
      private func updateRepeatMode(_ mode: String) {
         var target: RepeatMode? = nil
         switch mode {

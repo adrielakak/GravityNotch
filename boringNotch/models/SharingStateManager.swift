@@ -103,10 +103,10 @@ final class SharingLifecycleDelegate: NSObject, NSSharingServiceDelegate, NSShar
 		startTimeoutFallback()
 	}
 	
-	private func startTimeoutFallback() {
+	private func startTimeoutFallback(seconds: TimeInterval = 6) {
 		timeoutTask?.cancel()
 		timeoutTask = Task { @MainActor [weak self] in
-			try? await Task.sleep(for: .seconds(2))
+			try? await Task.sleep(for: .seconds(seconds))
 			guard let self = self, !Task.isCancelled else { return }
 			if !self.finished {
 				self.finishIfNeeded()
@@ -134,7 +134,7 @@ final class SharingLifecycleDelegate: NSObject, NSSharingServiceDelegate, NSShar
 
 		service?.delegate = self
 		serviceInProgress = true
-		startTimeoutFallback()
+		startTimeoutFallback(seconds: 6)
 	}
 
 	// MARK: - NSSharingServiceDelegate
@@ -144,6 +144,8 @@ final class SharingLifecycleDelegate: NSObject, NSSharingServiceDelegate, NSShar
 			onBegin()
 		}
 		serviceInProgress = true
+		// The service actually started: cancel the short startup fallback and use a generous transfer ceiling
+		startTimeoutFallback(seconds: 120)
 	}
 
 	func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {

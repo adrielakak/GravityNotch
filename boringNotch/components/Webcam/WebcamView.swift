@@ -19,8 +19,8 @@ struct CameraPreviewView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                if let previewLayer = webcamManager.previewLayer {
-                    CameraPreviewLayerView(previewLayer: previewLayer)
+                if let session = webcamManager.activeSession {
+                    CameraPreviewLayerView(session: session)
                         .scaleEffect(x: -1, y: 1)
                         .clipShape(RoundedRectangle(cornerRadius: Defaults[.mirrorShape] == .rectangle ? !Defaults[.cornerRadiusScaling] ? MusicPlayerImageSizes.cornerRadiusInset.closed : MusicPlayerImageSizes.cornerRadiusInset.opened : 100))
                         .frame(width: geometry.size.width, height: geometry.size.width)
@@ -49,6 +49,7 @@ struct CameraPreviewView: View {
             }
             .onDisappear {
                 webcamManager.stopSession()
+                vm.isCameraExpanded = false
             }
         }
         .aspectRatio(1, contentMode: .fit)
@@ -94,10 +95,11 @@ struct CameraPreviewView: View {
 }
 
 struct CameraPreviewLayerView: NSViewRepresentable {
-    let previewLayer: AVCaptureVideoPreviewLayer
+    let session: AVCaptureSession
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
+        let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.frame = view.bounds
         previewLayer.videoGravity = .resizeAspectFill
         view.layer = previewLayer
@@ -106,6 +108,10 @@ struct CameraPreviewLayerView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        guard let previewLayer = nsView.layer as? AVCaptureVideoPreviewLayer else { return }
+        if previewLayer.session !== session {
+            previewLayer.session = session
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         previewLayer.frame = nsView.bounds

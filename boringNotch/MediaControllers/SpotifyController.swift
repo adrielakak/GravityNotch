@@ -135,7 +135,8 @@ class SpotifyController: MediaControllerProtocol {
             return
         }
         guard let descriptor = try? await fetchPlaybackInfoAsync() else { return }
-        guard descriptor.numberOfItems >= 10 else { return }
+        // Spotify quit while the script ran: its answer would bring the closed player back as playing
+        guard isActive(), descriptor.numberOfItems >= 10 else { return }
         
         let isPlaying = descriptor.atIndex(1)?.booleanValue ?? false
         let currentTrack = descriptor.atIndex(2)?.stringValue ?? "Unknown"
@@ -174,25 +175,20 @@ class SpotifyController: MediaControllerProtocol {
             guard artworkURL != lastArtworkURL || state.artwork == nil else { return }
             artworkFetchTask?.cancel()
 
-            let currentState = state
+            let title = state.title
+            let artist = state.artist
 
-            artworkFetchTask = Task {
-                do {
-                    let data = try await ImageService.shared.fetchImageData(from: url)
-
-                    await MainActor.run { [weak self] in
-                        guard let self = self else { return }
-                        var updatedState = currentState
-                        updatedState.artwork = data
-                        self.playbackState = updatedState
-                        self.lastArtworkURL = artworkURL
-                        self.artworkFetchTask = nil
-                    }
-                } catch {
-                    await MainActor.run { [weak self] in
-                        self?.artworkFetchTask = nil
-                    }
-                }
+            // Only the cover is filled in: replacing the whole state with the snapshot taken before the
+            // download undid a pause, a seek or a quit that happened meanwhile
+            artworkFetchTask = Task { @MainActor [weak self] in
+                let data = try? await ImageService.shared.fetchImageData(from: url)
+                guard !Task.isCancelled, let self else { return }
+                self.artworkFetchTask = nil
+                guard let data, self.playbackState.title == title, self.playbackState.artist == artist else { return }
+                var updatedState = self.playbackState
+                updatedState.artwork = data
+                self.playbackState = updatedState
+                self.lastArtworkURL = artworkURL
             }
         }
     }
@@ -213,22 +209,24 @@ class SpotifyController: MediaControllerProtocol {
     private func fetchPlaybackInfoAsync() async throws -> NSAppleEventDescriptor? {
         let script = """
         tell application "Spotify"
-            set isRunning to true
-            try
-                set playerState to player state is playing
-                set currentTrackName to name of current track
-                set currentTrackArtist to artist of current track
-                set currentTrackAlbum to album of current track
-                set trackPosition to player position
-                set trackDuration to duration of current track
-                set shuffleState to shuffling
-                set repeatState to repeating
-                set currentVolume to sound volume
-                set artworkURL to artwork url of current track
-                return {playerState, currentTrackName, currentTrackArtist, currentTrackAlbum, trackPosition, trackDuration, shuffleState, repeatState, currentVolume, artworkURL}
-            on error
-                return {false, "Unknown", "Unknown", "Unknown", 0, 0, false, false, 50, ""}
-            end try
+            if it is running then
+                try
+                    set playerState to player state is playing
+                    set currentTrackName to name of current track
+                    set currentTrackArtist to artist of current track
+                    set currentTrackAlbum to album of current track
+                    set trackPosition to player position
+                    set trackDuration to duration of current track
+                    set shuffleState to shuffling
+                    set repeatState to repeating
+                    set currentVolume to sound volume
+                    set artworkURL to artwork url of current track
+                    return {playerState, currentTrackName, currentTrackArtist, currentTrackAlbum, trackPosition, trackDuration, shuffleState, repeatState, currentVolume, artworkURL}
+                on error
+                    return {false, "Unknown", "Unknown", "Unknown", 0, 0, false, false, 50, ""}
+                end try
+            end if
+            return {false, "Unknown", "Unknown", "Unknown", 0, 0, false, false, 50, ""}
         end tell
         """
         

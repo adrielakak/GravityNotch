@@ -34,12 +34,17 @@ struct LottieView: NSViewRepresentable {
         guard let animationView = nsView.subviews.first as? LottieAnimationView else { return }
         let lastURL = objc_getAssociatedObject(animationView, &Self.associatedURLKey) as? URL
         if lastURL != url {
-            LottieAnimation.loadedFrom(url: url) { animation in
+            // Record requested URL immediately to avoid duplicate network downloads during async load
+            objc_setAssociatedObject(animationView, &Self.associatedURLKey, url, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            let requestedURL = url
+            LottieAnimation.loadedFrom(url: requestedURL) { [weak animationView] animation in
+                guard let animationView else { return }
+                let currentURL = objc_getAssociatedObject(animationView, &Self.associatedURLKey) as? URL
+                guard currentURL == requestedURL else { return }
                 animationView.animation = animation
                 animationView.loopMode = loopMode
                 animationView.animationSpeed = CGFloat(speed)
                 animationView.play()
-                objc_setAssociatedObject(animationView, &Self.associatedURLKey, url, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
             }
         } else {
             animationView.loopMode = loopMode
@@ -47,6 +52,12 @@ struct LottieView: NSViewRepresentable {
             if !animationView.isAnimationPlaying {
                 animationView.play()
             }
+        }
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
+        if let animationView = nsView.subviews.first as? LottieAnimationView {
+            animationView.stop()
         }
     }
 }

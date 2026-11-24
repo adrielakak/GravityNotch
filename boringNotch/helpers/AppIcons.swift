@@ -170,9 +170,10 @@ final class AudioOutputRoutingMenu: NSObject, ObservableObject {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &devAddr, 0, nil, &propSize, &ids) == noErr else {
             return []
         }
+        let actualCount = min(count, Int(propSize) / MemoryLayout<AudioDeviceID>.size)
 
         var outputs: [OutputDevice] = []
-        for id in ids {
+        for id in ids.prefix(actualCount) {
             var streamSize: UInt32 = 0
             var streamAddr = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyStreams,
@@ -193,17 +194,15 @@ final class AudioOutputRoutingMenu: NSObject, ObservableObject {
                 continue
             }
             if AudioObjectGetPropertyDataSize(id, &streamAddr, 0, nil, &streamSize) == noErr, streamSize > 0 {
-                var cfName: CFString = "" as CFString
-                var nameSize = UInt32(MemoryLayout<CFString>.size)
+                var cfNameRef: Unmanaged<CFString>? = nil
+                var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
                 var nameAddr = AudioObjectPropertyAddress(
                     mSelector: kAudioObjectPropertyName,
                     mScope: kAudioObjectPropertyScopeGlobal,
                     mElement: kAudioObjectPropertyElementMain
                 )
-                let status = withUnsafeMutablePointer(to: &cfName) { ptr in
-                    AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, ptr)
-                }
-                if status == noErr {
+                let status = AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &cfNameRef)
+                if status == noErr, let name = cfNameRef?.takeRetainedValue() as String? {
                     var transport: UInt32 = 0
                     var transportSize = UInt32(MemoryLayout<UInt32>.size)
                     var transportAddr = AudioObjectPropertyAddress(
@@ -212,7 +211,7 @@ final class AudioOutputRoutingMenu: NSObject, ObservableObject {
                         mElement: kAudioObjectPropertyElementMain
                     )
                     AudioObjectGetPropertyData(id, &transportAddr, 0, nil, &transportSize, &transport)
-                    outputs.append(OutputDevice(id: id, name: cfName as String, isDefault: id == defaultID, transportType: transport))
+                    outputs.append(OutputDevice(id: id, name: name, isDefault: id == defaultID, transportType: transport))
                 }
             }
         }
@@ -227,7 +226,10 @@ final class AudioOutputRoutingMenu: NSObject, ObservableObject {
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, size, &id)
+        let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, size, &id)
+        if status != noErr {
+            devices = availableOutputDevices()
+        }
     }
 }
 
@@ -393,6 +395,7 @@ private final class BluetoothBannerSuppressor {
     private var axObserver: AXObserver?
     private var observedPID: pid_t = 0
     private var followUpTask: Task<Void, Never>?
+    private var movedListeningWindows: [(window: AXUIElement, origin: CGPoint)] = []
     private var lastSuppressionAt: Date = .distantPast
     private var cancellables = Set<AnyCancellable>()
     private lazy var connectedLabels: Set<String> = Self.loadConnectedLabels()
@@ -503,7 +506,7 @@ private final class BluetoothBannerSuppressor {
         }
         let appElement = AXUIElementCreateApplication(pid)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
-        let statuses = [kAXCreatedNotification, kAXWindowCreatedNotification, kAXMovedNotification].map {
+        let statuses = [kAXWindowCreatedNotification, kAXMovedNotification].map {
             AXObserverAddNotification(observer, appElement, $0 as CFString, refcon).rawValue
         }
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
@@ -596,14 +599,16 @@ private final class BluetoothBannerSuppressor {
                 .first?.processIdentifier else { return }
         listeningBannerTask?.cancel()
         listeningBannerTask = Task { [weak self] in
-            var moved: [(window: AXUIElement, origin: CGPoint)] = []
             for pause in [0, 30, 60, 120, 200, 350] {
                 if pause > 0 { try? await Task.sleep(for: .milliseconds(pause)) }
                 guard !Task.isCancelled, let self else { return }
-                moved += self.moveListeningModeBannerOffscreen(pid: pid)
+                self.movedListeningWindows += self.moveListeningModeBannerOffscreen(pid: pid)
             }
             try? await Task.sleep(for: .seconds(4))
-            for entry in moved {
+            guard !Task.isCancelled, let self else { return }
+            let toRestore = self.movedListeningWindows
+            self.movedListeningWindows.removeAll()
+            for entry in toRestore {
                 var origin = entry.origin
                 if let value = AXValueCreate(.cgPoint, &origin) {
                     AXUIElementSetAttributeValue(Self.bounded(entry.window), kAXPositionAttribute as CFString, value)
@@ -1462,16 +1467,26 @@ final class AirPodsListeningModeMonitor: ObservableObject {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
+        pipe.fileHandleForReading.readabilityHandler = { [weak self, weak proc] handle in
+            let data = (try? handle.read(upToCount: 65_536)) ?? Data()
             guard !data.isEmpty else {
                 handle.readabilityHandler = nil
                 return
             }
-            Task { @MainActor in self?.consume(data) }
+            // DispatchQueue.main.async guarantees strict FIFO chunk ordering for NDJSON framing
+            DispatchQueue.main.async { [weak self, weak proc] in
+                MainActor.assumeIsolated {
+                    guard let self, let proc, self.process === proc else { return }
+                    self.consume(data)
+                }
+            }
         }
         proc.terminationHandler = { [weak self] ended in
-            Task { @MainActor in self?.streamEnded(ended) }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.streamEnded(ended)
+                }
+            }
         }
         do {
             try proc.run()
@@ -1484,6 +1499,7 @@ final class AirPodsListeningModeMonitor: ObservableObject {
 
     private func stopStream() {
         restartTask?.cancel()
+        pending.removeAll()
         guard let proc = process else { return }
         process = nil
         (proc.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
@@ -1744,10 +1760,11 @@ final class NotchTimerManager: ObservableObject {
     private func startTicker() {
         stopTicker()
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.tick()
             }
         }
+        timer.tolerance = 0.05
         RunLoop.main.add(timer, forMode: .common)
         ticker = timer
     }
@@ -1920,7 +1937,16 @@ private struct NotchRulerTriangle: Shape {
 private final class NotchScrollWheelMonitor: ObservableObject {
     var isHovering = false
     var handler: ((NSEvent) -> Bool)?
-    private var monitor: Any?
+    nonisolated(unsafe) private var monitor: Any?
+
+    deinit {
+        if let monitor {
+            nonisolated(unsafe) let token = monitor
+            DispatchQueue.main.async {
+                NSEvent.removeMonitor(token)
+            }
+        }
+    }
 
     func start() {
         guard monitor == nil else { return }
@@ -2048,8 +2074,16 @@ private struct NotchDurationRuler: View {
             snapTask?.cancel()
             releaseNotchHold()
         }
-        .onChange(of: interactive) { _, _ in
+        .onChange(of: interactive) { _, isNowInteractive in
             installWheelHandler()
+            if !isNowInteractive {
+                dragStartValue = nil
+                releaseNotchHold()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            dragStartValue = nil
+            releaseNotchHold()
         }
         .onChange(of: Int(value.rounded())) { _, _ in
             guard interactive else { return }
@@ -2373,7 +2407,7 @@ struct CaffeinePickerView: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.animation(minimumInterval: 1.0, paused: caffeine.expiresAt == nil)) { context in
             content(now: context.date)
         }
         .padding(.horizontal, 6)
@@ -2463,6 +2497,7 @@ final class CaffeineManager: ObservableObject {
 
     private var assertionID: IOPMAssertionID = 0
     private var timer: Timer?
+    private var expiryTimer: Timer?
 
     private init() {}
 
@@ -2488,13 +2523,25 @@ final class CaffeineManager: ObservableObject {
             assertionID = id
             isActive = true
             if let mins = durationMinutes, mins > 0 {
-                expiresAt = Date().addingTimeInterval(TimeInterval(mins * 60))
+                let target = Date().addingTimeInterval(TimeInterval(mins * 60))
+                expiresAt = target
                 updateRemainingText()
-                timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-                    Task { @MainActor in
+                let refreshTimer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated {
                         self?.tick()
                     }
                 }
+                refreshTimer.tolerance = 1.0
+                RunLoop.main.add(refreshTimer, forMode: .common)
+                timer = refreshTimer
+
+                let exactExpiry = Timer(fire: target, interval: 0, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.tick()
+                    }
+                }
+                RunLoop.main.add(exactExpiry, forMode: .common)
+                expiryTimer = exactExpiry
             } else {
                 expiresAt = nil
                 remainingText = "∞"
@@ -2505,6 +2552,8 @@ final class CaffeineManager: ObservableObject {
     func deactivate() {
         timer?.invalidate()
         timer = nil
+        expiryTimer?.invalidate()
+        expiryTimer = nil
         if isActive && assertionID != 0 {
             IOPMAssertionRelease(assertionID)
             assertionID = 0
@@ -2564,7 +2613,7 @@ struct ClipboardHistoryItem: Identifiable, Equatable, Codable {
         if let fileURL {
             return fileURL.lastPathComponent
         }
-        return content
+        return String(content.prefix(240))
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -2613,8 +2662,10 @@ final class ClipboardHistoryManager: ObservableObject {
 
     private init() {
         CapsLockHUDMonitor.shared.start()
-        restoreHistory()
-        captureCurrentPasteboard(initial: true)
+        if Defaults[.showClipboardTab] {
+            restoreHistory()
+            captureCurrentPasteboard(initial: true)
+        }
         Defaults.publisher(.clipboardHistoryLimit, options: [])
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -2643,18 +2694,27 @@ final class ClipboardHistoryManager: ObservableObject {
                 self?.flushPendingSave()
             }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.pollPasteboard()
+        Defaults.publisher(.showClipboardTab, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if change.newValue && self.items.isEmpty {
+                        self.restoreHistory()
+                    }
+                    self.updatePasteboardPolling()
+                }
             }
-        }
+            .store(in: &settingsCancellables)
+        updatePasteboardPolling()
         deactivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didDeactivateApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
             let bundleID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
-            Task { @MainActor [weak self] in
+            // Synchronously update lastChangeCount on the main queue before the poll timer can read concealed secrets
+            MainActor.assumeIsolated {
                 self?.handleApplicationDidDeactivate(bundleID: bundleID)
             }
         }
@@ -2671,18 +2731,25 @@ final class ClipboardHistoryManager: ObservableObject {
     }
 
     private func restoreHistory() {
-        guard Defaults[.persistClipboardHistory],
-              let data = try? Data(contentsOf: Self.historyFileURL),
-              let saved = try? JSONDecoder().decode([ClipboardHistoryItem].self, from: data) else { return }
-        let fm = FileManager.default
-        let existing = saved.filter { item in
-            guard item.kind == .file else { return true }
-            guard let fileURL = item.fileURL else { return false }
-            return fm.fileExists(atPath: fileURL.path)
+        guard Defaults[.persistClipboardHistory] else { return }
+        Self.saveQueue.async { [weak self] in
+            guard let data = try? Data(contentsOf: Self.historyFileURL),
+                  let saved = try? JSONDecoder().decode([ClipboardHistoryItem].self, from: data) else { return }
+            let fm = FileManager.default
+            let existing = saved.filter { item in
+                guard item.kind == .file else { return true }
+                guard let fileURL = item.fileURL else { return false }
+                return fm.fileExists(atPath: fileURL.path)
+            }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.items.isEmpty else { return }
+                    self.isRestoring = true
+                    self.items = Self.trimmed(existing)
+                    self.isRestoring = false
+                }
+            }
         }
-        isRestoring = true
-        items = Self.trimmed(existing)
-        isRestoring = false
     }
 
     private func scheduleSave() {
@@ -2702,15 +2769,25 @@ final class ClipboardHistoryManager: ObservableObject {
         }
         pendingSave.cancel()
         self.pendingSave = nil
-        guard Defaults[.persistClipboardHistory], let data = try? JSONEncoder().encode(items) else { return }
-        Self.saveQueue.sync { Self.write(data) }
+        guard Defaults[.persistClipboardHistory] else { return }
+        let snapshot = items
+        Self.saveQueue.sync {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                Self.write(data)
+            }
+        }
     }
 
     private func saveNow() {
         pendingSave?.cancel()
         pendingSave = nil
-        guard Defaults[.persistClipboardHistory], let data = try? JSONEncoder().encode(items) else { return }
-        Self.saveQueue.async { Self.write(data) }
+        guard Defaults[.persistClipboardHistory] else { return }
+        let snapshot = items
+        Self.saveQueue.async {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                Self.write(data)
+            }
+        }
     }
 
     private nonisolated static func write(_ data: Data) {
@@ -2742,6 +2819,20 @@ final class ClipboardHistoryManager: ObservableObject {
         if current != lastChangeCount {
             lastChangeCount = current
         }
+    }
+
+    private func updatePasteboardPolling() {
+        timer?.invalidate()
+        timer = nil
+        guard Defaults[.showClipboardTab] else { return }
+        lastChangeCount = NSPasteboard.general.changeCount
+        let pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.pollPasteboard()
+            }
+        }
+        pollTimer.tolerance = 0.2
+        timer = pollTimer
     }
 
     private func pollPasteboard() {
@@ -2839,8 +2930,11 @@ final class ClipboardHistoryManager: ObservableObject {
             return
         }
 
-        if let raw = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !raw.isEmpty {
+        if let full = pb.string(forType: .string) {
+            let maxClipChars = 512_000
+            let bounded = full.count > maxClipChars ? String(full.prefix(maxClipChars)) : full
+            let raw = bounded.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !raw.isEmpty else { return }
             let kind: ClipboardHistoryItem.Kind
             if Self.isValidHexColor(raw) {
                 kind = .color
@@ -2935,9 +3029,9 @@ final class ClipboardHistoryManager: ObservableObject {
     }
 
     var filteredItems: [ClipboardHistoryItem] {
-        items.filter { item in
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return items.filter { item in
             if onlyPinned && !item.isPinned { return false }
-            let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !q.isEmpty else { return true }
             return item.content.lowercased().contains(q)
         }
@@ -2970,21 +3064,14 @@ struct ClipboardNotchView: View {
     @State private var selectedIDs: Set<UUID> = []
     @State private var showingClearOptions: Bool = false
 
-    private var filteredIDs: Set<UUID> {
-        Set(manager.filteredItems.map(\.id))
-    }
-
-    private var allFilteredSelected: Bool {
-        !filteredIDs.isEmpty && filteredIDs.isSubset(of: selectedIDs)
-    }
-
     var body: some View {
+        let filtered = manager.filteredItems
         RoundedRectangle(cornerRadius: 16)
             .stroke(Color.white.opacity(0.12), style: StrokeStyle(lineWidth: 1.5))
             .overlay {
                 VStack(spacing: 8) {
-                    headerToolbar
-                    if manager.filteredItems.isEmpty {
+                    headerToolbar(filtered: filtered)
+                    if filtered.isEmpty {
                         Spacer()
                         HStack(spacing: 8) {
                             Image(systemName: "doc.on.clipboard")
@@ -2996,8 +3083,8 @@ struct ClipboardNotchView: View {
                         Spacer()
                     } else {
                         ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                ForEach(manager.filteredItems) { item in
+                            LazyHStack(spacing: 8) {
+                                ForEach(filtered) { item in
                                     clipCard(for: item)
                                 }
                             }
@@ -3018,8 +3105,10 @@ struct ClipboardNotchView: View {
             }
     }
 
-    private var headerToolbar: some View {
-        HStack(spacing: 8) {
+    private func headerToolbar(filtered: [ClipboardHistoryItem]) -> some View {
+        let filteredIDs = Set(filtered.map(\.id))
+        let allFilteredSelected = !filteredIDs.isEmpty && filteredIDs.isSubset(of: selectedIDs)
+        return HStack(spacing: 8) {
             if isSelecting {
                 headerPillButton(
                     icon: allFilteredSelected ? "checkmark.circle.fill" : "checkmark.circle",
@@ -3842,6 +3931,7 @@ struct AudioOutputPanelView: View {
     @ObservedObject var routing = AudioOutputRoutingMenu.shared
     @ObservedObject var volumeManager = VolumeManager.shared
     @State private var dragVolume: Float?
+    @State private var holdsNotchOpen: Bool = false
 
     private var volume: Float {
         dragVolume ?? (volumeManager.isMuted ? 0 : volumeManager.rawVolume)
@@ -3898,7 +3988,13 @@ struct AudioOutputPanelView: View {
             routing.startObservingDevices()
             volumeManager.refresh()
         }
-        .onDisappear { routing.stopObservingDevices() }
+        .onDisappear {
+            routing.stopObservingDevices()
+            if holdsNotchOpen {
+                holdsNotchOpen = false
+                SharingStateManager.shared.endInteraction()
+            }
+        }
     }
 
     private var volumeRow: some View {
@@ -3927,11 +4023,21 @@ struct AudioOutputPanelView: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
+                            if !holdsNotchOpen {
+                                holdsNotchOpen = true
+                                SharingStateManager.shared.beginInteraction()
+                            }
                             let ratio = Float(min(1, max(0, value.location.x / width)))
                             dragVolume = ratio
                             volumeManager.setAbsolute(ratio)
                         }
-                        .onEnded { _ in dragVolume = nil }
+                        .onEnded { _ in
+                            dragVolume = nil
+                            if holdsNotchOpen {
+                                holdsNotchOpen = false
+                                SharingStateManager.shared.endInteraction()
+                            }
+                        }
                 )
             }
             .frame(height: 14)
@@ -4132,12 +4238,41 @@ final class ScreenCaptureOCRService {
         case windowToShelf
     }
 
+    private var isCapturing: Bool = false
+
     func capture(mode: CaptureMode) {
-        Task { @MainActor in
+        guard !isCapturing else { return }
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Screen Recording Permission Required")
+            alert.informativeText = String(localized: "Allow GravityNotch in System Settings -> Privacy & Security -> Screen & System Audio Recording to capture screen content.")
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: String(localized: "Open System Settings"))
+            alert.addButton(withTitle: String(localized: "Cancel"))
+            if alert.runModal() == .alertFirstButtonReturn,
+               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        isCapturing = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isCapturing = false }
             // Allow the notch to close cleanly before interactive crosshair
             try? await Task.sleep(for: .milliseconds(180))
-            let tempFile = FileManager.default.temporaryDirectory
-                .appendingPathComponent("gravity_capture_\(Int(Date().timeIntervalSince1970)).png")
+            let tempDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("GravityCapture-\(UUID().uuidString)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+            let tempFile = tempDir.appendingPathComponent("gravity_capture.png")
+            var keepTempFile = false
+            defer {
+                if !keepTempFile {
+                    try? FileManager.default.removeItem(at: tempDir)
+                }
+            }
 
             let args: [String]
             switch mode {
@@ -4166,19 +4301,27 @@ final class ScreenCaptureOCRService {
             case .ocrText:
                 do {
                     let extracted = try await ImageProcessingService.shared.extractText(from: tempFile)
-                    try? FileManager.default.removeItem(at: tempFile)
                     ImageProcessingService.shared.presentOCRResultModal(
                         text: extracted,
                         sourceName: String(localized: "Screen Capture")
                     )
                 } catch {
-                    try? FileManager.default.removeItem(at: tempFile)
+                    NSApp.activate(ignoringOtherApps: true)
+                    let alert = NSAlert()
+                    alert.messageText = String(localized: "OCR Failed")
+                    alert.informativeText = error.localizedDescription
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: String(localized: "OK"))
+                    alert.runModal()
                 }
             case .areaToShelf, .windowToShelf:
                 if let bookmark = try? Bookmark(url: tempFile) {
+                    keepTempFile = true
                     let item = ShelfItem(kind: .file(bookmark: bookmark.data), isTemporary: true)
                     ShelfStateViewModel.shared.add([item])
-                    BoringViewCoordinator.shared.currentView = .shelf
+                    if Defaults[.boringShelf] {
+                        BoringViewCoordinator.shared.currentView = .shelf
+                    }
                 }
             }
         }
@@ -4318,13 +4461,19 @@ struct AgentToolEvent: Identifiable, Equatable {
     }
 }
 
-/// Lines added and removed per file, from the structuredPatch Claude Code stores with every Edit/Write result.
-/// Those rows embed the whole original file (hundreds of KB), so they fall out of the transcript tail the
-/// session parser reads: the tally reads the transcript incrementally from where it stopped instead.
+/// Lines added and removed per file, read incrementally from the session transcript so large rows never fall
+/// out of the tail parser. Supports Claude Code (`structuredPatch`) and Antigravity (`edit_file` / `write_file`).
 struct AgentDiffTally: Sendable {
     struct FileDiff: Sendable, Equatable {
         var added = 0
         var removed = 0
+    }
+
+    struct PendingAntigravityTool: Sendable {
+        let fileName: String?
+        let added: Int
+        let removed: Int
+        let isEdit: Bool
     }
 
     private(set) var offset: UInt64 = 0
@@ -4332,9 +4481,44 @@ struct AgentDiffTally: Sendable {
     private(set) var removed = 0
     private(set) var perFile: [String: FileDiff] = [:]
     private(set) var editCount = 0
+    private(set) var lastEditedFile: String? = nil
+
+    private var pendingBatch: [PendingAntigravityTool] = []
+    private var pendingConsumed: Int = 0
 
     private static let maxInitialBytes: UInt64 = 48 * 1024 * 1024
     private static let needle = Data("\"structuredPatch\"".utf8)
+    private static let plannerNeedle = Data("\"PLANNER_RESPONSE\"".utf8)
+    private static let userInputNeedle = Data("\"USER_INPUT\"".utf8)
+    private static let toolCallsNeedle = Data("\"tool_calls\"".utf8)
+    private static let antigravityEditNeedles: [Data] = [
+        Data("\"edit_file\"".utf8),
+        Data("\"write_file\"".utf8),
+        Data("\"replace_file_content\"".utf8),
+        Data("\"multi_replace_file_content\"".utf8),
+        Data("\"write_to_file\"".utf8)
+    ]
+
+    /// When Antigravity is mid-batch and the next uncompleted tool call is a file edit, surface it immediately
+    /// so the focus card switches to that file and animates its green/red diff bar in real time.
+    var inFlightEdit: PendingAntigravityTool? {
+        guard pendingConsumed < pendingBatch.count else { return nil }
+        let next = pendingBatch[pendingConsumed]
+        return (next.isEdit && next.fileName != nil) ? next : nil
+    }
+
+    var liveEditSerial: Int {
+        editCount + (inFlightEdit != nil ? 1 : 0)
+    }
+
+    func liveFileDiff(for fileName: String) -> FileDiff? {
+        var base = perFile[fileName] ?? FileDiff()
+        if let live = inFlightEdit, live.fileName == fileName {
+            base.added += live.added
+            base.removed += live.removed
+        }
+        return (base.added > 0 || base.removed > 0) ? base : nil
+    }
 
     mutating func advance(url: URL) {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return }
@@ -4353,11 +4537,199 @@ struct AgentDiffTally: Sendable {
               // No newline yet: the row is still being written, read it whole next time
               let lastNewline = data.lastIndex(of: 0x0A) else { return }
         offset = start + UInt64(lastNewline - data.startIndex + 1)
-        var lines = data[data.startIndex..<lastNewline].split(separator: 0x0A)
-        if skipFirstLine && !lines.isEmpty { lines.removeFirst() }
+        var slice = data[data.startIndex..<lastNewline]
+        if skipFirstLine, let firstNewline = slice.firstIndex(of: 0x0A) {
+            slice = slice[slice.index(after: firstNewline)...]
+        }
+        let lines = slice.split(separator: 0x0A)
         for line in lines where line.range(of: Self.needle) != nil {
             record(line)
         }
+    }
+
+    mutating func advanceAntigravity(url: URL, isCompactTranscript: Bool = false) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return }
+        if size < offset { self = AgentDiffTally() }
+        var start = offset
+        var skipFirstLine = false
+        if offset == 0 && size > Self.maxInitialBytes {
+            start = size - Self.maxInitialBytes
+            skipFirstLine = true
+        }
+        guard size > start else { return }
+        try? handle.seek(toOffset: start)
+        guard let data = try? handle.read(upToCount: Int(size - start)), !data.isEmpty,
+              let lastNewline = data.lastIndex(of: 0x0A) else { return }
+        offset = start + UInt64(lastNewline - data.startIndex + 1)
+        var slice = data[data.startIndex..<lastNewline]
+        if skipFirstLine, let firstNewline = slice.firstIndex(of: 0x0A) {
+            slice = slice[slice.index(after: firstNewline)...]
+        }
+        for line in slice.split(separator: 0x0A) {
+            // In Antigravity JSONL logs, `"type"` is always in the opening header (< 64 bytes),
+            // so inspecting only the prefix avoids false matches on file contents inside GENERIC rows.
+            let head = line.prefix(192)
+            if head.range(of: Self.plannerNeedle) != nil {
+                pendingBatch.removeAll(keepingCapacity: true)
+                pendingConsumed = 0
+                guard line.range(of: Self.toolCallsNeedle) != nil,
+                      Self.antigravityEditNeedles.contains(where: { line.range(of: $0) != nil }) else {
+                    continue
+                }
+                recordAntigravityPlannerLine(line, isCompactTranscript: isCompactTranscript)
+            } else if head.range(of: Self.userInputNeedle) != nil {
+                pendingBatch.removeAll(keepingCapacity: true)
+                pendingConsumed = 0
+            } else if pendingConsumed < pendingBatch.count {
+                recordAntigravityResultLine(line)
+            }
+        }
+    }
+
+    private mutating func recordAntigravityPlannerLine(_ line: Data, isCompactTranscript: Bool) {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              (obj["type"] as? String) == "PLANNER_RESPONSE",
+              let toolCalls = obj["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty else { return }
+
+        var batch: [PendingAntigravityTool] = []
+        batch.reserveCapacity(toolCalls.count)
+        for tc in toolCalls {
+            let name = (tc["name"] as? String) ?? ""
+            let args = (tc["args"] as? [String: Any]) ?? [:]
+            if let edit = Self.parseAntigravityEdit(name: name, args: args, isCompact: isCompactTranscript) {
+                batch.append(edit)
+            } else {
+                batch.append(PendingAntigravityTool(fileName: nil, added: 0, removed: 0, isEdit: false))
+            }
+        }
+        pendingBatch = batch
+        pendingConsumed = 0
+    }
+
+    private mutating func recordAntigravityResultLine(_ line: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let recordType = obj["type"] as? String else { return }
+        if recordType == "GENERIC" {
+            let item = pendingBatch[pendingConsumed]
+            pendingConsumed += 1
+            if item.isEdit, let name = item.fileName, item.added > 0 || item.removed > 0 {
+                perFile[name, default: FileDiff()].added += item.added
+                perFile[name, default: FileDiff()].removed += item.removed
+                added += item.added
+                removed += item.removed
+                editCount += 1
+                lastEditedFile = name
+            }
+        } else if recordType == "ERROR_MESSAGE" {
+            pendingConsumed += 1
+        }
+    }
+
+    private static func unwrapArg(_ raw: Any?, isCompact: Bool) -> String? {
+        guard let s = raw as? String else { return nil }
+        if isCompact, s.count >= 2, s.first == "\"", s.last == "\"",
+           let data = s.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(String.self, from: data) {
+            return decoded
+        }
+        return s
+    }
+
+    private static func parseAntigravityEdit(
+        name: String,
+        args: [String: Any],
+        isCompact: Bool
+    ) -> PendingAntigravityTool? {
+        let rawPath = unwrapArg(args["Path"], isCompact: isCompact)
+            ?? unwrapArg(args["TargetFile"], isCompact: isCompact)
+            ?? unwrapArg(args["AbsolutePath"], isCompact: isCompact)
+            ?? unwrapArg(args["file_path"], isCompact: isCompact)
+        guard let rawPath, !rawPath.isEmpty else { return nil }
+        let fileName = URL(fileURLWithPath: rawPath).lastPathComponent
+        guard !fileName.isEmpty else { return nil }
+
+        switch name {
+        case "edit_file":
+            let target = unwrapArg(args["Target"], isCompact: isCompact) ?? ""
+            let replacement = unwrapArg(args["Replacement"], isCompact: isCompact) ?? ""
+            let (add, rem) = lineDiffCounts(old: target, new: replacement)
+            return PendingAntigravityTool(fileName: fileName, added: add, removed: rem, isEdit: true)
+        case "replace_file_content":
+            let target = unwrapArg(args["TargetContent"], isCompact: isCompact) ?? ""
+            let replacement = unwrapArg(args["ReplacementContent"], isCompact: isCompact) ?? ""
+            let (add, rem) = lineDiffCounts(old: target, new: replacement)
+            return PendingAntigravityTool(fileName: fileName, added: add, removed: rem, isEdit: true)
+        case "multi_replace_file_content":
+            var totalAdd = 0
+            var totalRem = 0
+            if let chunks = args["ReplacementChunks"] as? [[String: Any]] {
+                for chunk in chunks {
+                    let target = unwrapArg(chunk["TargetContent"], isCompact: isCompact) ?? ""
+                    let replacement = unwrapArg(chunk["ReplacementContent"], isCompact: isCompact) ?? ""
+                    let (add, rem) = lineDiffCounts(old: target, new: replacement)
+                    totalAdd += add
+                    totalRem += rem
+                }
+            }
+            return PendingAntigravityTool(fileName: fileName, added: totalAdd, removed: totalRem, isEdit: true)
+        case "write_file", "write_to_file":
+            let content = unwrapArg(args["Content"], isCompact: isCompact)
+                ?? unwrapArg(args["CodeContent"], isCompact: isCompact)
+                ?? ""
+            let add = lineCount(content)
+            return PendingAntigravityTool(fileName: fileName, added: add, removed: 0, isEdit: true)
+        default:
+            return nil
+        }
+    }
+
+    private static func splitLines(_ text: String) -> [Substring] {
+        guard !text.isEmpty else { return [] }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        if text.hasSuffix("\n"), !lines.isEmpty { lines.removeLast() }
+        return lines
+    }
+
+    private static func lineCount(_ text: String) -> Int {
+        splitLines(text).count
+    }
+
+    private static func lineDiffCounts(old: String, new: String) -> (added: Int, removed: Int) {
+        let oldLines = splitLines(old)
+        let newLines = splitLines(new)
+        if oldLines == newLines { return (0, 0) }
+
+        var prefix = 0
+        let minCount = min(oldLines.count, newLines.count)
+        while prefix < minCount && oldLines[prefix] == newLines[prefix] {
+            prefix += 1
+        }
+        var oldEnd = oldLines.count
+        var newEnd = newLines.count
+        while oldEnd > prefix && newEnd > prefix && oldLines[oldEnd - 1] == newLines[newEnd - 1] {
+            oldEnd -= 1
+            newEnd -= 1
+        }
+        let oldSlice = Array(oldLines[prefix..<oldEnd])
+        let newSlice = Array(newLines[prefix..<newEnd])
+        if oldSlice.isEmpty { return (newSlice.count, 0) }
+        if newSlice.isEmpty { return (0, oldSlice.count) }
+        if oldSlice.count + newSlice.count <= 2000 {
+            let diff = newSlice.difference(from: oldSlice)
+            return (diff.insertions.count, diff.removals.count)
+        }
+        var freq: [Substring: Int] = [:]
+        for line in oldSlice { freq[line, default: 0] += 1 }
+        var common = 0
+        for line in newSlice {
+            if let count = freq[line], count > 0 {
+                common += 1
+                freq[line] = count - 1
+            }
+        }
+        return (newSlice.count - common, oldSlice.count - common)
     }
 
     private mutating func record(_ line: Data) {
@@ -4498,6 +4870,8 @@ final class AntigravityAgentMonitor: ObservableObject {
     }
 
     private var timer: Timer?
+    private var currentPollInterval: TimeInterval = 0
+    private var settingsCancellable: AnyCancellable?
     private var maxContextWindow: Double = 1_000_000.0
     private var sessionCache: [String: CachedSessionEntry] = [:]
     private var isRefreshing: Bool = false
@@ -4543,12 +4917,55 @@ final class AntigravityAgentMonitor: ObservableObject {
         AgentSessionSnapshot.formatCompactTokens(totalOutputTokens)
     }
 
-    private init() {
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+    private var isMonitoringEnabled: Bool {
+        Defaults[.showAgentsTab] || Defaults[.enableAgentLiveActivity] || Defaults[.agentSpeechBubbles]
+    }
+
+    private func schedulePolling() {
+        guard isMonitoringEnabled else {
+            timer?.invalidate()
+            timer = nil
+            currentPollInterval = 0
+            completionPulseResetTask?.cancel()
+            completionPulseResetTask = nil
+            sessionCache.removeAll()
+            if !sessions.isEmpty { sessions = [] }
+            if isActive { isActive = false }
+            if isWorkingNow { isWorkingNow = false }
+            if activeAgentCount != 0 { activeAgentCount = 0 }
+            if completedPulseSessionID != nil { completedPulseSessionID = nil }
+            if selectedSessionID != nil { selectedSessionID = nil }
+            syncSummaryProperties()
+            return
+        }
+        // Keep 0.75 s responsiveness while actively working (so sequential file edits show one by one),
+        // 1.5 s while an agent session lingers active, and 5 s when idle.
+        let desired: TimeInterval = isWorkingNow ? 0.75 : (isActive ? 1.5 : 5.0)
+        guard desired != currentPollInterval || timer == nil else { return }
+        timer?.invalidate()
+        currentPollInterval = desired
+        let pollTimer = Timer.scheduledTimer(withTimeInterval: desired, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
                 self?.refresh()
             }
+        }
+        pollTimer.tolerance = isWorkingNow ? 0.1 : (isActive ? 0.2 : 1.0)
+        timer = pollTimer
+    }
+
+    private init() {
+        settingsCancellable = Defaults.publisher(keys: .showAgentsTab, .enableAgentLiveActivity, .agentSpeechBubbles)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.schedulePolling()
+                    if self.isMonitoringEnabled { self.refresh() }
+                }
+            }
+        if isMonitoringEnabled {
+            refresh()
+            schedulePolling()
         }
     }
 
@@ -4632,14 +5049,20 @@ final class AntigravityAgentMonitor: ObservableObject {
         let fileSize = (try? handle.seekToEnd()) ?? 0
         let offset = fileSize > maxBytes ? fileSize - maxBytes : 0
         try? handle.seek(toOffset: offset)
-        let data = handle.readDataToEndOfFile()
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
-        var lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
-        if offset > 0 && !lines.isEmpty {
-            // Discard partial JSON fragment at arbitrary byte boundary
-            lines.removeFirst()
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return [] }
+        // Advance past the first newline on raw bytes when seeking mid-file so we never fail UTF-8
+        // decoding on a split multibyte sequence (e.g. emoji or accented paths).
+        var slice = data[data.startIndex..<data.endIndex]
+        if offset > 0 {
+            guard let firstNewline = slice.firstIndex(of: 0x0A) else { return [] }
+            slice = slice[slice.index(after: firstNewline)...]
         }
-        return lines
+        return slice.split(separator: 0x0A).compactMap { lineBytes in
+            guard !lineBytes.isEmpty else { return nil }
+            let trimmed = lineBytes.last == 0x0D ? lineBytes.dropLast() : lineBytes
+            guard !trimmed.isEmpty else { return nil }
+            return String(decoding: trimmed, as: UTF8.self)
+        }
     }
 
     nonisolated static func isUserPromptTool(_ toolName: String) -> Bool {
@@ -4791,14 +5214,27 @@ final class AntigravityAgentMonitor: ObservableObject {
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
-        var candidates: [(url: URL, id: String, modDate: Date, fileSize: Int)] = []
+        var candidates: [(url: URL, diffURL: URL, isCompactDiff: Bool, id: String, modDate: Date, fileSize: Int)] = []
         let cutoff = now.addingTimeInterval(-86_400)
         for dir in subdirs {
-            let transcript = dir.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+            let logsDir = dir.appendingPathComponent(".system_generated/logs")
+            let transcript = logsDir.appendingPathComponent("transcript.jsonl")
             if let vals = try? transcript.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
                let modDate = vals.contentModificationDate,
                modDate > cutoff {
-                candidates.append((transcript, dir.lastPathComponent, modDate, vals.fileSize ?? 0))
+                let fullTranscript = logsDir.appendingPathComponent("transcript_full.jsonl")
+                let fullVals = try? fullTranscript.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                let hasFull = fullVals?.contentModificationDate != nil
+                let effectiveMod = max(modDate, fullVals?.contentModificationDate ?? .distantPast)
+                let effectiveSize = (vals.fileSize ?? 0) &+ (fullVals?.fileSize ?? 0)
+                candidates.append((
+                    url: transcript,
+                    diffURL: hasFull ? fullTranscript : transcript,
+                    isCompactDiff: !hasFull,
+                    id: dir.lastPathComponent,
+                    modDate: effectiveMod,
+                    fileSize: effectiveSize
+                ))
             }
         }
         candidates.sort { $0.modDate > $1.modDate }
@@ -4816,6 +5252,15 @@ final class AntigravityAgentMonitor: ObservableObject {
             let lines = readTailLines(from: candidate.url)
             guard !lines.isEmpty else { continue }
 
+            struct ParsedBatchTool {
+                let name: String
+                let phase: AgentWorkPhase
+                let detail: String
+                let targetFile: String?
+                let stepIdx: Int
+                var date: Date
+            }
+
             var lastStep = 0
             var lastContext = 0
             var lastCache = 0
@@ -4832,6 +5277,32 @@ final class AntigravityAgentMonitor: ObservableObject {
             var lastRecordType = ""
             var lastTurnComplete = false
             var pendingToolCalls = 0
+            var activeBatch: [ParsedBatchTool] = []
+            var activeBatchDone = 0
+
+            func emitBatch(upTo count: Int) {
+                guard !activeBatch.isEmpty else { return }
+                let limit = min(count, activeBatch.count)
+                for i in 0..<limit {
+                    let tool = activeBatch[i]
+                    if tool.phase == .editing { editCount += 1 }
+                    latestTitle = tool.name
+                    latestDetail = tool.detail
+                    latestPhase = tool.phase
+                    if let targetFile = tool.targetFile { latestFile = targetFile }
+                    events.append(
+                        AgentToolEvent(
+                            id: "ag-\(candidate.id.prefix(6))-\(tool.stepIdx)-\(events.count)",
+                            stepIndex: tool.stepIdx,
+                            toolName: tool.name,
+                            phase: tool.phase,
+                            summary: tool.detail,
+                            targetFile: tool.targetFile,
+                            timestamp: tool.date
+                        )
+                    )
+                }
+            }
 
             for line in lines.suffix(160) {
                 guard let lineData = line.data(using: .utf8),
@@ -4860,16 +5331,23 @@ final class AntigravityAgentMonitor: ObservableObject {
                 sumOutput += outTok
 
                 if let toolCalls = obj["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty {
+                    if !activeBatch.isEmpty {
+                        emitBatch(upTo: activeBatch.count)
+                        activeBatch.removeAll(keepingCapacity: true)
+                        activeBatchDone = 0
+                    }
                     lastTurnComplete = false
                     pendingToolCalls = toolCalls.count
                     for tc in toolCalls {
                         let name = (tc["name"] as? String) ?? "tool"
                         let args = (tc["args"] as? [String: Any]) ?? [:]
                         let phase = AgentWorkPhase.classify(toolName: name)
-                        if phase == .editing { editCount += 1 }
 
                         var targetFile: String? = nil
-                        if let path = (args["Path"] as? String) ?? (args["TargetFile"] as? String) ?? (args["AbsolutePath"] as? String) {
+                        if let path = (args["Path"] as? String)
+                            ?? (args["TargetFile"] as? String)
+                            ?? (args["AbsolutePath"] as? String)
+                            ?? (args["file_path"] as? String) {
                             let clean = path.replacingOccurrences(of: "\"", with: "")
                             targetFile = URL(fileURLWithPath: clean).lastPathComponent
                             let isWorkspacePath = clean.contains("Développement")
@@ -4892,30 +5370,34 @@ final class AntigravityAgentMonitor: ObservableObject {
                             detail = name
                         }
 
-                        latestTitle = name
-                        latestDetail = detail
-                        latestPhase = phase
-                        if let targetFile { latestFile = targetFile }
-
-                        events.append(
-                            AgentToolEvent(
-                                id: "ag-\(candidate.id.prefix(6))-\(stepIdx)-\(events.count)",
-                                stepIndex: stepIdx,
-                                toolName: name,
+                        activeBatch.append(
+                            ParsedBatchTool(
+                                name: name,
                                 phase: phase,
-                                summary: detail,
+                                detail: detail,
                                 targetFile: targetFile,
-                                timestamp: lastStepDate
+                                stepIdx: stepIdx,
+                                date: lastStepDate
                             )
                         )
                     }
                 } else if recordType == "PLANNER_RESPONSE" {
+                    if !activeBatch.isEmpty {
+                        emitBatch(upTo: activeBatch.count)
+                        activeBatch.removeAll(keepingCapacity: true)
+                        activeBatchDone = 0
+                    }
                     pendingToolCalls = 0
                     lastTurnComplete = (recordStatus == "DONE")
                     if !lastTurnComplete && latestPhase == .waiting {
                         latestPhase = .thinking
                     }
                 } else if recordType == "USER_INPUT" {
+                    if !activeBatch.isEmpty {
+                        emitBatch(upTo: activeBatch.count)
+                        activeBatch.removeAll(keepingCapacity: true)
+                        activeBatchDone = 0
+                    }
                     lastTurnComplete = false
                     pendingToolCalls = 0
                     latestPhase = .thinking
@@ -4924,7 +5406,25 @@ final class AntigravityAgentMonitor: ObservableObject {
                 } else if !recordType.isEmpty {
                     lastTurnComplete = false
                     if recordType == "SYSTEM_MESSAGE" {
+                        if !activeBatch.isEmpty {
+                            emitBatch(upTo: activeBatch.count)
+                            activeBatch.removeAll(keepingCapacity: true)
+                            activeBatchDone = 0
+                        }
                         pendingToolCalls = 0
+                    } else if recordType == "GENERIC" || recordType == "ERROR_MESSAGE" {
+                        if activeBatchDone < activeBatch.count {
+                            activeBatch[activeBatchDone].date = lastStepDate
+                            activeBatchDone += 1
+                        }
+                        if pendingToolCalls > 0 {
+                            pendingToolCalls -= 1
+                        }
+                        if activeBatchDone >= activeBatch.count && !activeBatch.isEmpty {
+                            emitBatch(upTo: activeBatch.count)
+                            activeBatch.removeAll(keepingCapacity: true)
+                            activeBatchDone = 0
+                        }
                     } else if pendingToolCalls > 0 {
                         pendingToolCalls -= 1
                     }
@@ -4941,6 +5441,35 @@ final class AntigravityAgentMonitor: ObservableObject {
                 }
             }
 
+            if !activeBatch.isEmpty {
+                // Show completed tools in the current batch plus the ONE tool executing right now
+                // so multi-file edit batches step through each file one by one in real time.
+                let visibleCount = activeBatchDone < activeBatch.count ? (activeBatchDone + 1) : activeBatch.count
+                emitBatch(upTo: visibleCount)
+            }
+
+            var tally = cache[key]?.diff ?? AgentDiffTally()
+            tally.advanceAntigravity(url: candidate.diffURL, isCompactTranscript: candidate.isCompactDiff)
+            // Keep the focus card anchored on an edited file whenever Antigravity has active diffs in this
+            // session, so intermediate read_file/run_command steps or 1 ms flush races never drop the bar
+            // back to the indeterminate blue activity bar.
+            let inFlightName = tally.inFlightEdit?.fileName
+            let focusFile: String? = {
+                if let inFlightName, tally.liveFileDiff(for: inFlightName) != nil {
+                    return inFlightName
+                }
+                if let latestFile, tally.liveFileDiff(for: latestFile) != nil {
+                    return latestFile
+                }
+                if let lastEdited = tally.lastEditedFile, tally.liveFileDiff(for: lastEdited) != nil {
+                    return lastEdited
+                }
+                return latestFile
+            }()
+            let fileDiff = focusFile.flatMap { tally.liveFileDiff(for: $0) }
+            let liveAdded = tally.added + (tally.inFlightEdit?.added ?? 0)
+            let liveRemoved = tally.removed + (tally.inFlightEdit?.removed ?? 0)
+
             let baseSnapshot = AgentSessionSnapshot(
                 id: key,
                 kind: .antigravity,
@@ -4956,13 +5485,16 @@ final class AntigravityAgentMonitor: ObservableObject {
                 maxContextWindow: 1_000_000.0,
                 cacheReadTokens: lastCache,
                 outputTokens: sumOutput,
-                filesModifiedCount: editCount,
-                linesAdded: 0,
-                linesRemoved: 0,
-                currentFile: latestFile,
+                filesModifiedCount: max(editCount, tally.perFile.count),
+                linesAdded: liveAdded,
+                linesRemoved: liveRemoved,
+                currentFile: focusFile,
                 currentActionTitle: latestTitle,
                 currentActionDetail: latestDetail,
-                recentEvents: Array(events.suffix(12).reversed())
+                recentEvents: Array(events.suffix(12).reversed()),
+                fileLinesAdded: fileDiff?.added ?? 0,
+                fileLinesRemoved: fileDiff?.removed ?? 0,
+                editSerial: tally.liveEditSerial
             )
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
@@ -4972,6 +5504,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 rawPhase: latestPhase,
                 turnComplete: lastTurnComplete,
                 hasPendingTool: pendingToolCalls > 0,
+                diff: tally,
                 awaitingFirstResponse: lastRecordType == "USER_INPUT",
                 firstEventDate: firstEventDate ?? candidate.modDate
             )
@@ -5267,19 +5800,46 @@ final class AntigravityAgentMonitor: ObservableObject {
         cache: inout [String: CachedSessionEntry]
     ) -> [AgentSessionSnapshot] {
         let sessionsRoot = URL(fileURLWithPath: home).appendingPathComponent(".codex/sessions")
-        guard let enumerator = FileManager.default.enumerator(
-            at: sessionsRoot,
-            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: sessionsRoot.path) else { return [] }
 
         var candidates: [(url: URL, id: String, modDate: Date, fileSize: Int)] = []
         let cutoff = now.addingTimeInterval(-86_400)
-        for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
-            if let vals = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
-               let modDate = vals.contentModificationDate,
-               modDate > cutoff {
-                candidates.append((fileURL, fileURL.deletingPathExtension().lastPathComponent, modDate, vals.fileSize ?? 0))
+        // Codex organizes sessions under YYYY/MM/DD: scan today and yesterday first instead of walking history
+        let cal = Calendar(identifier: .gregorian)
+        var scannedDateDirs = false
+        for dayOffset in [0, -1] {
+            guard let day = cal.date(byAdding: .day, value: dayOffset, to: now) else { continue }
+            let comps = cal.dateComponents([.year, .month, .day], from: day)
+            guard let y = comps.year, let m = comps.month, let d = comps.day else { continue }
+            let dayDir = sessionsRoot
+                .appendingPathComponent(String(format: "%04d/%02d/%02d", y, m, d), isDirectory: true)
+            guard let files = try? fm.contentsOfDirectory(
+                at: dayDir,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            scannedDateDirs = true
+            for fileURL in files where fileURL.pathExtension == "jsonl" {
+                if let vals = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                   let modDate = vals.contentModificationDate,
+                   modDate > cutoff {
+                    candidates.append((fileURL, fileURL.deletingPathExtension().lastPathComponent, modDate, vals.fileSize ?? 0))
+                }
+            }
+        }
+        if !scannedDateDirs,
+           let enumerator = fm.enumerator(
+               at: sessionsRoot,
+               includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+               options: [.skipsHiddenFiles]
+           ) {
+            for case let fileURL as URL in enumerator where fileURL.pathExtension == "jsonl" {
+                if let vals = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                   let modDate = vals.contentModificationDate,
+                   modDate > cutoff {
+                    candidates.append((fileURL, fileURL.deletingPathExtension().lastPathComponent, modDate, vals.fileSize ?? 0))
+                }
             }
         }
         candidates.sort { $0.modDate > $1.modDate }
@@ -5450,11 +6010,12 @@ final class AntigravityAgentMonitor: ObservableObject {
     }
 
     func refresh() {
-        guard !isRefreshing else { return }
+        guard isMonitoringEnabled, !isRefreshing else { return }
         isRefreshing = true
         let initialCache = sessionCache
         let prevProcessCheckDate = lastProcessCheckDate
         let prevRunningProcesses = cachedRunningProcesses
+        let processCheckInterval: TimeInterval = isActive ? 4.0 : 10.0
 
         Task.detached(priority: .utility) {
             let home = Self.realHomeDirectory()
@@ -5464,7 +6025,7 @@ final class AntigravityAgentMonitor: ObservableObject {
 
             let runningProcesses: (claude: Bool, codex: Bool)
             let processCheckDate: Date
-            if now.timeIntervalSince(prevProcessCheckDate) >= 4.0 {
+            if now.timeIntervalSince(prevProcessCheckDate) >= processCheckInterval {
                 runningProcesses = Self.detectRunningAgentProcesses()
                 processCheckDate = now
             } else {
@@ -5495,6 +6056,7 @@ final class AntigravityAgentMonitor: ObservableObject {
             await MainActor.run {
                 let mon = AntigravityAgentMonitor.shared
                 mon.isRefreshing = false
+                guard mon.isMonitoringEnabled else { return }
                 mon.sessionCache = updatedCache
                 mon.lastProcessCheckDate = processCheckDate
                 mon.cachedRunningProcesses = runningProcesses
@@ -5505,6 +6067,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 if mon.isActive != anyActive { mon.isActive = anyActive }
                 if mon.isWorkingNow != anyWorking { mon.isWorkingNow = anyWorking }
                 if mon.activeAgentCount != activeSessions.count { mon.activeAgentCount = activeSessions.count }
+                mon.schedulePolling()
 
                 // Auto-follow newest active session unless the user explicitly clicked a session
                 if let currentSelected = mon.selectedSessionID,
@@ -5518,8 +6081,9 @@ final class AntigravityAgentMonitor: ObservableObject {
                     // The selected session went quiet while another agent is live: follow the live one
                     mon.selectedSessionID = live.id
                 }
-                if mon.selectedSessionID == nil {
-                    mon.selectedSessionID = activeSessions.first?.id ?? trimmed.first?.id
+                if mon.selectedSessionID == nil,
+                   let nextSelected = activeSessions.first?.id ?? trimmed.first?.id {
+                    mon.selectedSessionID = nextSelected
                 }
                 mon.syncSummaryProperties()
             }
@@ -5865,6 +6429,7 @@ struct AgentPulsingOrb: View {
 // MARK: - Expanded Notch Agent Hub (Gravity Agents Droplet)
 
 struct AgentsNotchView: View {
+    @EnvironmentObject var vm: BoringViewModel
     @ObservedObject var monitor = AntigravityAgentMonitor.shared
 
     var body: some View {
@@ -5884,6 +6449,8 @@ struct AgentsNotchView: View {
                     HStack(alignment: .top, spacing: 16) {
                         AgentTimelineColumn(session: session)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .onHover { vm.isHoveringCalendar = $0 }
+                            .onDisappear { vm.isHoveringCalendar = false }
 
                         AgentFocusColumn(session: session)
                             .frame(width: 240)
@@ -6092,11 +6659,15 @@ private struct AgentFocusColumn: View {
                         .foregroundStyle(accent)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .contentTransition(.opacity)
+                        .animation(.easeInOut(duration: 0.2), value: focusTitle)
                     Spacer(minLength: 4)
                     if hasDiff {
                         HStack(spacing: 4) {
-                            Text("+\(session.fileLinesAdded)")
-                                .foregroundStyle(Color(red: 0.36, green: 0.86, blue: 0.56))
+                            if session.fileLinesAdded > 0 || session.fileLinesRemoved == 0 {
+                                Text("+\(session.fileLinesAdded)")
+                                    .foregroundStyle(Color(red: 0.36, green: 0.86, blue: 0.56))
+                            }
                             if session.fileLinesRemoved > 0 {
                                 Text("-\(session.fileLinesRemoved)")
                                     .foregroundStyle(Color(red: 0.98, green: 0.45, blue: 0.42))
@@ -6104,6 +6675,8 @@ private struct AgentFocusColumn: View {
                         }
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .contentTransition(.numericText())
+                        .animation(.spring(response: 0.42, dampingFraction: 0.88), value: session.fileLinesAdded)
+                        .animation(.spring(response: 0.42, dampingFraction: 0.88), value: session.fileLinesRemoved)
                         .fixedSize()
                     }
                 }
@@ -6129,10 +6702,13 @@ private struct AgentFocusColumn: View {
                             added: session.fileLinesAdded,
                             removed: session.fileLinesRemoved,
                             editSerial: session.editSerial,
-                            color: accent
+                            color: session.kind == .antigravity
+                                ? Color(red: 0.36, green: 0.86, blue: 0.56)
+                                : accent
                         )
-                        // A new file starts its own bar from empty
-                        .id(session.currentFile)
+                        // Antigravity keeps one continuous morphing bar across edits and file switches;
+                        // Claude Code preserves its original per-file bar identity.
+                        .id(session.kind == .antigravity ? session.id : (session.currentFile ?? session.id))
                         .transition(.opacity)
                     } else if session.isWorkingNow {
                         AgentActivityBar(color: accent)
@@ -6191,57 +6767,85 @@ private struct AgentDiffBar: View {
     let editSerial: Int
     let color: Color
 
+    private struct TargetMetrics: Equatable {
+        let fill: CGFloat
+        let addedShare: CGFloat
+        let gap: CGFloat
+    }
+
     @State private var shownFill: CGFloat = 0
     @State private var shownAddedShare: CGFloat = 1
+    @State private var shownGap: CGFloat = 0
+    @State private var flashOpacity: Double = 0
+    @State private var flashTask: Task<Void, Never>?
 
     /// ~30 lines fill 40%, ~60 lines 63%, ~150 lines 92%
-    private var targetFill: CGFloat {
+    private var targetMetrics: TargetMetrics {
         let total = CGFloat(added + removed)
-        return total > 0 ? max(0.04, 1 - exp(-total / 60)) : 0
+        let fill: CGFloat = total > 0 ? max(0.04, 1 - exp(-total / 60)) : 0
+        let share: CGFloat = total > 0 ? CGFloat(added) / total : 1
+        let gap: CGFloat = (added > 0 && removed > 0) ? 2 : 0
+        return TargetMetrics(fill: fill, addedShare: share, gap: gap)
     }
 
-    private var addedShare: CGFloat {
-        let total = added + removed
-        return total > 0 ? CGFloat(added) / CGFloat(total) : 1
-    }
-
-    private static let growth = Animation.spring(response: 0.75, dampingFraction: 0.86)
+    private static let growth = Animation.spring(response: 0.52, dampingFraction: 0.88)
 
     var body: some View {
         GeometryReader { geo in
-            let filled = geo.size.width * shownFill
-            let gap: CGFloat = removed > 0 && added > 0 && filled > 8 ? 2 : 0
-            let usable = max(0, filled - gap)
+            let filled = max(0, geo.size.width * shownFill)
+            let activeGap = filled > 8 ? shownGap : 0
+            let usable = max(0, filled - activeGap)
+            let greenWidth = usable * shownAddedShare
+            let redWidth = usable * (1 - shownAddedShare)
+
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.10))
-                HStack(spacing: gap) {
-                    Capsule()
-                        .fill(color)
-                        .frame(width: usable * shownAddedShare)
-                    Capsule()
-                        .fill(Color(red: 0.98, green: 0.45, blue: 0.42))
-                        .frame(width: usable * (1 - shownAddedShare))
-                }
+                Capsule()
+                    .fill(color)
+                    .frame(width: greenWidth)
+                    .opacity(greenWidth > 0.01 ? 1 : 0)
+                Capsule()
+                    .fill(Color(red: 0.98, green: 0.45, blue: 0.42))
+                    .frame(width: redWidth)
+                    .offset(x: greenWidth + activeGap)
+                    .opacity(redWidth > 0.01 ? 1 : 0)
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: filled)
+                    .opacity(flashOpacity)
             }
         }
         .onAppear {
+            let metrics = targetMetrics
+            shownAddedShare = metrics.addedShare
+            shownGap = metrics.gap
             withAnimation(Self.growth) {
-                shownFill = targetFill
-                shownAddedShare = addedShare
+                shownFill = metrics.fill
             }
         }
-        .onChange(of: targetFill) { _, fill in
-            withAnimation(Self.growth) { shownFill = fill }
+        .onChange(of: targetMetrics) { _, metrics in
+            withAnimation(Self.growth) {
+                shownFill = metrics.fill
+                shownAddedShare = metrics.addedShare
+                shownGap = metrics.gap
+            }
         }
-        .onChange(of: addedShare) { _, share in
-            withAnimation(Self.growth) { shownAddedShare = share }
+        .onChange(of: editSerial) { _, _ in
+            flashTask?.cancel()
+            withAnimation(.easeOut(duration: 0.12)) {
+                flashOpacity = 0.34
+            }
+            flashTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(130))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.50)) {
+                    flashOpacity = 0
+                }
+            }
         }
-        .phaseAnimator([false, true], trigger: editSerial) { content, lit in
-            content
-                .brightness(lit ? 0.28 : 0)
-                .shadow(color: color.opacity(lit ? 0.7 : 0), radius: lit ? 5 : 0)
-        } animation: { lit in
-            lit ? .easeOut(duration: 0.12) : .easeOut(duration: 0.6)
+        .onDisappear {
+            flashTask?.cancel()
+            flashTask = nil
         }
     }
 }
@@ -6291,6 +6895,9 @@ final class LockScreenMediaPanelManager: ObservableObject {
     private var pendingDismissTask: Task<Void, Never>?
     private var positionObserver: AnyCancellable?
     private var styleObserver: AnyCancellable?
+    private var screenParamsObserver: NSObjectProtocol?
+    private var screensSleepObserver: NSObjectProtocol?
+    private var screensWakeObserver: NSObjectProtocol?
     /// Full screen lyrics layout (player on the left, lyrics on the right) instead of the compact card
     @Published private(set) var isLyricsLayout: Bool = false
     private var isPresentedOnSkyLight: Bool = false
@@ -6311,6 +6918,60 @@ final class LockScreenMediaPanelManager: ObservableObject {
                     self.presentPanel(delegateToSkyLight: self.isPresentedOnSkyLight)
                 }
             }
+        screenParamsObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleScreenParametersChanged()
+            }
+        }
+        screensSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isLockScreenActive, !self.isPreviewVisible else { return }
+                // Tear down the lock screen video & high-rate timelines while the display is off
+                self.dismissPanelWindow()
+            }
+        }
+        screensWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isLockScreenActive, !self.isPreviewVisible,
+                      Defaults[.showOnLockScreen], Defaults[.lockScreenMediaPlayer],
+                      Self.hasActiveMedia(), self.panelWindow?.isVisible != true else { return }
+                self.presentPanel(delegateToSkyLight: true)
+            }
+        }
+    }
+
+    private func targetScreen() -> NSScreen? {
+        NSScreen.screen(withUUID: BoringViewCoordinator.shared.selectedScreenUUID)
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+    }
+
+    private func handleScreenParametersChanged() {
+        guard let window = panelWindow, window.isVisible else { return }
+        guard let screen = targetScreen() else {
+            dismissPanelWindow()
+            return
+        }
+        panelScreen = screen
+        if isWindowExpanded || isLyricsLayout {
+            updateExpandedCardPlacement(on: screen)
+            window.setFrame(screen.frame, display: true)
+        } else {
+            window.setFrame(compactFrame(on: screen), display: true)
+        }
+        keepNotchAbovePanel()
     }
 
     /// Both settings go from 0 to 1 across the whole area the player can occupy on the screen.
@@ -6336,7 +6997,8 @@ final class LockScreenMediaPanelManager: ObservableObject {
     }
 
     private func applyPanelPosition() {
-        guard let window = panelWindow, window.isVisible, let screen = panelScreen else { return }
+        guard let window = panelWindow, window.isVisible, let screen = targetScreen() ?? panelScreen else { return }
+        panelScreen = screen
         if isWindowExpanded || isLyricsLayout {
             updateExpandedCardPlacement(on: screen)
         } else {
@@ -6373,7 +7035,8 @@ final class LockScreenMediaPanelManager: ObservableObject {
 
     private func enterWallpaperMode() {
         // The lyrics layout already fills the screen and draws the animated artwork itself
-        guard !isLyricsLayout, !isWallpaperMode, let window = panelWindow, let screen = panelScreen else { return }
+        guard !isLyricsLayout, !isWallpaperMode, let window = panelWindow, let screen = targetScreen() ?? panelScreen else { return }
+        panelScreen = screen
         wallpaperTransitionID += 1
         updateExpandedCardPlacement(on: screen)
         isWindowExpanded = true
@@ -6385,7 +7048,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
     }
 
     private func exitWallpaperMode() {
-        guard isWallpaperMode, let window = panelWindow, let screen = panelScreen else { return }
+        guard isWallpaperMode, let window = panelWindow else { return }
         wallpaperTransitionID += 1
         let transitionID = wallpaperTransitionID
         withAnimation(.easeInOut(duration: 0.35)) {
@@ -6394,7 +7057,10 @@ final class LockScreenMediaPanelManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self, self.wallpaperTransitionID == transitionID, !self.isWallpaperMode else { return }
             self.isWindowExpanded = false
-            window.setFrame(self.compactFrame(on: screen), display: true)
+            if let screen = self.targetScreen() ?? self.panelScreen {
+                self.panelScreen = screen
+                window.setFrame(self.compactFrame(on: screen), display: true)
+            }
         }
     }
 
@@ -6510,7 +7176,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
     }
 
     private func presentPanel(delegateToSkyLight: Bool) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        guard let screen = targetScreen() else { return }
         pendingDismissTask?.cancel()
         pendingDismissTask = nil
         resetWallpaperMode()
@@ -6596,7 +7262,7 @@ struct LockScreenMediaPanelView: View {
     var onClosePreview: (() -> Void)? = nil
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.2 : 1.5)) { context in
+        TimelineView(.animation(minimumInterval: 0.2, paused: !musicManager.isPlaying)) { context in
             LockScreenMediaCardContainer(
                 currentDate: context.date,
                 showLyricsCard: lockScreenShowLyrics,
@@ -7974,7 +8640,8 @@ final class AppleMusicLyricsService: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.webTokenDefaultsKey)
             return try await self.request(path, query: query, userToken: userToken, retryWithNewToken: false)
         case 401, 403:
-            throw ServiceError.unauthorized
+            // The catalog search sends no session: a refusal there says nothing about the sign in
+            throw userToken != nil ? ServiceError.unauthorized : ServiceError.http(status)
         case 404:
             throw ServiceError.notFound
         default:
@@ -8463,7 +9130,7 @@ struct LockScreenLyricsLayoutView: View {
                 }
             }
 
-            TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.25 : 1.5)) { context in
+            TimelineView(.animation(minimumInterval: 0.25, paused: !musicManager.isPlaying)) { context in
                 LockScreenScrubBar(
                     elapsed: musicManager.estimatedPlaybackPosition(at: context.date),
                     duration: musicManager.songDuration,
@@ -8612,6 +9279,7 @@ private struct LockScreenFullLyricsView: View {
 
     @State private var heights: [Int: CGFloat] = [:]
     @State private var hoveredLine: Int?
+    @State private var activeLineIndex: Int = 0
 
     private static let spacing: CGFloat = 24
     private static let fontSize: CGFloat = 30
@@ -8622,11 +9290,33 @@ private struct LockScreenFullLyricsView: View {
     static let edgeMargin: CGFloat = 24
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: musicManager.isPlaying ? 0.1 : 1.0)) { context in
-            let active = activeIndex(at: musicManager.estimatedPlaybackPosition(at: context.date))
-            GeometryReader { geo in
-                list(active: active, size: geo.size)
+        GeometryReader { geo in
+            list(active: activeLineIndex, size: geo.size)
+        }
+        .background(
+            // Evaluate the 10 Hz clock in a zero-cost background view and only invalidate the lyrics list
+            // when the active line index actually changes (typically once every 2-5 seconds).
+            TimelineView(.animation(minimumInterval: 0.1, paused: !musicManager.isPlaying)) { context in
+                Color.clear
+                    .onChange(of: context.date) { _, now in
+                        let next = activeIndex(at: musicManager.estimatedPlaybackPosition(at: now))
+                        if next != activeLineIndex {
+                            activeLineIndex = next
+                        }
+                    }
             }
+        )
+        .onAppear {
+            activeLineIndex = activeIndex(at: musicManager.estimatedPlaybackPosition())
+        }
+        .onChange(of: musicManager.timestampDate) { _, _ in
+            let next = activeIndex(at: musicManager.estimatedPlaybackPosition())
+            if next != activeLineIndex {
+                activeLineIndex = next
+            }
+        }
+        .onChange(of: lines.count) { _, _ in
+            activeLineIndex = activeIndex(at: musicManager.estimatedPlaybackPosition())
         }
         .onPreferenceChange(LyricLineHeightsKey.self) { heights = $0 }
     }
@@ -8879,6 +9569,8 @@ final class AnimatedArtworkService: ObservableObject {
     /// Lookups in progress. They belong to the service, not to the lock screen view: unlocking mid download
     /// no longer cancels it, and the next lock finds the video ready.
     private var inFlight: [String: Task<LookupOutcome, Never>] = [:]
+    /// Only the current track keeps retrying in the background: skipping stops the previous one's retries
+    private var prefetchTask: Task<Void, Never>?
     /// Tracks whose album was looked up successfully and has no animated cover, so they are not searched
     /// again on every lock (a network failure is never recorded here)
     private var withoutMotionArtwork: Set<String> = []
@@ -8932,12 +9624,15 @@ final class AnimatedArtworkService: ObservableObject {
     /// Called when a track starts: finds and downloads its animated cover in the background, so it is
     /// already there when the Mac locks. Only when the lock screen shows the animated artwork.
     func prefetch(title: String, artist: String, album: String) {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
         guard Defaults[.showOnLockScreen], Defaults[.lockScreenMediaPlayer], Defaults[.lockScreenAnimatedArtwork],
-              !title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+              !["", "Not Playing", "Unknown", "I'm Handsome"].contains(trimmed) else { return }
         let key = Self.trackKey(title: title, artist: artist, album: album)
         let albumKey = Self.albumKey(artist: artist, album: album)
         guard videoURL(for: key, albumKey: albumKey) == nil, !withoutMotionArtwork.contains(key) else { return }
-        Task { [weak self] in
+        prefetchTask = Task { [weak self] in
             await self?.lookUpWithRetries(title: title, artist: artist, album: album, key: key, albumKey: albumKey)
         }
     }
@@ -9086,6 +9781,8 @@ final class AnimatedArtworkService: ObservableObject {
                 return Self.upscaledCover(from: musicData) ?? Self.upscaledCover(from: fallbackData)
             }.value
         }
+        // Skipped meanwhile: replacing the cache would drop the cover of the track now shown
+        guard !Task.isCancelled else { return }
         if let cover {
             withAnimation(.easeInOut(duration: 0.4)) {
                 // Keep a single decoded cover in memory
@@ -9952,6 +10649,17 @@ enum AgentHostAppLauncher {
 
 private struct AgentSpeechBubbleHost: View {
     @ObservedObject private var controller = AgentSpeechBubbleController.shared
+    @State private var cursorPushed = false
+
+    private func setPointingCursor(_ active: Bool) {
+        guard active != cursorPushed else { return }
+        cursorPushed = active
+        if active {
+            NSCursor.pointingHand.push()
+        } else {
+            NSCursor.pop()
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -9960,11 +10668,15 @@ private struct AgentSpeechBubbleHost: View {
                     .id(bubble.id)
                     .transition(.scale(scale: 0.4, anchor: .top).combined(with: .opacity))
                     .onTapGesture {
+                        setPointingCursor(false)
                         AgentHostAppLauncher.open(kind: bubble.kind, projectPath: bubble.projectPath, sessionID: bubble.sessionID)
                         controller.dismiss()
                     }
                     .onHover { inside in
-                        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                        setPointingCursor(inside)
+                    }
+                    .onDisappear {
+                        setPointingCursor(false)
                     }
             }
             Spacer(minLength: 0)

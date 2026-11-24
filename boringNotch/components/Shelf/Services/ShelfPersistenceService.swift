@@ -15,6 +15,7 @@ final class ShelfPersistenceService {
     static let shared = ShelfPersistenceService()
 
     private let fileURL: URL
+    private let saveQueue = DispatchQueue(label: "theboringteam.boringnotch.shelf-persistence", qos: .utility)
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -71,11 +72,14 @@ final class ShelfPersistenceService {
     }
 
     func save(_ items: [ShelfItem]) {
-        do {
-            let data = try encoder.encode(items)
-            try data.write(to: fileURL, options: Data.WritingOptions.atomic)
-        } catch {
-            print("Failed to save shelf items: \(error.localizedDescription)")
+        let snapshot = items
+        saveQueue.async { [fileURL, encoder] in
+            do {
+                let data = try encoder.encode(snapshot)
+                try data.write(to: fileURL, options: Data.WritingOptions.atomic)
+            } catch {
+                print("Failed to save shelf items: \(error.localizedDescription)")
+            }
         }
     }
 }

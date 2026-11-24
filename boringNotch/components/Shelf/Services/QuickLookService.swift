@@ -14,28 +14,39 @@ import AppKit
 @MainActor
 final class QuickLookService: ObservableObject {
     @Published var urls: [URL] = []
-    @Published var selectedURL: URL?
+    @Published var selectedURL: URL? {
+        didSet {
+            if selectedURL == nil && isQuickLookOpen {
+                stopAccessingCurrentURLs()
+                urls.removeAll()
+                isQuickLookOpen = false
+            }
+        }
+    }
 
     @Published var isQuickLookOpen: Bool = false
 
     private var previewPanel: QLPreviewPanel?
     private var dataSource: QuickLookDataSource?
-    private var accessingURLs: [URL] = []
+    nonisolated(unsafe) private var accessingURLs: [URL] = []
     private var previewPanelObserver: Any?
+
+    deinit {
+        let urlsToStop = accessingURLs
+        for url in urlsToStop where url.isFileURL {
+            url.stopAccessingSecurityScopedResource()
+        }
+        NotificationCenter.default.removeObserver(self)
+    }
 
     func show(urls: [URL], selectFirst: Bool = true, slideshow: Bool = false) {
         guard !urls.isEmpty else { return }
         stopAccessingCurrentURLs()
-        accessingURLs = urls.filter { url in
-            if url.isFileURL {
-                return url.startAccessingSecurityScopedResource()
-            }
-            return true
-        }
-        self.urls = accessingURLs
+        accessingURLs = urls.filter { $0.isFileURL && $0.startAccessingSecurityScopedResource() }
+        self.urls = urls
         self.isQuickLookOpen = true
         if selectFirst {
-            self.selectedURL = accessingURLs.first
+            self.selectedURL = urls.first
         }
         // Observe the shared Quick Look preview panel closing so we can relinquish security scope
         let panel = QLPreviewPanel.shared()

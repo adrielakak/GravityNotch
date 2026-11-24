@@ -38,7 +38,7 @@ struct InlineHUD: View {
                                 .contentTransition(.interpolate)
                                 .frame(width: 20, height: 15, alignment: .center)
                         case .backlight:
-                            Image(systemName: value > 0.5 ? "light.max" : "light.min")
+                            Image(systemName: icon.isEmpty ? (value > 0.5 ? "light.max" : "light.min") : icon)
                                 .contentTransition(.interpolate)
                                 .frame(width: 20, height: 15, alignment: .center)
                         case .mic:
@@ -83,6 +83,8 @@ struct InlineHUD: View {
                                 VolumeManager.shared.setAbsolute(Float32(v))
                             } else if type == .brightness {
                                 BrightnessManager.shared.setAbsolute(value: Float32(v))
+                            } else if type == .backlight && icon.isEmpty {
+                                KeyboardBacklightManager.shared.setAbsolute(value: Float32(v))
                             }
                         })
                         if (type == .volume && value.isZero) {
@@ -144,7 +146,7 @@ struct InlineHUD: View {
             case .brightness:
                 return "Brightness"
             case .backlight:
-                return "Backlight"
+                return icon.hasPrefix("capslock") ? "Caps Lock" : "Backlight"
             case .mic:
                 return "Mic"
             default:

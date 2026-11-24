@@ -106,6 +106,7 @@ class BoringViewCoordinator: ObservableObject {
     @Published var optionKeyPressed: Bool = true
     private var accessibilityObserver: Any?
     private var hudReplacementCancellable: AnyCancellable?
+    private var tabSettingsCancellable: AnyCancellable?
 
     private init() {
         // Perform migration from name-based to UUID-based storage
@@ -142,8 +143,8 @@ class BoringViewCoordinator: ObservableObject {
             }
         }
 
-        // Observe changes to hudReplacement
-        hudReplacementCancellable = Defaults.publisher(.hudReplacement)
+        // Observe changes to hudReplacement (skip initial emission: the startup task below starts it once)
+        hudReplacementCancellable = Defaults.publisher(.hudReplacement, options: [])
             .sink { [weak self] change in
                 Task { @MainActor in
                     guard let self = self else { return }
@@ -161,8 +162,29 @@ class BoringViewCoordinator: ObservableObject {
                 }
             }
 
+        tabSettingsCancellable = Defaults.publisher(keys: .boringShelf, .showClipboardTab, .showAgentsTab, .showTimerButton, .showCaffeineButton)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    switch self.currentView {
+                    case .shelf where !Defaults[.boringShelf],
+                         .clipboard where !Defaults[.showClipboardTab],
+                         .agents where !Defaults[.showAgentsTab],
+                         .timer where !Defaults[.showTimerButton],
+                         .caffeine where !Defaults[.showCaffeineButton]:
+                        self.currentView = .home
+                    default:
+                        break
+                    }
+                }
+            }
+
         Task { @MainActor in
             helloAnimationRunning = firstLaunch
+            _ = VolumeManager.shared
+            _ = BrightnessManager.shared
+            _ = ClipboardHistoryManager.shared
             _ = BluetoothAudioLiveActivityManager.shared
             AirPodsListeningModeMonitor.shared.start()
 
@@ -171,11 +193,11 @@ class BoringViewCoordinator: ObservableObject {
             }
         }
     }
-    
+
     @objc func sneakPeekEvent(_ notification: Notification) {
         let decoder = JSONDecoder()
-        if let decodedData = try? decoder.decode(
-            SharedSneakPeek.self, from: notification.userInfo?.first?.value as! Data)
+        if let rawData = notification.userInfo?.first?.value as? Data,
+           let decodedData = try? decoder.decode(SharedSneakPeek.self, from: rawData)
         {
             let contentType =
                 decodedData.type == "brightness"
@@ -193,12 +215,7 @@ class BoringViewCoordinator: ObservableObject {
             let value = CGFloat((formatter.number(from: decodedData.value) ?? 0.0).floatValue)
             let icon = decodedData.icon
 
-            print("Decoded: \(decodedData), Parsed value: \(value)")
-
             toggleSneakPeek(status: decodedData.show, type: contentType, value: value, icon: icon)
-
-        } else {
-            print("Failed to decode JSON data")
         }
     }
 
@@ -206,23 +223,21 @@ class BoringViewCoordinator: ObservableObject {
         status: Bool, type: SneakContentType, duration: TimeInterval = 1.5, value: CGFloat = 0,
         icon: String = ""
     ) {
-        sneakPeekDuration = duration
-        if type != .music {
-            // close()
-            if !Defaults[.hudReplacement] {
-                return
-            }
+        if type != .music && !Defaults[.hudReplacement] {
+            return
         }
-        Task { @MainActor in
-            // One assignment: four field writes meant four didSet calls, each rescheduling the hide timer
-            var next = self.sneakPeek
-            next.show = status
+        sneakPeekDuration = duration
+
+        // Update synchronously on @MainActor so didSet cancels any pending hide timer immediately
+        var next = self.sneakPeek
+        next.show = status
+        if status {
             next.type = type
             next.value = value
             next.icon = icon
-            withAnimation(self.sneakPeekAnimation(for: next)) {
-                self.sneakPeek = next
-            }
+        }
+        withAnimation(self.sneakPeekAnimation(for: next)) {
+            self.sneakPeek = next
         }
 
         if type == .mic {
@@ -253,14 +268,12 @@ class BoringViewCoordinator: ObservableObject {
     private func scheduleSneakPeekHide(after duration: TimeInterval) {
         sneakPeekTask?.cancel()
 
-        sneakPeekTask = Task { [weak self] in
+        sneakPeekTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(duration))
             guard let self = self, !Task.isCancelled else { return }
-            await MainActor.run {
-                withAnimation {
-                    self.toggleSneakPeek(status: false, type: .music)
-                    self.sneakPeekDuration = 1.5
-                }
+            withAnimation {
+                self.sneakPeek.show = false
+                self.sneakPeekDuration = 1.5
             }
         }
     }
@@ -285,26 +298,34 @@ class BoringViewCoordinator: ObservableObject {
         value: CGFloat = 0,
         browser: BrowserType = .chromium
     ) {
-        Task { @MainActor in
-            let anim: Animation = (type == .bluetoothAudio || type == .listeningMode)
-                ? .spring(response: 0.40, dampingFraction: 0.84)
-                : .smooth
-            withAnimation(anim) {
-                self.expandingView.show = status
-                self.expandingView.type = type
-                self.expandingView.value = value
-                self.expandingView.browser = browser
-            }
+        let anim: Animation = (type == .bluetoothAudio || type == .listeningMode)
+            ? .spring(response: 0.40, dampingFraction: 0.84)
+            : .smooth
+        // Single struct assignment on @MainActor so expandingView.didSet runs once and cancels stale hide tasks immediately
+        var next = self.expandingView
+        next.show = status
+        if status {
+            next.type = type
+            next.value = value
+            next.browser = browser
+        }
+        withAnimation(anim) {
+            self.expandingView = next
         }
     }
 
     private var expandingViewTask: Task<Void, Never>?
-    private var isHoveringExpandingView = false
+    private var hoveredExpandingScreens: Set<String> = []
+    private var isHoveringExpandingView: Bool { !hoveredExpandingScreens.isEmpty }
 
-    func setExpandingViewHover(_ hovering: Bool) {
-        isHoveringExpandingView = hovering
-        guard expandingView.show else { return }
+    func setExpandingViewHover(_ hovering: Bool, screenUUID: String = "default") {
         if hovering {
+            hoveredExpandingScreens.insert(screenUUID)
+        } else {
+            hoveredExpandingScreens.remove(screenUUID)
+        }
+        guard expandingView.show else { return }
+        if isHoveringExpandingView {
             expandingViewTask?.cancel()
         } else {
             scheduleExpandingHide(after: expandingView.type == .bluetoothAudio ? 1.8 : 1.4, type: expandingView.type)
@@ -313,7 +334,7 @@ class BoringViewCoordinator: ObservableObject {
 
     private func scheduleExpandingHide(after duration: TimeInterval, type: SneakContentType) {
         expandingViewTask?.cancel()
-        expandingViewTask = Task { [weak self] in
+        expandingViewTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(duration))
             guard let self = self, !Task.isCancelled else { return }
             self.toggleExpandingView(status: false, type: type)
@@ -322,6 +343,9 @@ class BoringViewCoordinator: ObservableObject {
 
     @Published var expandingView: ExpandedItem = .init() {
         didSet {
+            if expandingView.type != oldValue.type {
+                hoveredExpandingScreens.removeAll()
+            }
             if expandingView.show {
                 expandingViewTask?.cancel()
                 if !isHoveringExpandingView {
@@ -341,7 +365,7 @@ class BoringViewCoordinator: ObservableObject {
                     scheduleExpandingHide(after: duration, type: expandingView.type)
                 }
             } else {
-                isHoveringExpandingView = false
+                hoveredExpandingScreens.removeAll()
                 expandingViewTask?.cancel()
             }
         }

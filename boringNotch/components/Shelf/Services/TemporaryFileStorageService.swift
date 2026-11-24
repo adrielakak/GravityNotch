@@ -29,30 +29,48 @@ class TemporaryFileStorageService {
     }
     
     func removeTemporaryFileIfNeeded(at url: URL) {
-        let tempDirectory = URL(fileURLWithPath: NSTemporaryDirectory())
+        let normalizedTemp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let normalizedURL = url
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let tempPrefix = normalizedTemp.path.hasSuffix("/") ? normalizedTemp.path : normalizedTemp.path + "/"
 
-        guard url.path.hasPrefix(tempDirectory.path) else {
+        guard normalizedURL.path.hasPrefix(tempPrefix) else {
             print("Attempted to remove temporary file outside temp directory: \(url.path)")
             return
         }
 
-        let folderURL = url.deletingLastPathComponent()
+        let folderURL = normalizedURL.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
 
         do {
-            try FileManager.default.removeItem(at: url)
-            print("Deleted file: \(url.path)")
-
-            let contents = try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
-            if contents.isEmpty {
-                try FileManager.default.removeItem(at: folderURL)
-                print("Folder was empty, deleted folder: \(folderURL.path)")
-            } else {
-                print("Folder not deleted — it still contains \(contents.count) item(s).")
+            if FileManager.default.fileExists(atPath: normalizedURL.path) {
+                try FileManager.default.removeItem(at: normalizedURL)
             }
 
+            // Never delete NSTemporaryDirectory() itself; only remove dedicated UUID subdirectories when empty
+            if folderURL != normalizedTemp {
+                let contents = try FileManager.default.contentsOfDirectory(atPath: folderURL.path)
+                if contents.isEmpty {
+                    try FileManager.default.removeItem(at: folderURL)
+                }
+            }
         } catch {
-            print("Error: \(error.localizedDescription)")
+            print("Error removing temp file: \(error.localizedDescription)")
         }
+    }
+
+    private func sanitizedFilename(_ raw: String?, fallback: String) -> String {
+        guard let raw, !raw.isEmpty else { return fallback }
+        let cleaned = URL(fileURLWithPath: raw).lastPathComponent
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty || cleaned == "." || cleaned == ".." {
+            return fallback
+        }
+        return cleaned
     }
     
     // MARK: - Private Implementation
@@ -63,7 +81,7 @@ class TemporaryFileStorageService {
         
         switch type {
         case .data(let data, let suggestedName):
-            let filename = suggestedName ?? ".dat"
+            let filename = sanitizedFilename(suggestedName, fallback: "Item_\(uuid.prefix(8)).dat")
             let dirURL = tempDir.appendingPathComponent(uuid, isDirectory: true)
             let fileURL = dirURL.appendingPathComponent(filename)
             
@@ -96,7 +114,7 @@ class TemporaryFileStorageService {
             }
             
         case .url(let url):
-            let filename = "\(url.host ?? uuid).webloc"
+            let filename = "\(sanitizedFilename(url.host, fallback: uuid)).webloc"
             let dirURL = tempDir.appendingPathComponent(uuid, isDirectory: true)
             let fileURL = dirURL.appendingPathComponent(filename)
             
@@ -126,6 +144,7 @@ class TemporaryFileStorageService {
             return nil
         }
     }
+
     func createZip(from urls: [URL], suggestedName: String? = nil) async -> URL? {
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
         let uuid = UUID().uuidString
@@ -138,19 +157,25 @@ class TemporaryFileStorageService {
             return nil
         }
 
-        // Helper to run zip process
-        func runZip(arguments: [String], currentDirectory: URL) -> Bool {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-            proc.arguments = arguments
-            proc.currentDirectoryURL = currentDirectory
-            do {
-                try proc.run()
-                proc.waitUntilExit()
-                return proc.terminationStatus == 0
-            } catch {
-                print("❌ Failed to run zip: \(error)")
-                return false
+        // Run zip off the cooperative thread pool using terminationHandler
+        func runZip(arguments: [String], currentDirectory: URL) async -> Bool {
+            await withCheckedContinuation { continuation in
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                proc.arguments = arguments
+                proc.currentDirectoryURL = currentDirectory
+                proc.standardOutput = FileHandle.nullDevice
+                proc.standardError = FileHandle.nullDevice
+                proc.terminationHandler = { process in
+                    continuation.resume(returning: process.terminationStatus == 0)
+                }
+                do {
+                    try proc.run()
+                } catch {
+                    print("❌ Failed to run zip: \(error)")
+                    proc.terminationHandler = nil
+                    continuation.resume(returning: false)
+                }
             }
         }
 
@@ -158,70 +183,54 @@ class TemporaryFileStorageService {
         if urls.count == 1, let src = urls.first {
             let isDir = (try? src.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             let baseName = src.lastPathComponent
-            let archiveName: String
-            if isDir {
-                // Folder: name as FolderName.zip and include the folder itself in the archive
-                archiveName = "\(baseName).zip"
-                let archiveURL = workingDir.appendingPathComponent(archiveName)
-                // Run zip from the parent directory so the folder is stored as top-level entry
-                let parent = src.deletingLastPathComponent()
-                let args = ["-r", "-q", archiveURL.path, baseName]
-                let ok = runZip(arguments: args, currentDirectory: parent)
-                if ok {
-                    return archiveURL
-                } else {
-                    return nil
-                }
+            let archiveName = sanitizedFilename("\(baseName).zip", fallback: "Archive.zip")
+            let archiveURL = workingDir.appendingPathComponent(archiveName)
+            let parent = src.deletingLastPathComponent()
+            // -y preserves symlinks (avoids infinite recursion on cyclic links); -- guards leading '-' filenames
+            let args = isDir
+                ? ["-r", "-y", "-q", archiveURL.path, "--", baseName]
+                : ["-j", "-y", "-q", archiveURL.path, "--", baseName]
+            let ok = await runZip(arguments: args, currentDirectory: parent)
+            if ok {
+                return archiveURL
             } else {
-                // File: include the file only (no parent folders). Name should include original extension.
-                archiveName = "\(baseName).zip"
-                let archiveURL = workingDir.appendingPathComponent(archiveName)
-                let parent = src.deletingLastPathComponent()
-                // -j to junk paths and store only the file
-                let args = ["-j", "-q", archiveURL.path, baseName]
-                let ok = runZip(arguments: args, currentDirectory: parent)
-                if ok {
-                    return archiveURL
-                } else {
-                    return nil
-                }
+                try? FileManager.default.removeItem(at: workingDir)
+                return nil
             }
         }
 
-        // Multi-item: copy items into working dir (so their relative structure is preserved), zip, then remove copies.
+        // Multi-item: stage copies in a dedicated subfolder so the output Archive.zip never collides with an input
+        let stagingDir = workingDir.appendingPathComponent("staging", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        } catch {
+            try? FileManager.default.removeItem(at: workingDir)
+            return nil
+        }
+        defer { try? FileManager.default.removeItem(at: stagingDir) }
+
         for src in urls {
-            let dest = workingDir.appendingPathComponent(src.lastPathComponent)
+            let dest = stagingDir.appendingPathComponent(src.lastPathComponent)
             do {
                 if FileManager.default.fileExists(atPath: dest.path) {
-                    // Avoid collision by appending a suffix
                     let unique = "\(UUID().uuidString)_\(src.lastPathComponent)"
-                    try FileManager.default.copyItem(at: src, to: workingDir.appendingPathComponent(unique))
+                    try FileManager.default.copyItem(at: src, to: stagingDir.appendingPathComponent(unique))
                 } else {
                     try FileManager.default.copyItem(at: src, to: dest)
                 }
             } catch {
-                print("⚠️ Failed to copy \(src.path) to working dir: \(error)")
+                print("⚠️ Failed to copy \(src.path) to staging dir: \(error)")
             }
         }
 
-        let archiveName = suggestedName ?? "Archive.zip"
+        let archiveName = sanitizedFilename(suggestedName, fallback: "Archive.zip")
         let archiveURL = workingDir.appendingPathComponent(archiveName)
-        let args = ["-r", "-q", archiveURL.path, "."]
-        let ok = runZip(arguments: args, currentDirectory: workingDir)
+        let args = ["-r", "-y", "-q", archiveURL.path, "."]
+        let ok = await runZip(arguments: args, currentDirectory: stagingDir)
         if ok {
-            // Remove the copied (uncompressed) items so the temp folder contains only the archive
-            do {
-                let contents = try FileManager.default.contentsOfDirectory(at: workingDir, includingPropertiesForKeys: nil)
-                for file in contents {
-                    if file.standardizedFileURL != archiveURL.standardizedFileURL {
-                        try FileManager.default.removeItem(at: file)
-                    }
-                }
-            } catch {
-                print("⚠️ Failed to cleanup working directory after zip: \(error)")
-            }
             return archiveURL
         } else {
+            try? FileManager.default.removeItem(at: workingDir)
             return nil
         }
     }

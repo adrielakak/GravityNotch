@@ -25,11 +25,20 @@ struct Bookmark: Sendable, Equatable, Codable {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            NSLog("✅ Successfully created bookmark for \(url.path)")
             self.data = bookmark
         } catch {
-            NSLog("❌ Failed to create bookmark for \(url.path): \(error.localizedDescription)")
-            throw error
+            // Fallback to read-only security scope for read-only volumes (DMGs, /Applications, locked files)
+            do {
+                let readOnlyBookmark = try url.bookmarkData(
+                    options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                self.data = readOnlyBookmark
+            } catch {
+                NSLog("❌ Failed to create bookmark for \(url.path): \(error.localizedDescription)")
+                throw error
+            }
         }
     }
 
@@ -39,13 +48,17 @@ struct Bookmark: Sendable, Equatable, Codable {
         do {
             let url = try URL(
                 resolvingBookmarkData: data,
-                options: [.withSecurityScope],
+                options: [.withSecurityScope, .withoutMounting, .withoutUI],
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
             )
-            if isStale, let newData = try? url.bookmarkData(options: [.withSecurityScope]) {
-                NSLog("⚠️ Bookmark was stale for \(url.path), refreshed")
-                return (url, newData)
+            if isStale {
+                let newData = (try? url.bookmarkData(options: [.withSecurityScope]))
+                    ?? (try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess]))
+                if let newData {
+                    NSLog("⚠️ Bookmark was stale for \(url.path), refreshed")
+                    return (url, newData)
+                }
             }
             return (url, nil)
         } catch {

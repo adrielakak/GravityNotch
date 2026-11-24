@@ -17,8 +17,25 @@ final class FullscreenMediaDetector: ObservableObject {
     @Published var fullscreenStatus: [String: Bool] = [:]
     
     private var monitorTask: Task<Void, Never>?
+    private var lastSpaces: [MacroVisionKit.FullScreenMonitor.SpaceInfo] = []
+    private var cancellables: Set<AnyCancellable> = []
     
     private init() {
+        Defaults.publisher(.hideNotchOption, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.updateStatus(with: self.lastSpaces)
+            }
+            .store(in: &cancellables)
+        MusicManager.shared.$bundleIdentifier
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.updateStatus(with: self.lastSpaces)
+            }
+            .store(in: &cancellables)
         startMonitoring()
     }
     
@@ -30,6 +47,7 @@ final class FullscreenMediaDetector: ObservableObject {
         monitorTask = Task { @MainActor in
             let stream = await FullScreenMonitor.shared.spaceChanges()
             for await spaces in stream {
+                lastSpaces = spaces
                 updateStatus(with: spaces)
             }
         }
@@ -37,20 +55,27 @@ final class FullscreenMediaDetector: ObservableObject {
     
     private func updateStatus(with spaces: [MacroVisionKit.FullScreenMonitor.SpaceInfo]) {
         var newStatus: [String: Bool] = [:]
+        let option = Defaults[.hideNotchOption]
+        let musicSourceBundle = MusicManager.shared.bundleIdentifier
         
         for space in spaces {
             if let uuid = space.screenUUID {
                 let shouldDetect: Bool
-                if Defaults[.hideNotchOption] == .nowPlayingOnly, let musicSourceBundle = MusicManager.shared.bundleIdentifier  {
-                    shouldDetect = space.runningApps.contains(musicSourceBundle)
-                } else {
+                switch option {
+                case .nowPlayingOnly:
+                    shouldDetect = musicSourceBundle.map { space.runningApps.contains($0) } ?? false
+                case .always:
                     shouldDetect = true
+                case .never:
+                    shouldDetect = false
                 }
                 newStatus[uuid] = shouldDetect
             }
         }
         
-        self.fullscreenStatus = newStatus
+        if self.fullscreenStatus != newStatus {
+            self.fullscreenStatus = newStatus
+        }
     }
 }
 

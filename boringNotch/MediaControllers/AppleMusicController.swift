@@ -117,10 +117,18 @@ class AppleMusicController: MediaControllerProtocol {
     // displayed position would keep running as if nothing happened. A light poll keeps it honest.
     private func setupPeriodicSync() {
         periodicSyncTask = Task { @MainActor [weak self] in
+            var idleTicks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self else { return }
                 guard self.isActive() else { continue }
+                // Paused or stopped, Music announces a resume itself: a check every 10 s is enough
+                // as a safety net, instead of waking Music every 2 s for hours
+                if !self.playbackState.isPlaying {
+                    idleTicks += 1
+                    guard idleTicks >= 5 else { continue }
+                }
+                idleTicks = 0
                 await self.syncWithPlayer()
             }
         }
@@ -140,11 +148,14 @@ class AppleMusicController: MediaControllerProtocol {
                 if self.compiledSyncScript == nil {
                     let script = NSAppleScript(source: """
                     tell application "Music"
-                        try
-                            return {player position, name of current track, (player state is playing)}
-                        on error
-                            return {0, "", false}
-                        end try
+                        if it is running then
+                            try
+                                return {player position, name of current track, (player state is playing)}
+                            on error
+                                return {0, "", false}
+                            end try
+                        end if
+                        return {0, "", false}
                     end tell
                     """)
                     var compileError: NSDictionary?
@@ -314,7 +325,8 @@ class AppleMusicController: MediaControllerProtocol {
     @MainActor
     private func refreshPlaybackInfo() async {
         guard let descriptor = try? await fetchPlaybackInfoAsync() else { return }
-        guard descriptor.numberOfItems >= 11 else { return }
+        // Music quit while the script ran: its answer would bring the closed player back as playing
+        guard isActive(), descriptor.numberOfItems >= 11 else { return }
         var updatedState = self.playbackState
         
         updatedState.isPlaying = descriptor.atIndex(1)?.booleanValue ?? false
@@ -479,11 +491,14 @@ class AppleMusicController: MediaControllerProtocol {
     private func fetchArtworkFromMusic(title: String) async -> Data? {
         guard let descriptor = try? await AppleScriptHelper.execute("""
                 tell application "Music"
-                    try
-                        return {name of current track, data of artwork 1 of current track}
-                    on error
-                        return {"", ""}
-                    end try
+                    if it is running then
+                        try
+                            return {name of current track, data of artwork 1 of current track}
+                        on error
+                            return {"", ""}
+                        end try
+                    end if
+                    return {"", ""}
                 end tell
                 """),
               descriptor.numberOfItems >= 2,
@@ -517,8 +532,12 @@ class AppleMusicController: MediaControllerProtocol {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled, let self, self.playbackState.title == title else { return }
                 guard self.playbackState.isPlaying, self.isActive(),
-                      let descriptor = try? await AppleScriptHelper.execute(
-                        "tell application \"Music\" to get player position")
+                      let descriptor = try? await AppleScriptHelper.execute("""
+                        tell application "Music"
+                            if it is running then return player position
+                        end tell
+                        """),
+                      descriptor.descriptorType != typeNull
                 else { continue }
                 guard !Task.isCancelled, self.playbackState.title == title else { return }
 
@@ -546,43 +565,45 @@ class AppleMusicController: MediaControllerProtocol {
     private func fetchPlaybackInfoAsync() async throws -> NSAppleEventDescriptor? {
         let script = """
         tell application "Music"
-            set isRunning to true
-            try
-                set playerState to player state is playing
-                set currentTrackName to name of current track
-                set currentTrackArtist to artist of current track
-                set currentTrackAlbum to album of current track
-                set trackPosition to player position
-                set trackDuration to duration of current track
-                set shuffleState to shuffle enabled
-                set repeatState to song repeat
-                if repeatState is off then
-                    set repeatValue to 1
-                else if repeatState is one then
-                    set repeatValue to 2
-                else if repeatState is all then
-                    set repeatValue to 3
-                end if
-
+            if it is running then
                 try
-                    set artData to data of artwork 1 of current track
-                on error
-                    set artData to ""
-                end try
-                
-                set currentVolume to sound volume
-                set favoriteState to favorited of current track
-                -- Radio and streamed tracks always answer false: their state lives on the library copy
-                if class of current track is URL track then
+                    set playerState to player state is playing
+                    set currentTrackName to name of current track
+                    set currentTrackArtist to artist of current track
+                    set currentTrackAlbum to album of current track
+                    set trackPosition to player position
+                    set trackDuration to duration of current track
+                    set shuffleState to shuffle enabled
+                    set repeatState to song repeat
+                    if repeatState is off then
+                        set repeatValue to 1
+                    else if repeatState is one then
+                        set repeatValue to 2
+                    else if repeatState is all then
+                        set repeatValue to 3
+                    end if
+
                     try
-                        set libraryCopies to (every track of library playlist 1 whose name is currentTrackName and artist is currentTrackArtist)
-                        if (count of libraryCopies) > 0 then set favoriteState to favorited of item 1 of libraryCopies
+                        set artData to data of artwork 1 of current track
+                    on error
+                        set artData to ""
                     end try
-                end if
-                return {playerState, currentTrackName, currentTrackArtist, currentTrackAlbum, trackPosition, trackDuration, shuffleState, repeatValue, currentVolume, artData, favoriteState}
-            on error
-                return {false, "Not Playing", "Unknown", "Unknown", 0, 0, false, 0, 50, "", false}
-            end try
+                    
+                    set currentVolume to sound volume
+                    set favoriteState to favorited of current track
+                    -- Radio and streamed tracks always answer false: their state lives on the library copy
+                    if class of current track is URL track then
+                        try
+                            set libraryCopies to (every track of library playlist 1 whose name is currentTrackName and artist is currentTrackArtist)
+                            if (count of libraryCopies) > 0 then set favoriteState to favorited of item 1 of libraryCopies
+                        end try
+                    end if
+                    return {playerState, currentTrackName, currentTrackArtist, currentTrackAlbum, trackPosition, trackDuration, shuffleState, repeatValue, currentVolume, artData, favoriteState}
+                on error
+                    return {false, "Not Playing", "Unknown", "Unknown", 0, 0, false, 0, 50, "", false}
+                end try
+            end if
+            return {false, "Not Playing", "Unknown", "Unknown", 0, 0, false, 0, 50, "", false}
         end tell
         """
         

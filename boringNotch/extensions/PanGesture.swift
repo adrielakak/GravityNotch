@@ -19,32 +19,44 @@ enum PanDirection {
 }
 
 extension View {
-    func panGesture(direction: PanDirection, threshold: CGFloat = 4, action: @escaping (CGFloat, NSEvent.Phase) -> Void) -> some View {
+    func panGesture(
+        direction: PanDirection,
+        threshold: CGFloat = 4,
+        enabled: Bool = true,
+        action: @escaping (CGFloat, NSEvent.Phase) -> Void
+    ) -> some View {
         self
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        guard enabled else { return }
                         let s = direction.signed(from: value.translation)
                         guard s > 0, s.magnitude >= threshold else { return }
                         action(s.magnitude, .changed)
                     }
-                    .onEnded { _ in action(0, .ended) }
+                    .onEnded { _ in
+                        guard enabled else { return }
+                        action(0, .ended)
+                    }
             )
-            .background(ScrollMonitor(direction: direction, threshold: threshold, action: action))
+            .background(ScrollMonitor(direction: direction, threshold: threshold, enabled: enabled, action: action))
     }
 }
 
 private struct ScrollMonitor: NSViewRepresentable {
     let direction: PanDirection
     let threshold: CGFloat
+    let enabled: Bool
     let action: (CGFloat, NSEvent.Phase) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        context.coordinator.installMonitor(on: view)
+        context.coordinator.update(direction: direction, threshold: threshold, enabled: enabled, action: action, view: view)
         return view
     }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.update(direction: direction, threshold: threshold, enabled: enabled, action: action, view: nsView)
+    }
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) { coordinator.removeMonitor() }
 
     func makeCoordinator() -> Coordinator { 
@@ -52,13 +64,14 @@ private struct ScrollMonitor: NSViewRepresentable {
     }
 
     @MainActor final class Coordinator: NSObject {
-        private let direction: PanDirection
-        private let threshold: CGFloat
-        private let action: (CGFloat, NSEvent.Phase) -> Void
+        private var direction: PanDirection
+        private var threshold: CGFloat
+        private var action: (CGFloat, NSEvent.Phase) -> Void
+        private var enabled: Bool = false
         private var monitor: Any?
         private var accumulated: CGFloat = 0
         private var active = false
-            private var endTask: Task<Void, Never>?
+        private var endTask: Task<Void, Never>?
         private let noiseThreshold: CGFloat = 0.2
 
         init(direction: PanDirection, threshold: CGFloat, action: @escaping (CGFloat, NSEvent.Phase) -> Void) {
@@ -67,20 +80,32 @@ private struct ScrollMonitor: NSViewRepresentable {
             self.action = action
         }
 
+        func update(direction: PanDirection, threshold: CGFloat, enabled: Bool, action: @escaping (CGFloat, NSEvent.Phase) -> Void, view: NSView) {
+            self.direction = direction
+            self.threshold = threshold
+            self.action = action
+            if enabled != self.enabled || (enabled && monitor == nil) {
+                self.enabled = enabled
+                if enabled {
+                    installMonitor(on: view)
+                } else {
+                    removeMonitor()
+                }
+            }
+        }
+
         private func scheduleEndTimeout() {
             // Cancel any existing scheduled end and schedule a new one.
             endTask?.cancel()
-            endTask = Task { @MainActor in
+            endTask = Task { @MainActor [weak self] in
                 // If no new scroll event arrives within this window, consider the gesture ended.
                 try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
-                if active {
-                    action(accumulated.magnitude, .ended)
-                } else {
-                    action(0, .ended)
+                guard let self, !Task.isCancelled else { return }
+                if self.active {
+                    self.action(self.accumulated.magnitude, .ended)
                 }
-                active = false
-                accumulated = 0
+                self.active = false
+                self.accumulated = 0
             }
         }
 
@@ -105,11 +130,11 @@ private struct ScrollMonitor: NSViewRepresentable {
         }
 
         private func handleScroll(_ event: NSEvent) {
-            if event.phase == .ended || event.momentumPhase == .ended {
+            if event.phase == .ended || event.phase == .cancelled || event.momentumPhase == .ended || event.momentumPhase == .cancelled {
+                endTask?.cancel()
+                endTask = nil
                 if active {
                     action(accumulated.magnitude, .ended)
-                } else {
-                    action(0, .ended)
                 }
                 active = false
                 accumulated = 0

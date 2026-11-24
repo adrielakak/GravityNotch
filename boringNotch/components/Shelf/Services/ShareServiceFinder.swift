@@ -23,13 +23,11 @@ class ShareServiceFinder: NSObject, NSSharingServicePickerDelegate {
         return await withCheckedContinuation { continuation in
             var didResume = false
 
-            // Capture services callback
-            Task { @MainActor in
-                self.onServicesCaptured = { services in
-                    guard !didResume else { return }
-                    didResume = true
-                    continuation.resume(returning: services)
-                }
+            // Assign synchronously on @MainActor BEFORE picker.show so delegate callbacks cannot race
+            self.onServicesCaptured = { services in
+                guard !didResume else { return }
+                didResume = true
+                continuation.resume(returning: services)
             }
 
             picker.show(relativeTo: dummyView.bounds, of: dummyView, preferredEdge: .minY)

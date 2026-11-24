@@ -22,6 +22,7 @@ final class ShelfStateViewModel: ObservableObject {
     // Queue for deferred bookmark updates to avoid publishing during view updates
     private var pendingBookmarkUpdates: [ShelfItem.ID: Data] = [:]
     private var updateTask: Task<Void, Never>?
+    private var resolvedURLCache: [ShelfItem.ID: URL] = [:]
 
     private init() {
         items = ShelfPersistenceService.shared.load()
@@ -43,13 +44,44 @@ final class ShelfStateViewModel: ObservableObject {
         items = merged
     }
 
-    func remove(_ item: ShelfItem) {
-        item.cleanupStoredData()
-        items.removeAll { $0.id == item.id }
+    func remove(_ item: ShelfItem, deferTempFileCleanup: Bool = false) {
+        remove([item], deferTempFileCleanup: deferTempFileCleanup)
+    }
+
+    func remove(_ toRemove: [ShelfItem], deferTempFileCleanup: Bool = false) {
+        guard !toRemove.isEmpty else { return }
+        let removeIDs = Set(toRemove.map(\.id))
+        var urlsToEvict: [URL] = []
+        for item in toRemove {
+            if let cached = resolvedURLCache.removeValue(forKey: item.id) ?? item.fileURL {
+                urlsToEvict.append(cached)
+            }
+            if deferTempFileCleanup && item.isTemporary {
+                let captured = item
+                Task {
+                    try? await Task.sleep(for: .seconds(10))
+                    captured.cleanupStoredData()
+                }
+            } else {
+                item.cleanupStoredData()
+            }
+        }
+        ShelfSelectionModel.shared.deselect(removeIDs)
+        if !urlsToEvict.isEmpty {
+            Task {
+                for url in urlsToEvict {
+                    await ThumbnailService.shared.clearCache(for: url)
+                }
+            }
+        }
+        items.removeAll { removeIDs.contains($0.id) }
     }
 
     func updateBookmark(for item: ShelfItem, bookmark: Data) {
         guard let idx = items.firstIndex(where: { $0.id == item.id }) else { return }
+        if let oldURL = resolvedURLCache.removeValue(forKey: item.id) {
+            Task { await ThumbnailService.shared.clearCache(for: oldURL) }
+        }
         if case .file = items[idx].kind {
             items[idx].kind = .file(bookmark: bookmark)
         }
@@ -63,16 +95,22 @@ final class ShelfStateViewModel: ObservableObject {
         updateTask = Task { @MainActor [weak self] in
             await Task.yield()
             
-            guard let self = self else { return }
+            guard let self = self, !self.pendingBookmarkUpdates.isEmpty else { return }
             
+            var updated = self.items
+            var didChange = false
             for (itemID, bookmarkData) in self.pendingBookmarkUpdates {
-                if let idx = self.items.firstIndex(where: { $0.id == itemID }),
-                   case .file = self.items[idx].kind {
-                    self.items[idx].kind = .file(bookmark: bookmarkData)
+                self.resolvedURLCache.removeValue(forKey: itemID)
+                if let idx = updated.firstIndex(where: { $0.id == itemID }),
+                   case .file = updated[idx].kind {
+                    updated[idx].kind = .file(bookmark: bookmarkData)
+                    didChange = true
                 }
             }
-            
             self.pendingBookmarkUpdates.removeAll()
+            if didChange {
+                self.items = updated
+            }
         }
     }
 
@@ -90,34 +128,41 @@ final class ShelfStateViewModel: ObservableObject {
     }
 
     func cleanupInvalidItems() {
+        let snapshot = self.items
         Task { [weak self] in
             guard let self else { return }
-            var keep: [ShelfItem] = []
-            for item in self.items {
-                switch item.kind {
-                case .file(let data):
+            var invalidIDs: Set<ShelfItem.ID> = []
+            for item in snapshot {
+                if case .file(let data) = item.kind {
                     let bookmark = Bookmark(data: data)
-                    if await bookmark.validate() {
-                        keep.append(item)
-                    } else {
-                        item.cleanupStoredData()
+                    if !(await bookmark.validate()) {
+                        invalidIDs.insert(item.id)
                     }
-                default:
-                    keep.append(item)
                 }
             }
-            await MainActor.run { self.items = keep }
+            guard !invalidIDs.isEmpty else { return }
+            await MainActor.run {
+                let toDrop = self.items.filter { invalidIDs.contains($0.id) }
+                guard !toDrop.isEmpty else { return }
+                self.remove(toDrop)
+            }
         }
     }
 
 
     func resolveFileURL(for item: ShelfItem) -> URL? {
+        if let cached = resolvedURLCache[item.id] {
+            return cached
+        }
         guard case .file(let bookmarkData) = item.kind else { return nil }
         let bookmark = Bookmark(data: bookmarkData)
         let result = bookmark.resolve()
         if let refreshed = result.refreshedData, refreshed != bookmarkData {
             NSLog("Bookmark for \(item) stale; refreshing")
             scheduleDeferredBookmarkUpdate(for: item, bookmark: refreshed)
+        }
+        if let url = result.url {
+            resolvedURLCache[item.id] = url
         }
         return result.url
     }
@@ -129,6 +174,9 @@ final class ShelfStateViewModel: ObservableObject {
         if let refreshed = result.refreshedData, refreshed != bookmarkData {
             NSLog("Bookmark for \(item) stale; refreshing")
             updateBookmark(for: item, bookmark: refreshed)
+        }
+        if let url = result.url {
+            resolvedURLCache[item.id] = url
         }
         return result.url
     }

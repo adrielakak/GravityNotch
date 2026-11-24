@@ -10,30 +10,15 @@ import SwiftUI
 class WebcamManager: NSObject, ObservableObject {
     static let shared = WebcamManager()
     
-    @Published var previewLayer: AVCaptureVideoPreviewLayer? {
-        didSet {
-            objectWillChange.send()
-        }
-    }
+    @Published var previewLayer: AVCaptureVideoPreviewLayer?
+    @Published private(set) var activeSession: AVCaptureSession?
     
     private var captureSession: AVCaptureSession?
-    @Published var isSessionRunning: Bool = false {
-        didSet {
-            objectWillChange.send()
-        }
-    }
+    @Published var isSessionRunning: Bool = false
     
-    @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined {
-        didSet {
-            objectWillChange.send()
-        }
-    }
+    @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined
     
-    @Published var cameraAvailable: Bool = false {
-        didSet {
-            objectWillChange.send()
-        }
-    }
+    @Published var cameraAvailable: Bool = false
 
     private let sessionQueue = DispatchQueue(label: "BoringNotch.WebcamManager.SessionQueue", qos: .userInitiated)
     
@@ -186,6 +171,7 @@ class WebcamManager: NSObject, ObservableObject {
                 // Create and set up preview layer on main thread
                 DispatchQueue.main.async {
                     self.cameraAvailable = true
+                    self.activeSession = session
                     let previewLayer = AVCaptureVideoPreviewLayer(session: session)
                     previewLayer.videoGravity = .resizeAspectFill
                     self.previewLayer = previewLayer
@@ -200,6 +186,7 @@ class WebcamManager: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.isSessionRunning = false
                     self.cameraAvailable = false
+                    self.activeSession = nil
                     self.previewLayer = nil
                 }
                 completion(false)
@@ -231,6 +218,7 @@ class WebcamManager: NSObject, ObservableObject {
             
             // Clear preview layer on main thread
             DispatchQueue.main.async {
+                self.activeSession = nil
                 self.previewLayer = nil
             }
         }

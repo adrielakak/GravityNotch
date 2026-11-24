@@ -48,6 +48,7 @@ class QuickShareService: ObservableObject {
         let services = await finder.findApplicableServices(for: testItems)
 
         var providers: [QuickShareProvider] = []
+        var nextCached: [String: NSSharingService] = [:]
 
         for svc in services {
             let title = svc.title
@@ -56,9 +57,10 @@ class QuickShareService: ObservableObject {
             let provider = QuickShareProvider(id: title, imageData: imgData, supportsRawText: supportsRawText)
             if !providers.contains(provider) {
                 providers.append(provider)
-                cachedServices[title] = svc
+                nextCached[title] = svc
             }
         }
+        cachedServices = nextCached
         
         if let idx = providers.firstIndex(where: { $0.id == "AirDrop" }) {
             let ad = providers.remove(at: idx)
@@ -97,28 +99,31 @@ class QuickShareService: ObservableObject {
         panel.title = "Select Files for \(provider.id)"
         panel.message = "Choose files to share via \(provider.id)"
 
-        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            defer {
-                self?.isPickerOpen = false
-                SharingStateManager.shared.endInteraction()
-            }
-
-            if response == .OK && !panel.urls.isEmpty {
-                Task {
-                    await self?.shareFilesOrText(panel.urls, using: provider, from: view)
-                }
-            }
-        }
-
         let response = panel.runModal()
-        completion(response)
+        isPickerOpen = false
+        if response == .OK && !panel.urls.isEmpty {
+            // Keep interaction open through shareFilesOrText handoff so the notch does not close before picker.show
+            await shareFilesOrText(panel.urls, using: provider, from: view)
+        }
+        SharingStateManager.shared.endInteraction()
     }
     
     // MARK: - Sharing
     @MainActor
-    func shareFilesOrText(_ items: [Any], using provider: QuickShareProvider, from view: NSView?) async {
+    func shareFilesOrText(
+        _ items: [Any],
+        using provider: QuickShareProvider,
+        from view: NSView?,
+        temporaryCleanupURLs: [URL] = []
+    ) async {
+        let cleanupTemps = {
+            for tempURL in temporaryCleanupURLs {
+                TemporaryFileStorageService.shared.removeTemporaryFileIfNeeded(at: tempURL)
+            }
+        }
         let fileURLs = items.compactMap { $0 as? URL }.filter { $0.isFileURL }
         if provider.id == "Gravity Quickshare (0x0.st)" {
+            defer { cleanupTemps() }
             if !fileURLs.isEmpty {
                 await uploadTo0x0(urls: fileURLs)
                 return
@@ -130,30 +135,54 @@ class QuickShareService: ObservableObject {
             }
         }
 
+        let directService: NSSharingService? = {
+            if let svc = cachedServices[provider.id], svc.canPerform(withItems: items) {
+                return svc
+            }
+            if provider.id == "AirDrop",
+               let airDrop = NSSharingService(named: .sendViaAirDrop),
+               airDrop.canPerform(withItems: items) {
+                return airDrop
+            }
+            return nil
+        }()
+
+        // Guard view attachment BEFORE opening security scopes or preventNotchClose for picker fallback
+        if directService == nil {
+            guard let view, view.window != nil else {
+                cleanupTemps()
+                return
+            }
+        }
+
         // Stop any previous sharing access
         stopSharingAccessingURLs()
         // Start security-scoped access for all file URLs
-        sharingAccessingURLs = fileURLs.filter { $0.startAccessingSecurityScopedResource() }
+        let accessed = fileURLs.filter { $0.startAccessingSecurityScopedResource() }
+        sharingAccessingURLs = accessed
 
-        // Setup lifecycle delegate to keep notch open during picker/service
+        // Setup lifecycle delegate to keep notch open during picker/service and clean temp files only when done
         let delegate = SharingStateManager.shared.makeDelegate { [weak self] in
-            self?.lifecycleDelegate = nil
-            self?.stopSharingAccessingURLs()
+            for url in accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+            if let self {
+                self.sharingAccessingURLs.removeAll { accessed.contains($0) }
+                self.lifecycleDelegate = nil
+            }
+            cleanupTemps()
         }
         lifecycleDelegate = delegate
 
-        if let svc = cachedServices[provider.id], svc.canPerform(withItems: items) {
-            // For direct service path, explicitly mark service interaction start
+        if let svc = directService {
             delegate.markServiceBegan()
             svc.delegate = delegate
             svc.perform(withItems: items)
-        } else {
+        } else if let view, view.window != nil {
             let picker = NSSharingServicePicker(items: items)
             picker.delegate = delegate
             delegate.markPickerBegan()
-            if let view {
-                picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
-            }
+            picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
         }
     }
 
@@ -170,33 +199,48 @@ private class SharingServiceDelegate: NSObject {}
     
     func shareDroppedFiles(_ providers: [NSItemProvider], using shareProvider: QuickShareProvider, from view: NSView?) async {
         var itemsToShare: [Any] = []
-        var foundText: String?
+        var tempCleanupURLs: [URL] = []
 
         for provider in providers {
-            if let webURL = await provider.extractURL() {
-                itemsToShare.append(webURL)
-            } else if foundText == nil, let text = await provider.extractText() {
-                foundText = text
-            } else if let itemFileURL = await provider.extractItem() {
+            // Check file URLs BEFORE generic web URLs (UTType.fileURL conforms to UTType.url)
+            let extractedFileURL: URL?
+            if let url = await provider.extractFileURL() {
+                extractedFileURL = url
+            } else {
+                extractedFileURL = await provider.extractItem()
+            }
+            if let itemFileURL = extractedFileURL {
                 let resolvedURL = await resolveShelfItemBookmark(for: itemFileURL) ?? itemFileURL
                 itemsToShare.append(resolvedURL)
+            } else if let webURL = await provider.extractURL() {
+                if webURL.isFileURL {
+                    let resolvedURL = await resolveShelfItemBookmark(for: webURL) ?? webURL
+                    itemsToShare.append(resolvedURL)
+                } else {
+                    itemsToShare.append(webURL)
+                }
+            } else if let text = await provider.extractText() {
+                if shareProvider.supportsRawText {
+                    itemsToShare.append(text)
+                } else if let tempTextURL = await TemporaryFileStorageService.shared.createTempFile(for: .text(text)) {
+                    itemsToShare.append(tempTextURL)
+                    tempCleanupURLs.append(tempTextURL)
+                } else {
+                    itemsToShare.append(text)
+                }
+            } else if let rawData = await provider.loadData(),
+                      let tempURL = await TemporaryFileStorageService.shared.createTempFile(for: .data(rawData, suggestedName: provider.suggestedName)) {
+                itemsToShare.append(tempURL)
+                tempCleanupURLs.append(tempURL)
             }
         }
 
-        // If text was found, prioritize sharing it.
-        if let text = foundText {
-            if shareProvider.supportsRawText {
-                await shareFilesOrText([text], using: shareProvider, from: view)
-            } else {
-                if let tempTextURL = await TemporaryFileStorageService.shared.createTempFile(for: .text(text)) {
-                    await shareFilesOrText([tempTextURL], using: shareProvider, from: view)
-                    TemporaryFileStorageService.shared.removeTemporaryFileIfNeeded(at: tempTextURL)
-                } else {
-                    await shareFilesOrText([text], using: shareProvider, from: view)
-                }
+        if !itemsToShare.isEmpty {
+            await shareFilesOrText(itemsToShare, using: shareProvider, from: view, temporaryCleanupURLs: tempCleanupURLs)
+        } else {
+            for tempURL in tempCleanupURLs {
+                TemporaryFileStorageService.shared.removeTemporaryFileIfNeeded(at: tempURL)
             }
-        } else if !itemsToShare.isEmpty {
-            await shareFilesOrText(itemsToShare, using: shareProvider, from: view)
         }
     }
 
@@ -223,12 +267,20 @@ private class SharingServiceDelegate: NSObject {}
         defer { SharingStateManager.shared.endInteraction() }
 
         do {
+            let singleIsDirectory: Bool = {
+                guard urls.count == 1 else { return false }
+                return urls[0].accessSecurityScopedResource { scoped in
+                    (try? scoped.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                }
+            }()
             let targetURL: URL
             var tempZipURL: URL?
-            if urls.count > 1 {
-                guard let zipped = try await urls.accessSecurityScopedResources(accessor: { accessible in
+            if urls.count > 1 || singleIsDirectory {
+                guard let zipped = await urls.accessSecurityScopedResources(accessor: { accessible in
                     await TemporaryFileStorageService.shared.createZip(from: accessible)
-                }) else { return }
+                }) else {
+                    throw NSError(domain: "QuickShare", code: -2, userInfo: [NSLocalizedDescriptionKey: "Failed to archive selection before upload"])
+                }
                 targetURL = zipped
                 tempZipURL = zipped
             } else {
@@ -241,25 +293,52 @@ private class SharingServiceDelegate: NSObject {}
                 }
             }
 
-            let fileData = try targetURL.accessSecurityScopedResource { scoped in
-                try Data(contentsOf: scoped)
-            }
-            let filename = targetURL.lastPathComponent
+            let rawFilename = targetURL.lastPathComponent
+            let safeFilename = rawFilename
+                .replacingOccurrences(of: "\"", with: "_")
+                .replacingOccurrences(of: "\r", with: "")
+                .replacingOccurrences(of: "\n", with: "")
             let boundary = "Boundary-\(UUID().uuidString)"
+            let maxUploadBytes: Int64 = 512 * 1024 * 1024
+
+            // Stream file into a temporary multipart body file off @MainActor to avoid doubling memory on the main thread
+            let multipartFileURL: URL = try await Task.detached(priority: .userInitiated) {
+                try targetURL.accessSecurityScopedResource { scoped in
+                    let attrs = try FileManager.default.attributesOfItem(atPath: scoped.path)
+                    if let fileSize = attrs[.size] as? Int64, fileSize > maxUploadBytes {
+                        throw NSError(domain: "QuickShare", code: -3, userInfo: [NSLocalizedDescriptionKey: "File exceeds 0x0.st 512 MiB limit"])
+                    }
+                    let tempURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("quickshare_upload_\(UUID().uuidString).tmp")
+                    FileManager.default.createFile(atPath: tempURL.path, contents: nil)
+                    do {
+                        let outHandle = try FileHandle(forWritingTo: tempURL)
+                        defer { try? outHandle.close() }
+                        let inHandle = try FileHandle(forReadingFrom: scoped)
+                        defer { try? inHandle.close() }
+
+                        let header = "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(safeFilename)\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+                        try outHandle.write(contentsOf: Data(header.utf8))
+                        while let chunk = try inHandle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                            try outHandle.write(contentsOf: chunk)
+                        }
+                        try outHandle.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+                        return tempURL
+                    } catch {
+                        try? FileManager.default.removeItem(at: tempURL)
+                        throw error
+                    }
+                }
+            }.value
+
+            defer { try? FileManager.default.removeItem(at: multipartFileURL) }
+
             var request = URLRequest(url: URL(string: "https://0x0.st")!)
             request.httpMethod = "POST"
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             request.setValue("BoringNotch/1.0 (GravityQuickshare)", forHTTPHeaderField: "User-Agent")
 
-            var body = Data()
-            body.append(Data("--\(boundary)\r\n".utf8))
-            body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".utf8))
-            body.append(Data("Content-Type: application/octet-stream\r\n\r\n".utf8))
-            body.append(fileData)
-            body.append(Data("\r\n--\(boundary)--\r\n".utf8))
-            request.httpBody = body
-
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.upload(for: request, fromFile: multipartFileURL)
             guard let httpResp = response as? HTTPURLResponse, (200...299).contains(httpResp.statusCode),
                   let link = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   link.hasPrefix("http") else {
@@ -269,9 +348,10 @@ private class SharingServiceDelegate: NSObject {}
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(link, forType: .string)
 
+            NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Quickshare Link Copied!"
-            alert.informativeText = "\(filename) uploaded to:\n\(link)\n\nThe link has been copied to your clipboard."
+            alert.informativeText = "\(rawFilename) uploaded to:\n\(link)\n\nThe link has been copied to your clipboard."
             alert.alertStyle = .informational
             alert.addButton(withTitle: "OK")
             alert.addButton(withTitle: "Open in Browser")
@@ -279,6 +359,7 @@ private class SharingServiceDelegate: NSObject {}
                 NSWorkspace.shared.open(webURL)
             }
         } catch {
+            NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Quickshare Upload Failed"
             alert.informativeText = error.localizedDescription

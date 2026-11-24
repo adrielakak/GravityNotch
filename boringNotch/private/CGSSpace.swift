@@ -37,6 +37,14 @@ public final class CGSSpace {
         CGSShowSpaces(_CGSDefaultConnection(), [self.identifier])
     }
 
+    /// Re-adds a window to this space after it was removed externally (e.g., SkyLight lock-screen delegation).
+    public func reattach(_ window: NSWindow) {
+        guard windows.contains(window) else { return }
+        CGSAddWindowsToSpaces(_CGSDefaultConnection(),
+                              [window.windowNumber] as NSArray,
+                              [self.identifier])
+    }
+
     deinit {
         CGSHideSpaces(_CGSDefaultConnection(), [self.identifier])
         CGSSpaceDestroy(_CGSDefaultConnection(), self.identifier)

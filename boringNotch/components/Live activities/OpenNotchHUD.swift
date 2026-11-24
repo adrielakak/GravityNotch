@@ -32,7 +32,7 @@ struct OpenNotchHUD: View {
                     Image(systemName: "sun.max.fill")
                         .contentTransition(.symbolEffect)
                 case .backlight:
-                    Image(systemName: value > 0.5 ? "light.max" : "light.min")
+                    Image(systemName: icon.isEmpty ? (value > 0.5 ? "light.max" : "light.min") : icon)
                         .contentTransition(.interpolate)
                 case .mic:
                     Image(systemName: "mic")
@@ -92,6 +92,8 @@ struct OpenNotchHUD: View {
             VolumeManager.shared.setAbsolute(Float32(newVal))
         case .brightness:
             BrightnessManager.shared.setAbsolute(value: Float32(newVal))
+        case .backlight where icon.isEmpty:
+            KeyboardBacklightManager.shared.setAbsolute(value: Float32(newVal))
         default:
             break
         }

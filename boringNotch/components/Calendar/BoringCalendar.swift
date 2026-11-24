@@ -138,11 +138,19 @@ struct WheelPicker: View {
         }
     }
 
+    private static let weekdayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "E"
+        return formatter
+    }()
+
     private func scrollToToday(config: Config) {
         let today = Date()
         byClick = true
         scrollPosition = indexForDate(today)
-        selectedDate = today
+        if !Calendar.current.isDate(selectedDate, inSameDayAs: today) {
+            selectedDate = today
+        }
     }
 
     // MARK: - Index/Date mapping with steps and spacers
@@ -172,9 +180,7 @@ struct WheelPicker: View {
     }
 
     private func dateToString(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "E"
-        return formatter.string(from: date)
+        Self.weekdayFormatter.string(from: date)
     }
 }
 
@@ -182,6 +188,8 @@ struct CalendarView: View {
     @EnvironmentObject var vm: BoringViewModel
     @ObservedObject private var calendarManager = CalendarManager.shared
     @State private var selectedDate = Date()
+    @Default(.hideCompletedReminders) private var hideCompletedReminders
+    @Default(.hideAllDayEvents) private var hideAllDayEvents
 
     var body: some View {
         VStack(spacing: 0) {
@@ -214,7 +222,9 @@ struct CalendarView: View {
             }
 
             let filteredEvents = EventListView.filteredEvents(
-                events: calendarManager.events
+                events: calendarManager.events,
+                hideCompletedReminders: hideCompletedReminders,
+                hideAllDayEvents: hideAllDayEvents
             )
             if filteredEvents.isEmpty {
                 EmptyEventsView(selectedDate: selectedDate)
@@ -230,16 +240,18 @@ struct CalendarView: View {
                 await calendarManager.updateCurrentDate(selectedDate)
             }
         }
-        .onChange(of: vm.notchState) { _, _ in
-            Task {
-                await calendarManager.updateCurrentDate(Date.now)
-                selectedDate = Date.now
+        .onChange(of: vm.notchState) { _, newState in
+            guard newState == .open else { return }
+            let now = Date.now
+            if Calendar.current.isDate(selectedDate, inSameDayAs: now) {
+                Task { await calendarManager.updateCurrentDate(now) }
+            } else {
+                selectedDate = now
             }
         }
         .onAppear {
             Task {
-                await calendarManager.updateCurrentDate(Date.now)
-                selectedDate = Date.now
+                await calendarManager.updateCurrentDate(selectedDate)
             }
         }
     }
@@ -269,17 +281,23 @@ struct EventListView: View {
     let events: [EventModel]
     @Default(.autoScrollToNextEvent) private var autoScrollToNextEvent
     @Default(.showFullEventTitles) private var showFullEventTitles
+    @Default(.hideCompletedReminders) private var hideCompletedReminders
+    @Default(.hideAllDayEvents) private var hideAllDayEvents
 
 
-    static func filteredEvents(events: [EventModel]) -> [EventModel] {
+    static func filteredEvents(
+        events: [EventModel],
+        hideCompletedReminders: Bool = Defaults[.hideCompletedReminders],
+        hideAllDayEvents: Bool = Defaults[.hideAllDayEvents]
+    ) -> [EventModel] {
         events.filter { event in
             if event.type.isReminder {
                 if case .reminder(let completed) = event.type {
-                    return !completed || !Defaults[.hideCompletedReminders]
+                    return !completed || !hideCompletedReminders
                 }
             }
             // Filter out all-day events if setting is enabled
-            if event.isAllDay && Defaults[.hideAllDayEvents] {
+            if event.isAllDay && hideAllDayEvents {
                 return false
             }
             return true
@@ -287,10 +305,15 @@ struct EventListView: View {
     }
 
     private var filteredEvents: [EventModel] {
-        Self.filteredEvents(events: events)
+        Self.filteredEvents(
+            events: events,
+            hideCompletedReminders: hideCompletedReminders,
+            hideAllDayEvents: hideAllDayEvents
+        )
     }
 
     private func scrollToRelevantEvent(proxy: ScrollViewProxy) {
+        guard autoScrollToNextEvent else { return }
         let now = Date()
         // Determine a single target using preferred search order:
         // 1) first non-all-day upcoming/in-progress event

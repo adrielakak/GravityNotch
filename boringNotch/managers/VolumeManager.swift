@@ -79,20 +79,19 @@ final class VolumeManager: NSObject, ObservableObject {
     @MainActor func toggleMuteAction() {
         // Determine expected resulting state immediately and show HUD with that value
         let deviceID = systemOutputDeviceID()
-        var willBeMuted = false
-        var resultingVolume: Float32 = rawVolume
-
-        if deviceID == kAudioObjectUnknown {
-            willBeMuted = !softwareMuted
-            resultingVolume = willBeMuted ? 0 : previousVolumeBeforeMute
+        let currentMuted = (deviceID == kAudioObjectUnknown) ? softwareMuted : isMutedInternal()
+        let willBeMuted = !currentMuted
+        let resultingVolume: Float32
+        if willBeMuted {
+            resultingVolume = 0
+        } else if softwareMuted {
+            resultingVolume = max(0, min(1, previousVolumeBeforeMute))
         } else {
-            let currentMuted = isMutedInternal()
-            willBeMuted = !currentMuted
-            resultingVolume = willBeMuted ? 0 : (readVolumeInternal() ?? rawVolume)
+            resultingVolume = readVolumeInternal() ?? rawVolume
         }
 
         toggleMuteInternal()
-        BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .volume, value: CGFloat(willBeMuted ? 0 : resultingVolume))
+        BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .volume, value: CGFloat(resultingVolume))
     }
     
     func refresh() { fetchCurrentVolume(triggerExternalHUD: false) }
@@ -112,7 +111,12 @@ final class VolumeManager: NSObject, ObservableObject {
         let clamped = max(0, min(1, value))
         let currentlyMuted = isMutedInternal()
         if currentlyMuted && clamped > 0 {
-            toggleMuteInternal()
+            if softwareMuted {
+                // Clear software mute directly so we do not flash previousVolumeBeforeMute before writing clamped
+                softwareMuted = false
+            } else {
+                toggleMuteInternal()
+            }
         }
 
         writeVolumeInternal(clamped)
@@ -394,9 +398,13 @@ final class VolumeManager: NSObject, ObservableObject {
         if AudioObjectGetPropertyData(deviceID, &muteAddr, 0, nil, &size, &muted) == noErr {
             lastInternalWriteAt = Date()
             var newVal: UInt32 = muted == 0 ? 1 : 0
-            AudioObjectSetPropertyData(deviceID, &muteAddr, 0, nil, size, &newVal)
-            let vol = readVolumeInternal() ?? rawVolume
-            publish(volume: vol, muted: newVal != 0, touchDate: true)
+            if AudioObjectSetPropertyData(deviceID, &muteAddr, 0, nil, size, &newVal) == noErr {
+                let vol = readVolumeInternal() ?? rawVolume
+                publish(volume: vol, muted: newVal != 0, touchDate: true)
+            } else {
+                let currentVol = readVolumeInternal() ?? rawVolume
+                performSoftwareMuteToggle(currentVolume: currentVol)
+            }
         } else {
             let currentVol = readVolumeInternal() ?? rawVolume
             performSoftwareMuteToggle(currentVolume: currentVol)

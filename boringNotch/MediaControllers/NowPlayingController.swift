@@ -9,7 +9,10 @@ import AppKit
 import Combine
 import Foundation
 
+// The state and the tasks are only touched on the main actor, like the other controllers: the adapter
+// stream, the retries and the commands used to mutate them from several threads at once.
 final class NowPlayingController: ObservableObject, MediaControllerProtocol {
+    @MainActor
     func updatePlaybackInfo() async {
         await fetchFavoriteStateIfSupported()
     }
@@ -33,6 +36,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         return bundleID == "com.apple.Music"
     }
 
+    @MainActor
     func setFavorite(_ favorite: Bool) async {
         let bundleID = playbackState.bundleIdentifier
         
@@ -111,11 +115,9 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
             }
         }
         
-        if let process = self.process {
-            if process.isRunning {
-                process.terminate()
-                process.waitUntilExit()
-            }
+        // No waitUntilExit: deinit runs on the main thread, Process reaps the child on its own
+        if let process = self.process, process.isRunning {
+            process.terminate()
         }
 
         self.process = nil
@@ -151,12 +153,14 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         return true
     }
     
+    @MainActor
     func toggleShuffle() async {
         // MRMediaRemoteSendCommandFunction(6, nil)
         MRMediaRemoteSetShuffleModeFunction(playbackState.isShuffled ? 1 : 3)
         playbackState.isShuffled.toggle()
     }
     
+    @MainActor
     func toggleRepeat() async {
         // MRMediaRemoteSendCommandFunction(7, nil)
         let newRepeatMode = (playbackState.repeatMode == .off) ? 3 : (playbackState.repeatMode.rawValue - 1)
@@ -164,6 +168,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         MRMediaRemoteSetRepeatModeFunction(newRepeatMode)
     }
     
+    @MainActor
     func setVolume(_ level: Double) async {
         // MediaRemote framework doesn't provide direct volume control for the active audio session
         // As a workaround, try to control the currently active music app directly
@@ -232,6 +237,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     // MediaRemote reports "playing" as soon as a track is requested, so while the player is still
     // buffering the estimated position runs ahead of the audio. The player's own position is the
     // ground truth: poll it for a few seconds after a track change and realign when it drifts.
+    @MainActor
     private func schedulePositionResync() {
         positionResyncTask?.cancel()
 
@@ -247,9 +253,15 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
             for delay in [0.6, 0.8, 1.0, 1.5, 2.0, 3.0, 4.0] {
                 try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled, let self, self.playbackState.title == title else { return }
+                // An AppleEvent to a player that just quit would launch it again
                 guard self.playbackState.isPlaying,
-                      let descriptor = try? await AppleScriptHelper.execute(
-                        "tell application \"\(appName)\" to get player position")
+                      !NSRunningApplication.runningApplications(withBundleIdentifier: self.playbackState.bundleIdentifier).isEmpty,
+                      let descriptor = try? await AppleScriptHelper.execute("""
+                        tell application "\(appName)"
+                            if it is running then return player position
+                        end tell
+                        """),
+                      descriptor.descriptorType != typeNull
                 else { continue }
                 guard !Task.isCancelled, self.playbackState.title == title else { return }
 
@@ -270,6 +282,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     // For streamed tracks, the player announces the track before its cover is downloaded, and the
     // adapter stream does not always push the cover once it arrives. MediaRemote does have it when
     // asked for the current state, so ask again for a while until it shows up.
+    @MainActor
     private func scheduleArtworkRetry() {
         artworkRetryTask?.cancel()
         let title = playbackState.title
@@ -330,6 +343,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     }
 
     // MARK: - Update Methods
+    @MainActor
     private func handleAdapterUpdate(_ update: NowPlayingUpdate) async {
         let payload = update.payload
         let diff = update.diff ?? false
@@ -406,6 +420,9 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         
         newPlaybackState.volume = payload.volume ?? (diff ? self.playbackState.volume : 0.5)
         
+        // Pause, seek and resume events carry no favorite state: keep it for the same track
+        newPlaybackState.isFavorite = sameTrack ? self.playbackState.isFavorite : false
+
         let needsPositionResync = newPlaybackState.title != self.playbackState.title
             || newPlaybackState.artist != self.playbackState.artist
             || (newPlaybackState.isPlaying && !self.playbackState.isPlaying)
@@ -423,10 +440,16 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
             scheduleArtworkRetry()
         }
         
-        // Fetch favorite state for supported apps asynchronously
-        // await fetchFavoriteStateIfSupported()
+        if !sameTrack, !newPlaybackState.title.isEmpty, newPlaybackState.bundleIdentifier == "com.apple.Music" {
+            let title = newPlaybackState.title
+            Task { @MainActor [weak self] in
+                guard let self, self.playbackState.title == title else { return }
+                await self.fetchFavoriteStateIfSupported()
+            }
+        }
     }
     
+     @MainActor
      private func fetchFavoriteStateIfSupported() async {
          let bundleID = playbackState.bundleIdentifier
         
@@ -436,14 +459,18 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
              
              let script = """
              tell application "Music"
-                 try
-                     return favorited of current track
-                 on error
-                     return false
-                 end try
+                 if it is running then
+                     try
+                         return favorited of current track
+                     on error
+                         return false
+                     end try
+                 end if
+                 return false
              end tell
              """
-             if let result = try? await AppleScriptHelper.execute(script) {
+             let title = playbackState.title
+             if let result = try? await AppleScriptHelper.execute(script), self.playbackState.title == title {
                  var updated = self.playbackState
                  updated.isFavorite = result.booleanValue
                  self.playbackState = updated
@@ -478,73 +505,60 @@ struct NowPlayingPayload: Codable {
 actor JSONLinesPipeHandler {
     private let pipe: Pipe
     private let fileHandle: FileHandle
-    private var buffer = ""
-    
+    /// Raw bytes: a read can end in the middle of a multi-byte character, so lines are cut on the
+    /// newline byte and only complete lines are decoded
+    private var buffer = Data()
+    private var pendingRead: CheckedContinuation<Data, Never>?
+    private var isClosed = false
+
     init() {
         self.pipe = Pipe()
         self.fileHandle = pipe.fileHandleForReading
     }
-    
+
     func getPipe() -> Pipe {
         return pipe
     }
-    
+
     func readJSONLines<T: Decodable>(as type: T.Type, onLine: @escaping (T) async -> Void) async {
-        do {
-            try await self.processLines(as: type) { decodedObject in
-                await onLine(decodedObject)
-            }
-        } catch {
-            print("Error processing JSON stream: \(error)")
-        }
-    }
-    
-    private func processLines<T: Decodable>(as type: T.Type, onLine: @escaping (T) async -> Void) async throws {
         while true {
-            let data = try await readData()
+            let data = await readData()
             guard !data.isEmpty else { break }
-            
-            if let chunk = String(data: data, encoding: .utf8) {
-                buffer.append(chunk)
-                
-                while let range = buffer.range(of: "\n") {
-                    let line = String(buffer[..<range.lowerBound])
-                    buffer = String(buffer[range.upperBound...])
-                    
-                    if !line.isEmpty {
-                        await processJSONLine(line, as: type, onLine: onLine)
-                    }
-                }
+            buffer.append(data)
+
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let line = buffer[buffer.startIndex..<newline]
+                buffer.removeSubrange(buffer.startIndex...newline)
+                guard !line.isEmpty, let decoded = try? JSONDecoder().decode(T.self, from: Data(line)) else { continue }
+                await onLine(decoded)
             }
         }
     }
-    
-    private func processJSONLine<T: Decodable>(_ line: String, as type: T.Type, onLine: @escaping (T) async -> Void) async {
-        guard let data = line.data(using: .utf8) else {
-            return
-        }
-        do {
-            let decodedObject = try JSONDecoder().decode(T.self, from: data)
-            await onLine(decodedObject)
-        } catch {
-            // Ignore lines that can't be decoded
-        }
-    }
-    
-    private func readData() async throws -> Data {
-        return try await withCheckedThrowingContinuation { continuation in
-            
-            fileHandle.readabilityHandler = { handle in
-                let data = handle.availableData
+
+    private func readData() async -> Data {
+        guard !isClosed else { return Data() }
+        return await withCheckedContinuation { continuation in
+            pendingRead = continuation
+            fileHandle.readabilityHandler = { [weak self] handle in
                 handle.readabilityHandler = nil
-                continuation.resume(returning: data)
+                let data = (try? handle.read(upToCount: 65_536)) ?? Data()
+                Task { await self?.deliver(data) }
             }
         }
     }
-    
+
+    private func deliver(_ data: Data) {
+        guard let continuation = pendingRead else { return }
+        pendingRead = nil
+        continuation.resume(returning: data)
+    }
+
+    /// Ends the stream: a read still waiting is answered with no data instead of being left hanging
     func close() async {
+        isClosed = true
+        fileHandle.readabilityHandler = nil
+        deliver(Data())
         do {
-            fileHandle.readabilityHandler = nil
             try fileHandle.close()
             try pipe.fileHandleForWriting.close()
         } catch {

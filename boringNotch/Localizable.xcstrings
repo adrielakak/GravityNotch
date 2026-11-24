@@ -81,6 +81,22 @@
         }
       }
     },
+    "On macOS 27, this permission is called Device Control and Data Access, in System Settings > Privacy & Security.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "On macOS 27, this permission is called Device Control and Data Access, in System Settings > Privacy & Security."
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sur macOS 27, cette autorisation s'appelle Contrôle de l'appareil et accès aux données, dans Réglages Système > Confidentialité et sécurité."
+          }
+        }
+      }
+    },
     "Open the Agents tab while an agent is working": {
       "localizations": {
         "en": {

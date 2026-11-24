@@ -89,6 +89,14 @@ final class ShelfSelectionModel: ObservableObject {
         lastAnchorID = nil
     }
 
+    func deselect(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        selectedIDs.subtract(ids)
+        if let anchor = lastAnchorID, ids.contains(anchor) {
+            lastAnchorID = selectedIDs.first
+        }
+    }
+
     // Keep anchor sane if items array changed drastically (optional helper)
     func ensureValidAnchor(in allItems: [ShelfItem]) {
         if let anchor = lastAnchorID, !allItems.contains(where: { $0.id == anchor }) {

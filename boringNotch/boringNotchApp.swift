@@ -90,8 +90,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var screenLockedObserver: Any?
     private var screenUnlockedObserver: Any?
     private var isScreenLocked: Bool = false
-    private var windowScreenDidChangeObserver: Any?
+    private var disableSkyLightTask: Task<Void, Never>?
+    private var dragExitCloseTasks: [String: Task<Void, Never>] = [:]
+    private var windowScreenObservers: [ObjectIdentifier: NSObjectProtocol] = [:]
+    private var notificationObservers: [NSObjectProtocol] = []
     private var dragDetectors: [String: DragDetector] = [:] // UUID -> DragDetector
+    private var previousScreenMetrics: [(uuid: String, frame: NSRect, visibleFrame: NSRect, safeTop: CGFloat)] = []
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
@@ -99,6 +103,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self)
+        for obs in notificationObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        notificationObservers.removeAll()
+        for obs in windowScreenObservers.values {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        windowScreenObservers.removeAll()
         if let observer = screenLockedObserver {
             DistributedNotificationCenter.default().removeObserver(observer)
             screenLockedObserver = nil
@@ -150,10 +162,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func onScreenLocked(_ notification: Notification) {
         isScreenLocked = true
         coordinator.isScreenLocked = true
+        disableSkyLightTask?.cancel()
+        disableSkyLightTask = nil
         closeNotchTask?.cancel()
         closeNotchTask = nil
-        vm.close()
-        viewModels.values.forEach { $0.close() }
+        vm.close(force: true)
+        viewModels.values.forEach { $0.close(force: true) }
+        cleanupDragDetectors()
         if !Defaults[.showOnLockScreen] {
             cleanupWindows()
         } else {
@@ -167,11 +182,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isScreenLocked = false
         coordinator.isScreenLocked = false
         LockScreenMediaPanelManager.shared.hideFromLockScreen()
+        disableSkyLightOnAllWindows()
         if !Defaults[.showOnLockScreen] {
             adjustWindowPosition(changeAlpha: true)
-        } else {
-            disableSkyLightOnAllWindows()
         }
+        setupDragDetectors()
     }
     
     @MainActor
@@ -191,22 +206,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @MainActor
     private func disableSkyLightOnAllWindows() {
+        disableSkyLightTask?.cancel()
         // Delay disabling SkyLight to avoid flicker during unlock transition
-        Task {
+        disableSkyLightTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
-            await MainActor.run {
-                if Defaults[.showOnAllDisplays] {
-                    self.windows.values.forEach { window in
-                        if let skyWindow = window as? BoringNotchSkyLightWindow {
-                            skyWindow.disableSkyLight()
-                        }
-                    }
-                } else {
-                    if let skyWindow = self.window as? BoringNotchSkyLightWindow {
-                        skyWindow.disableSkyLight()
-                    }
+            guard let self, !Task.isCancelled, !self.isScreenLocked else { return }
+            let activeWindows: [NSWindow] = Defaults[.showOnAllDisplays]
+                ? Array(self.windows.values)
+                : (self.window.map { [$0] } ?? [])
+            for window in activeWindows {
+                if let skyWindow = window as? BoringNotchSkyLightWindow {
+                    skyWindow.disableSkyLight()
+                    NotchSpaceManager.shared.notchSpace.reattach(skyWindow)
+                    skyWindow.orderFrontRegardless()
                 }
             }
+        }
+    }
+
+    private func removeWindowScreenObserver(for window: NSWindow) {
+        if let obs = windowScreenObservers.removeValue(forKey: ObjectIdentifier(window)) {
+            NotificationCenter.default.removeObserver(obs)
         }
     }
 
@@ -214,24 +234,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let shouldCleanupMulti = shouldInvert ? !Defaults[.showOnAllDisplays] : Defaults[.showOnAllDisplays]
         
         if shouldCleanupMulti {
+            viewModels.values.forEach { $0.close(force: true) }
             windows.values.forEach { window in
+                removeWindowScreenObserver(for: window)
                 window.close()
                 NotchSpaceManager.shared.notchSpace.windows.remove(window)
             }
             windows.removeAll()
             viewModels.removeAll()
-        } else if let window = window {
-            window.close()
-            NotchSpaceManager.shared.notchSpace.windows.remove(window)
-            if let obs = windowScreenDidChangeObserver {
-                NotificationCenter.default.removeObserver(obs)
-                windowScreenDidChangeObserver = nil
+        } else {
+            vm.close(force: true)
+            if let window = window {
+                removeWindowScreenObserver(for: window)
+                window.close()
+                NotchSpaceManager.shared.notchSpace.windows.remove(window)
+                self.window = nil
             }
-            self.window = nil
         }
     }
 
     private func cleanupDragDetectors() {
+        dragExitCloseTasks.values.forEach { $0.cancel() }
+        dragExitCloseTasks.removeAll()
         dragDetectors.values.forEach { detector in
             detector.stopMonitoring()
         }
@@ -241,14 +265,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupDragDetectors() {
         cleanupDragDetectors()
 
-        guard Defaults[.expandedDragDetection] else { return }
+        guard !isScreenLocked, Defaults[.expandedDragDetection], Defaults[.boringShelf] else { return }
 
         if Defaults[.showOnAllDisplays] {
             for screen in NSScreen.screens {
                 setupDragDetectorForScreen(screen)
             }
         } else {
-            let preferredScreen: NSScreen? = window?.screen
+            guard let window = window, window.alphaValue > 0 else { return }
+            let preferredScreen: NSScreen? = window.screen
                 ?? NSScreen.screen(withUUID: coordinator.selectedScreenUUID)
                 ?? NSScreen.main
 
@@ -280,20 +305,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleDragEntersNotchRegion(onScreen: screen)
             }
         }
+        detector.onDragExitsNotchRegion = { [weak self] in
+            Task { @MainActor in
+                self?.handleDragExitsNotchRegion(screenUUID: uuid)
+            }
+        }
         
         dragDetectors[uuid] = detector
         detector.startMonitoring()
     }
 
+    @MainActor
     private func handleDragEntersNotchRegion(onScreen screen: NSScreen) {
-        guard let uuid = screen.displayUUID else { return }
+        guard !isScreenLocked, Defaults[.boringShelf], let uuid = screen.displayUUID else { return }
+        dragExitCloseTasks[uuid]?.cancel()
+        dragExitCloseTasks.removeValue(forKey: uuid)
         
         if Defaults[.showOnAllDisplays], let viewModel = viewModels[uuid] {
             viewModel.open()
             coordinator.currentView = .shelf
-        } else if !Defaults[.showOnAllDisplays], let windowScreen = window?.screen, screen == windowScreen {
+        } else if !Defaults[.showOnAllDisplays], let windowScreen = window?.screen, window?.alphaValue ?? 0 > 0, screen == windowScreen {
             vm.open()
             coordinator.currentView = .shelf
+        }
+    }
+
+    @MainActor
+    private func handleDragExitsNotchRegion(screenUUID uuid: String) {
+        dragExitCloseTasks[uuid]?.cancel()
+        dragExitCloseTasks[uuid] = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard let self, !Task.isCancelled else { return }
+            let targetVM: BoringViewModel? = Defaults[.showOnAllDisplays] ? self.viewModels[uuid] : self.vm
+            guard let targetVM,
+                  targetVM.notchState == .open,
+                  !targetVM.anyDropZoneTargeting,
+                  !targetVM.isMouseHovering(),
+                  !targetVM.isBatteryPopoverActive,
+                  !SharingStateManager.shared.preventNotchClose else { return }
+            targetVM.close()
         }
     }
 
@@ -302,9 +352,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let styleMask: NSWindow.StyleMask = [.borderless, .nonactivatingPanel, .utilityWindow, .hudWindow]
         
         let window = BoringNotchSkyLightWindow(contentRect: rect, styleMask: styleMask, backing: .buffered, defer: false)
+        window.allowsKeyWindow = true
         
-        // Enable SkyLight only when screen is locked
-        if isScreenLocked {
+        // Enable SkyLight only when screen is locked AND showOnLockScreen is enabled
+        if isScreenLocked && Defaults[.showOnLockScreen] {
             window.enableSkyLight()
         } else {
             window.disableSkyLight()
@@ -317,9 +368,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.orderFrontRegardless()
         NotchSpaceManager.shared.notchSpace.windows.insert(window)
+        return window
+    }
 
-        // Observe when the window's screen changes so we can update drag detectors
-        windowScreenDidChangeObserver = NotificationCenter.default.addObserver(
+    private func observeScreenChange(for window: NSWindow) {
+        guard windowScreenObservers[ObjectIdentifier(window)] == nil else { return }
+        windowScreenObservers[ObjectIdentifier(window)] = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeScreenNotification,
             object: window,
             queue: .main) { [weak self] _ in
@@ -327,7 +381,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.setupDragDetectors()
                 }
         }
-        return window
     }
 
     @MainActor
@@ -355,34 +408,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(NotificationCenter.default.addObserver(
             forName: Notification.Name.selectedScreenChanged, object: nil, queue: nil
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.adjustWindowPosition(changeAlpha: true)
                 self?.setupDragDetectors()
             }
-        }
+        })
 
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(NotificationCenter.default.addObserver(
             forName: Notification.Name.notchHeightChanged, object: nil, queue: nil
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.adjustWindowPosition()
                 self?.setupDragDetectors()
             }
-        }
+        })
 
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(NotificationCenter.default.addObserver(
             forName: Notification.Name.automaticallySwitchDisplayChanged, object: nil, queue: nil
         ) { [weak self] _ in
-            guard let self = self, let window = self.window else { return }
             Task { @MainActor in
-                window.alphaValue = self.coordinator.selectedScreenUUID == self.coordinator.preferredScreenUUID ? 1 : 0
+                self?.adjustWindowPosition(changeAlpha: true)
+                self?.setupDragDetectors()
             }
-        }
+        })
 
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(NotificationCenter.default.addObserver(
             forName: Notification.Name.showOnAllDisplaysChanged, object: nil, queue: nil
         ) { [weak self] _ in
             Task { @MainActor in
@@ -391,15 +444,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.adjustWindowPosition(changeAlpha: true)
                 self.setupDragDetectors()
             }
-        }
+        })
 
-        NotificationCenter.default.addObserver(
+        notificationObservers.append(NotificationCenter.default.addObserver(
             forName: Notification.Name.expandedDragDetectionChanged, object: nil, queue: nil
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.setupDragDetectors()
             }
-        }
+        })
 
         // Use closure-based observers for DistributedNotificationCenter and keep tokens for removal
         screenLockedObserver = DistributedNotificationCenter.default().addObserver(
@@ -433,22 +486,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         KeyboardShortcuts.onKeyDown(for: .toggleNotchOpen) { [weak self] in
-            Task { [weak self] in
-                guard let self = self else { return }
+            Task { @MainActor [weak self] in
+                guard let self = self, !self.isScreenLocked else { return }
 
                 let mouseLocation = NSEvent.mouseLocation
-
-                var viewModel = self.vm
-
+                let viewModel: BoringViewModel
                 if Defaults[.showOnAllDisplays] {
-                    for screen in NSScreen.screens {
-                        if screen.frame.contains(mouseLocation) {
-                            if let uuid = screen.displayUUID, let screenViewModel = self.viewModels[uuid] {
-                                viewModel = screenViewModel
-                                break
-                            }
-                        }
-                    }
+                    guard let matched = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }),
+                          let uuid = matched.displayUUID,
+                          let screenViewModel = self.viewModels[uuid] else { return }
+                    viewModel = screenViewModel
+                } else {
+                    viewModel = self.vm
                 }
 
                 self.closeNotchTask?.cancel()
@@ -456,36 +505,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 switch viewModel.notchState {
                 case .closed:
-                    await MainActor.run {
-                        viewModel.open()
-                    }
+                    viewModel.open()
 
-                    let task = Task { [weak viewModel] in
+                    let task = Task { @MainActor [weak viewModel] in
                         do {
                             try await Task.sleep(for: .seconds(3))
-                            await MainActor.run {
-                                viewModel?.close()
-                            }
+                            guard !Task.isCancelled, let viewModel else { return }
+                            guard !viewModel.isMouseHovering(),
+                                  !viewModel.isBatteryPopoverActive,
+                                  !viewModel.anyDropZoneTargeting,
+                                  !SharingStateManager.shared.preventNotchClose else { return }
+                            viewModel.close()
                         } catch { }
                     }
                     self.closeNotchTask = task
                 case .open:
-                    await MainActor.run {
-                        viewModel.close()
-                    }
+                    viewModel.close()
                 }
             }
         }
 
-        if !Defaults[.showOnAllDisplays] {
-            let viewModel = self.vm
-            let window = createBoringNotchWindow(
-                for: NSScreen.main ?? NSScreen.screens.first!, with: viewModel)
-            self.window = window
-            adjustWindowPosition(changeAlpha: true)
-        } else {
-            adjustWindowPosition(changeAlpha: true)
-        }
+        adjustWindowPosition(changeAlpha: true)
 
         setupDragDetectors()
 
@@ -503,6 +543,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         previousScreens = NSScreen.screens
+        previousScreenMetrics = currentScreenMetrics(from: NSScreen.screens)
+    }
+
+    private func currentScreenMetrics(from screens: [NSScreen]) -> [(uuid: String, frame: NSRect, visibleFrame: NSRect, safeTop: CGFloat)] {
+        screens.compactMap { screen in
+            guard let uuid = screen.displayUUID else { return nil }
+            return (uuid, screen.frame, screen.visibleFrame, screen.safeAreaInsets.top)
+        }.sorted { $0.uuid < $1.uuid }
     }
 
     func playWelcomeSound() {
@@ -523,31 +571,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func screenConfigurationDidChange() {
         let currentScreens = NSScreen.screens
+        let nextMetrics = currentScreenMetrics(from: currentScreens)
 
-        let screensChanged =
-            currentScreens.count != previousScreens?.count
-            || Set(currentScreens.compactMap { $0.displayUUID })
-                != Set(previousScreens?.compactMap { $0.displayUUID } ?? [])
-            || Set(currentScreens.map { $0.frame }) != Set(previousScreens?.map { $0.frame } ?? [])
+        let screensChanged: Bool = {
+            if nextMetrics.count != previousScreenMetrics.count { return true }
+            for (lhs, rhs) in zip(nextMetrics, previousScreenMetrics) {
+                if lhs.uuid != rhs.uuid || lhs.frame != rhs.frame || lhs.visibleFrame != rhs.visibleFrame || lhs.safeTop != rhs.safeTop {
+                    return true
+                }
+            }
+            return false
+        }()
 
         previousScreens = currentScreens
+        previousScreenMetrics = nextMetrics
 
         if screensChanged {
             DispatchQueue.main.async { [weak self] in
-                self?.cleanupWindows()
-                self?.adjustWindowPosition()
-                self?.setupDragDetectors()
+                guard let self else { return }
+                if self.isScreenLocked && !Defaults[.showOnLockScreen] { return }
+                self.adjustWindowPosition()
+                self.setupDragDetectors()
             }
         }
     }
 
     @objc func adjustWindowPosition(changeAlpha: Bool = false) {
+        if isScreenLocked && !Defaults[.showOnLockScreen] {
+            return
+        }
+
         if Defaults[.showOnAllDisplays] {
             let currentScreenUUIDs = Set(NSScreen.screens.compactMap { $0.displayUUID })
 
             // Remove windows for screens that no longer exist
             for uuid in windows.keys where !currentScreenUUIDs.contains(uuid) {
+                viewModels[uuid]?.close(force: true)
                 if let window = windows[uuid] {
+                    removeWindowScreenObserver(for: window)
                     window.close()
                     NotchSpaceManager.shared.notchSpace.windows.remove(window)
                     windows.removeValue(forKey: uuid)
@@ -568,11 +629,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 if let window = windows[uuid], let viewModel = viewModels[uuid] {
-                    positionWindow(window, on: screen, changeAlpha: changeAlpha)
-
+                    let closedSize = getClosedNotchSize(screenUUID: uuid)
+                    viewModel.closedNotchSize = closedSize
                     if viewModel.notchState == .closed {
-                        viewModel.close()
+                        viewModel.notchSize = closedSize
                     }
+                    positionWindow(window, on: screen, changeAlpha: changeAlpha)
+                    observeScreenChange(for: window)
                 }
             }
         } else {
@@ -581,7 +644,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let preferredScreen = NSScreen.screen(withUUID: coordinator.preferredScreenUUID ?? "") {
                 coordinator.selectedScreenUUID = coordinator.preferredScreenUUID ?? ""
                 selectedScreen = preferredScreen
-            } else if Defaults[.automaticallySwitchDisplay], let mainScreen = NSScreen.main,
+            } else if Defaults[.automaticallySwitchDisplay],
+                      let mainScreen = NSScreen.main ?? NSScreen.screens.first,
                       let mainUUID = mainScreen.displayUUID {
                 coordinator.selectedScreenUUID = mainUUID
                 selectedScreen = mainScreen
@@ -593,7 +657,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             vm.screenUUID = selectedScreen.displayUUID
-            vm.notchSize = getClosedNotchSize(screenUUID: selectedScreen.displayUUID)
+            let closedSize = getClosedNotchSize(screenUUID: selectedScreen.displayUUID)
+            vm.closedNotchSize = closedSize
+            if vm.notchState == .closed {
+                vm.notchSize = closedSize
+            }
 
             if window == nil {
                 window = createBoringNotchWindow(for: selectedScreen, with: vm)
@@ -601,10 +669,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             if let window = window {
                 positionWindow(window, on: selectedScreen, changeAlpha: changeAlpha)
-
-                if vm.notchState == .closed {
-                    vm.close()
-                }
+                observeScreenChange(for: window)
             }
         }
     }
@@ -645,14 +710,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.contentView = NSHostingView(
                 rootView: OnboardingView(
                     step: step,
-                    onFinish: {
-                        window.orderOut(nil)
-                        window.close()
+                    onFinish: { [weak self, weak window] in
+                        window?.orderOut(nil)
+                        window?.close()
+                        window?.contentView = nil
+                        self?.onboardingWindowController = nil
                         NSApp.setActivationPolicy(.accessory)
                         NSApp.deactivate()
                     },
-                    onOpenSettings: {
-                        window.close()
+                    onOpenSettings: { [weak self, weak window] in
+                        window?.close()
+                        window?.contentView = nil
+                        self?.onboardingWindowController = nil
                         SettingsWindowController.shared.showWindow()
                     }
                 ))

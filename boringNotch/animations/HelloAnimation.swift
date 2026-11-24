@@ -112,6 +112,7 @@ struct HelloAnimation: View {
         .task {
             // Wait for the "opening" animation (notch expansion) to complete before starting the snake
             try? await Task.sleep(for: .seconds(0.6))
+            guard !Task.isCancelled else { return }
             
             withAnimation(
                 .easeInOut(duration: 4.0)
@@ -121,6 +122,7 @@ struct HelloAnimation: View {
             
             // Wait for the animation to complete
             try? await Task.sleep(for: .seconds(4.0))
+            guard !Task.isCancelled else { return }
             
             onFinish()
         }

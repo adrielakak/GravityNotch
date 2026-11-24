@@ -327,6 +327,7 @@ struct BoringBatteryView: View {
         .onDisappear {
             hideTask?.cancel()
             hideTask = nil
+            vm.isBatteryPopoverActive = false
         }
     }
 

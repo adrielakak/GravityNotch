@@ -46,9 +46,9 @@ struct ImageConversionOptions {
     let removeMetadata: Bool
 }
 
-/// Service for processing images (background removal, conversion, PDF creation)
-@MainActor
-final class ImageProcessingService {
+/// Service for processing images (background removal, conversion, PDF creation, OCR).
+/// Heavy Vision / CoreImage / PDF work runs off the main actor; only UI modal presentation is `@MainActor`.
+final class ImageProcessingService: @unchecked Sendable {
     static let shared = ImageProcessingService()
     
     private init() {}
@@ -58,38 +58,37 @@ final class ImageProcessingService {
     
     /// Removes the background from an image using Vision framework
     func removeBackground(from url: URL) async throws -> URL? {
-        guard let inputImage = NSImage(contentsOf: url) else {
-            throw ImageProcessingError.invalidImage
-        }
-        
-        guard let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            throw ImageProcessingError.invalidImage
-        }
-        
-        let request = VNGenerateForegroundInstanceMaskRequest()
-        let handler = VNImageRequestHandler(cgImage: cgImage)
-        
-        try handler.perform([request])
-        
-        guard let result = request.results?.first else {
-            throw ImageProcessingError.backgroundRemovalFailed
-        }
-        
-        let mask = try result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
-        
-        let output = try await applyMask(mask, to: cgImage)
-        
-        let processedImage = NSImage(cgImage: output, size: inputImage.size)
+        let context = self.ciContext
+        let finalData: Data = try await Task.detached(priority: .userInitiated) {
+            guard let inputImage = NSImage(contentsOf: url),
+                  let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                throw ImageProcessingError.invalidImage
+            }
+            
+            let request = VNGenerateForegroundInstanceMaskRequest()
+            let handler = VNImageRequestHandler(cgImage: cgImage)
+            
+            try handler.perform([request])
+            
+            guard let result = request.results?.first else {
+                throw ImageProcessingError.backgroundRemovalFailed
+            }
+            
+            let mask = try result.generateScaledMaskForImage(forInstances: result.allInstances, from: handler)
+            let output = try Self.applyMask(mask, to: cgImage, using: context)
+            let processedImage = NSImage(cgImage: output, size: inputImage.size)
+            
+            guard let pngData = processedImage.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: pngData),
+                  let data = bitmap.representation(using: .png, properties: [:]) else {
+                throw ImageProcessingError.saveFailed
+            }
+            return data
+        }.value
         
         // Create temporary file
         let originalName = url.deletingPathExtension().lastPathComponent
         let newName = "\(originalName)_no_bg.png"
-        
-        guard let pngData = processedImage.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: pngData),
-              let finalData = bitmap.representation(using: .png, properties: [:]) else {
-            throw ImageProcessingError.saveFailed
-        }
         
         guard let tempURL = await TemporaryFileStorageService.shared.createTempFile(
             for: .data(finalData, suggestedName: newName)
@@ -100,7 +99,7 @@ final class ImageProcessingService {
         return tempURL
     }
     
-    private func applyMask(_ mask: CVPixelBuffer, to image: CGImage) async throws -> CGImage {
+    private static func applyMask(_ mask: CVPixelBuffer, to image: CGImage, using context: CIContext) throws -> CGImage {
         let ciImage = CIImage(cgImage: image)
         let maskImage = CIImage(cvPixelBuffer: mask)
         
@@ -109,12 +108,8 @@ final class ImageProcessingService {
         filter.maskImage = maskImage
         filter.backgroundImage = CIImage.empty()
         
-        guard let output = filter.outputImage else {
-            throw ImageProcessingError.backgroundRemovalFailed
-        }
-        
-        let context = CIContext()
-        guard let result = context.createCGImage(output, from: output.extent) else {
+        guard let output = filter.outputImage,
+              let result = context.createCGImage(output, from: output.extent) else {
             throw ImageProcessingError.backgroundRemovalFailed
         }
         
@@ -125,35 +120,33 @@ final class ImageProcessingService {
     
     /// Converts an image with specified options
     func convertImage(from url: URL, options: ImageConversionOptions) async throws -> URL? {
-        guard var inputImage = NSImage(contentsOf: url) else {
-            throw ImageProcessingError.invalidImage
-        }
-        
-        // Scale image if needed
-        if let maxDim = options.maxDimension {
-            inputImage = scaleImage(inputImage, maxDimension: maxDim)
-        }
-        
-        // Get image data based on format
-        let imageData: Data?
-        
-        if options.removeMetadata {
-            // Create new image without metadata
-            guard let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        let context = self.ciContext
+        let data: Data = try await Task.detached(priority: .userInitiated) {
+            guard var inputImage = NSImage(contentsOf: url) else {
                 throw ImageProcessingError.invalidImage
             }
             
-            let newImage = NSImage(cgImage: cgImage, size: inputImage.size)
-            imageData = try convertToFormat(newImage, format: options.format, quality: options.compressionQuality)
-        } else {
-            imageData = try convertToFormat(inputImage, format: options.format, quality: options.compressionQuality)
-        }
+            if let maxDim = options.maxDimension {
+                inputImage = Self.scaleImage(inputImage, maxDimension: maxDim, using: context)
+            }
+            
+            let imageData: Data?
+            if options.removeMetadata {
+                guard let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                    throw ImageProcessingError.invalidImage
+                }
+                let newImage = NSImage(cgImage: cgImage, size: inputImage.size)
+                imageData = try Self.convertToFormat(newImage, format: options.format, quality: options.compressionQuality, using: context)
+            } else {
+                imageData = try Self.convertToFormat(inputImage, format: options.format, quality: options.compressionQuality, using: context)
+            }
+            
+            guard let data = imageData else {
+                throw ImageProcessingError.conversionFailed
+            }
+            return data
+        }.value
         
-        guard let data = imageData else {
-            throw ImageProcessingError.conversionFailed
-        }
-        
-        // Create temporary file
         let originalName = url.deletingPathExtension().lastPathComponent
         let newName = "\(originalName)_converted.\(options.format.fileExtension)"
         
@@ -166,7 +159,7 @@ final class ImageProcessingService {
         return tempURL
     }
     
-    private func convertToFormat(_ image: NSImage, format: ImageConversionOptions.ImageFormat, quality: Double) throws -> Data? {
+    private static func convertToFormat(_ image: NSImage, format: ImageConversionOptions.ImageFormat, quality: Double, using context: CIContext) throws -> Data? {
         guard let tiffData = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData) else {
             return nil
@@ -188,21 +181,19 @@ final class ImageProcessingService {
         case .bmp:
             return bitmap.representation(using: .bmp, properties: [:])
         case .heic:
-            // HEIC requires using CIContext
             guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
                 return nil
             }
             let ciImage = CIImage(cgImage: cgImage)
-            let context = CIContext()
             let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
             let options: [CIImageRepresentationOption: Any] = [
                 CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality
             ]
-            return try? context.heifRepresentation(of: ciImage, format: .RGBA8, colorSpace: colorSpace, options: options)
+            return context.heifRepresentation(of: ciImage, format: .RGBA8, colorSpace: colorSpace, options: options)
         }
     }
     
-    private func scaleImage(_ image: NSImage, maxDimension: CGFloat) -> NSImage {
+    private static func scaleImage(_ image: NSImage, maxDimension: CGFloat, using context: CIContext) -> NSImage {
         guard maxDimension > 0 else { return image }
 
         guard let srcCG = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
@@ -211,7 +202,7 @@ final class ImageProcessingService {
 
         let srcMax = max(srcCG.width, srcCG.height)
         if CGFloat(srcMax) <= maxDimension {
-            return image // no downscaling needed
+            return image
         }
 
         let scale = maxDimension / CGFloat(srcMax)
@@ -226,12 +217,8 @@ final class ImageProcessingService {
             return image
         }
 
-        // Preserve the source color space for exact color matching
         let colorSpace = srcCG.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        let ciContext = CIContext(options: [.workingColorSpace: colorSpace])
-
-        // Render using the CIContext with matching color space
-        guard let dstCG = ciContext.createCGImage(output, from: output.extent, format: .RGBA8, colorSpace: colorSpace) else {
+        guard let dstCG = context.createCGImage(output, from: output.extent, format: .RGBA8, colorSpace: colorSpace) else {
             return image
         }
 
@@ -246,30 +233,26 @@ final class ImageProcessingService {
             throw ImageProcessingError.noImagesProvided
         }
         
-        let pdfDocument = PDFDocument()
-        
-        for (index, url) in imageURLs.enumerated() {
-            guard let image = NSImage(contentsOf: url) else {
-                continue
+        let pdfData: Data = try await Task.detached(priority: .userInitiated) {
+            let pdfDocument = PDFDocument()
+            
+            for url in imageURLs {
+                guard let image = NSImage(contentsOf: url),
+                      let page = PDFPage(image: image) else {
+                    continue
+                }
+                pdfDocument.insert(page, at: pdfDocument.pageCount)
             }
             
-            let pdfPage = PDFPage(image: image)
-            if let page = pdfPage {
-                pdfDocument.insert(page, at: index)
+            guard pdfDocument.pageCount > 0,
+                  let data = pdfDocument.dataRepresentation() else {
+                throw ImageProcessingError.pdfCreationFailed
             }
-        }
+            return data
+        }.value
         
-        guard pdfDocument.pageCount > 0 else {
-            throw ImageProcessingError.pdfCreationFailed
-        }
-        
-        // Create temporary file
         let name = outputName ?? "images_\(Date().timeIntervalSince1970).pdf"
         let pdfName = name.hasSuffix(".pdf") ? name : "\(name).pdf"
-        
-        guard let pdfData = pdfDocument.dataRepresentation() else {
-            throw ImageProcessingError.pdfCreationFailed
-        }
         
         guard let tempURL = await TemporaryFileStorageService.shared.createTempFile(
             for: .data(pdfData, suggestedName: pdfName)
@@ -293,63 +276,60 @@ final class ImageProcessingService {
 
     /// Extracts text from an image or PDF using Vision framework (VNRecognizeTextRequest)
     func extractText(from url: URL) async throws -> String {
-        if url.pathExtension.lowercased() == "pdf" || ((try? url.resourceValues(forKeys: [.contentTypeKey]).contentType?.conforms(to: .pdf)) == true) {
-            if let pdf = PDFDocument(url: url) {
-                if let directText = pdf.string?.trimmingCharacters(in: .whitespacesAndNewlines), !directText.isEmpty {
-                    return directText
-                }
-                var pageTexts: [String] = []
-                for idx in 0..<min(pdf.pageCount, 10) {
-                    if let page = pdf.page(at: idx) {
-                        let pageRect = page.bounds(for: .mediaBox)
-                        let img = page.thumbnail(of: NSSize(width: pageRect.width * 2, height: pageRect.height * 2), for: .mediaBox)
-                        if let recognized = try? await recognizeText(in: img), !recognized.isEmpty {
-                            pageTexts.append(recognized)
+        return try await Task.detached(priority: .userInitiated) {
+            if url.pathExtension.lowercased() == "pdf" || ((try? url.resourceValues(forKeys: [.contentTypeKey]).contentType?.conforms(to: .pdf)) == true) {
+                if let pdf = PDFDocument(url: url) {
+                    if let directText = pdf.string?.trimmingCharacters(in: .whitespacesAndNewlines), !directText.isEmpty {
+                        return directText
+                    }
+                    var pageTexts: [String] = []
+                    for idx in 0..<min(pdf.pageCount, 10) {
+                        if let page = pdf.page(at: idx) {
+                            let pageRect = page.bounds(for: .mediaBox)
+                            let img = page.thumbnail(of: NSSize(width: pageRect.width * 2, height: pageRect.height * 2), for: .mediaBox)
+                            if let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil),
+                               let recognized = try? Self.recognizeTextSync(in: cg), !recognized.isEmpty {
+                                pageTexts.append(recognized)
+                            }
                         }
                     }
+                    let combined = pageTexts.joined(separator: "\n\n")
+                    if !combined.isEmpty { return combined }
                 }
-                let combined = pageTexts.joined(separator: "\n\n")
-                if !combined.isEmpty { return combined }
             }
-        }
 
-        guard let inputImage = NSImage(contentsOf: url) else {
-            throw ImageProcessingError.invalidImage
-        }
-        return try await recognizeText(in: inputImage)
+            guard let inputImage = NSImage(contentsOf: url),
+                  let cgImage = inputImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                throw ImageProcessingError.invalidImage
+            }
+            return try Self.recognizeTextSync(in: cgImage)
+        }.value
     }
 
     func recognizeText(in image: NSImage) async throws -> String {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             throw ImageProcessingError.invalidImage
         }
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.recognizeTextSync(in: cgImage)
+        }.value
+    }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let request = VNRecognizeTextRequest { req, err in
-                    if let err = err {
-                        continuation.resume(throwing: err)
-                        return
-                    }
-                    let observations = (req.results as? [VNRecognizedTextObservation]) ?? []
-                    let lines = observations.compactMap { $0.topCandidates(1).first?.string }
-                    continuation.resume(returning: lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
-                }
-                request.recognitionLevel = .accurate
-                request.usesLanguageCorrection = true
-
-                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-                do {
-                    try handler.perform([request])
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+    /// Runs `VNRecognizeTextRequest` synchronously without a completionHandler to avoid double-resuming continuations.
+    private static func recognizeTextSync(in cgImage: CGImage) throws -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        try handler.perform([request])
+        let observations = request.results ?? []
+        let lines = observations.compactMap { $0.topCandidates(1).first?.string }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     @MainActor
     func presentOCRResultModal(text: String, sourceName: String) {
+        NSApp.activate(ignoringOtherApps: true)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             let alert = NSAlert()
@@ -386,8 +366,10 @@ final class ImageProcessingService {
         alert.accessoryView = scrollView
         let response = alert.runModal()
         let finalString = textView.string
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(finalString, forType: .string)
+        if finalString != trimmed {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(finalString, forType: .string)
+        }
 
         if response == .alertSecondButtonReturn {
             Task { @MainActor in
