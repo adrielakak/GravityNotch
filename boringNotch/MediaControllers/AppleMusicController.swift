@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import ImageIO
 import Combine
 import Defaults
 import SwiftUI
@@ -34,6 +35,10 @@ class AppleMusicController: MediaControllerProtocol {
     private var positionResyncTask: Task<Void, Never>?
     private var periodicSyncTask: Task<Void, Never>?
     private var artworkRetryTask: Task<Void, Never>?
+    private var artworkCheckTask: Task<Void, Never>?
+    /// On a quick skip, Music can attach the cover it was still downloading for the previous track to the
+    /// new one, and keeps answering it for that track. MediaRemote has the right one: remember the swap.
+    private var correctedArtwork: (title: String, album: String, wrong: Data, right: Data)?
     // Spamming next track used to start dozens of overlapping refreshes. Only one runs at a time,
     // later requests just ask it to run once more.
     private var isRefreshing = false
@@ -92,6 +97,8 @@ class AppleMusicController: MediaControllerProtocol {
         positionResyncTask = nil
         artworkRetryTask?.cancel()
         artworkRetryTask = nil
+        artworkCheckTask?.cancel()
+        artworkCheckTask = nil
         playbackState = .idle(bundleIdentifier: "com.apple.Music")
     }
     
@@ -103,6 +110,7 @@ class AppleMusicController: MediaControllerProtocol {
         positionResyncTask?.cancel()
         periodicSyncTask?.cancel()
         artworkRetryTask?.cancel()
+        artworkCheckTask?.cancel()
     }
 
     // Music stays silent on seeks, restarts and some track changes (notably from the lock screen), so the
@@ -324,7 +332,12 @@ class AppleMusicController: MediaControllerProtocol {
             && updatedState.artist == self.playbackState.artist
             && updatedState.album == self.playbackState.album
         if let artwork = descriptor.atIndex(10)?.data, !artwork.isEmpty {
-            updatedState.artwork = artwork
+            if let corrected = correctedArtwork, corrected.title == updatedState.title,
+               corrected.album == updatedState.album, corrected.wrong == artwork {
+                updatedState.artwork = corrected.right
+            } else {
+                updatedState.artwork = artwork
+            }
         } else if !sameTrack {
             updatedState.artwork = nil
         }
@@ -341,7 +354,13 @@ class AppleMusicController: MediaControllerProtocol {
         let needsPositionResync = updatedState.title != self.playbackState.title
             || updatedState.artist != self.playbackState.artist
             || (updatedState.isPlaying && !self.playbackState.isPlaying)
+        let newMusicArtwork = updatedState.artwork != nil
+            && (!sameTrack || updatedState.artwork != self.playbackState.artwork)
+            && updatedState.artwork != correctedArtwork?.right
         self.playbackState = updatedState
+        if newMusicArtwork {
+            scheduleArtworkCheck()
+        }
 
         if needsPositionResync {
             schedulePositionResync()
@@ -374,6 +393,7 @@ class AppleMusicController: MediaControllerProtocol {
                 guard self.isActive() else { continue }
 
                 var artwork = await self.fetchArtworkFromMusic(title: title)
+                let fromMusic = artwork != nil
                 if artwork == nil {
                     artwork = await Self.fetchArtworkFromMediaRemote(title: title)
                 }
@@ -385,10 +405,75 @@ class AppleMusicController: MediaControllerProtocol {
                 updated.artwork = artwork
                 self.playbackState = updated
                 self.artworkRetryTask = nil
+                if fromMusic {
+                    self.scheduleArtworkCheck()
+                }
                 return
             }
             if !Task.isCancelled { self?.artworkRetryTask = nil }
         }
+    }
+
+    // Cross-checks the cover Music gave against the one MediaRemote publishes for the same track. They
+    // differ in size and format even when right, so they are compared as tiny thumbnails.
+    @MainActor
+    private func scheduleArtworkCheck() {
+        artworkCheckTask?.cancel()
+        let title = playbackState.title
+        let album = playbackState.album
+
+        artworkCheckTask = Task { [weak self] in
+            for delay in [0.4, 0.6, 1.0, 1.5, 2.0, 3.0, 5.0] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                guard self.playbackState.title == title, self.playbackState.album == album,
+                      let shown = self.playbackState.artwork else { return }
+                guard self.isActive(),
+                      let reference = await Self.fetchArtworkFromMediaRemote(title: title, album: album)
+                else { continue }
+                let alike = await Task.detached(priority: .utility) {
+                    Self.looksAlike(shown, reference)
+                }.value
+                guard !Task.isCancelled, self.playbackState.title == title,
+                      self.playbackState.album == album, self.playbackState.artwork == shown else { return }
+                if !alike {
+                    self.correctedArtwork = (title, album, shown, reference)
+                    var updated = self.playbackState
+                    updated.artwork = reference
+                    self.playbackState = updated
+                }
+                self.artworkCheckTask = nil
+                return
+            }
+            if !Task.isCancelled { self?.artworkCheckTask = nil }
+        }
+    }
+
+    private nonisolated static func looksAlike(_ first: Data, _ second: Data) -> Bool {
+        guard let a = thumbnailPixels(first), let b = thumbnailPixels(second) else { return true }
+        let total = zip(a, b).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }
+        return Double(total) / Double(a.count) < 14
+    }
+
+    private nonisolated static func thumbnailPixels(_ data: Data) -> [UInt8]? {
+        let options = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                       kCGImageSourceThumbnailMaxPixelSize: 64] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options)
+        else { return nil }
+        let side = 12
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: side, height: side,
+                                          bitsPerComponent: 8, bytesPerRow: side * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+            else { return false }
+            context.interpolationQuality = .medium
+            context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        return drawn ? pixels : nil
     }
 
     private func fetchArtworkFromMusic(title: String) async -> Data? {
@@ -408,9 +493,10 @@ class AppleMusicController: MediaControllerProtocol {
         return artwork
     }
 
-    private static func fetchArtworkFromMediaRemote(title: String) async -> Data? {
+    private static func fetchArtworkFromMediaRemote(title: String, album: String? = nil) async -> Data? {
         guard let payload = await NowPlayingController.fetchCurrentPayload(),
               payload.title == title,
+              album == nil || payload.album == nil || payload.album == album,
               (payload.parentApplicationBundleIdentifier ?? payload.bundleIdentifier) == "com.apple.Music",
               let artworkString = payload.artworkData,
               let artwork = Data(base64Encoded: artworkString.trimmingCharacters(in: .whitespacesAndNewlines)),
