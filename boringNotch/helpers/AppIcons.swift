@@ -1348,6 +1348,48 @@ struct BluetoothAudioClosedNotchView: View {
 
 // MARK: - AirPods listening mode (noise cancellation, transparency, adaptive)
 
+/// `log stream` children outlive the app when it is killed without `willTerminate` (crash, force quit, Xcode stop):
+/// launchd adopts them and, with a narrow predicate, they may never write to the dead pipe and get SIGPIPE.
+/// A tiny `sh` supervisor runs `log stream`, kills it as soon as the app pid is gone, and forwards SIGTERM.
+enum SystemLogStream {
+    private static let supervisor = """
+    /usr/bin/log stream --style ndjson --level default --predicate "$1" &
+    L=$!
+    trap 'kill $L 2>/dev/null; exit 0' TERM INT HUP
+    while kill -0 "$2" 2>/dev/null && kill -0 $L 2>/dev/null; do
+      sleep 30 & wait $!
+    done
+    kill $L 2>/dev/null
+    wait $L
+    """
+
+    private static let orphanPattern = #"^/usr/bin/log stream --style ndjson --level default --predicate .*(listening mode|transition info)"#
+
+    static func makeProcess(predicate: String) -> Process {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", supervisor, "sh", predicate, String(ProcessInfo.processInfo.processIdentifier)]
+        return proc
+    }
+
+    /// Streams left behind by builds without the supervisor are parented to launchd: kill them once per launch.
+    @MainActor static func killOrphansOnce() {
+        guard !orphansKilled else { return }
+        orphansKilled = true
+        DispatchQueue.global(qos: .utility).async {
+            let pkill = Process()
+            pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+            pkill.arguments = ["-U", String(getuid()), "-P", "1", "-f", orphanPattern]
+            pkill.standardOutput = FileHandle.nullDevice
+            pkill.standardError = FileHandle.nullDevice
+            try? pkill.run()
+            pkill.waitUntilExit()
+        }
+    }
+
+    @MainActor private static var orphansKilled = false
+}
+
 /// macOS gives an unentitled app no way to read the AirPods listening mode: the private IOBluetooth and
 /// AVOutputDevice getters return nothing. System processes log every change publicly, so a filtered
 /// `log stream` is the trigger. Three lines, each covering cases the others miss:
@@ -1457,18 +1499,15 @@ final class AirPodsListeningModeMonitor: ObservableObject {
     private func launchStream() {
         guard process == nil else { return }
         restartTask?.cancel()
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        proc.arguments = [
-            "stream", "--style", "ndjson", "--level", "default",
-            "--predicate",
-            #"(process == "ControlCenter" AND (category == "sound" OR category == "system-banners") AND eventMessage CONTAINS "listening mode") OR (process == "heard" AND eventMessage BEGINSWITH "Changed listening mode ")"#
-        ]
+        SystemLogStream.killOrphansOnce()
+        let proc = SystemLogStream.makeProcess(
+            predicate: #"(process == "ControlCenter" AND (category == "sound" OR category == "system-banners") AND eventMessage CONTAINS "listening mode") OR (process == "heard" AND eventMessage BEGINSWITH "Changed listening mode ")"#
+        )
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
         pipe.fileHandleForReading.readabilityHandler = { [weak self, weak proc] handle in
-            let data = (try? handle.read(upToCount: 65_536)) ?? Data()
+            let data = handle.availableData
             guard !data.isEmpty else {
                 handle.readabilityHandler = nil
                 return
@@ -1574,6 +1613,436 @@ final class AirPodsListeningModeMonitor: ObservableObject {
         if hideSystemBanner && BoringViewModel.openNotchCount == 0 {
             BluetoothBannerSuppressor.shared.hideListeningModeBannerSoon()
         }
+    }
+}
+
+// MARK: - Apple Music AutoMix Monitor & Alchemy Animation
+
+/// Tracks Apple Music's AutoMix ("Alchemy" / `com.apple.Sonic`) smart transitions in real time.
+/// `Music.app` logs the exact `startTime`, `pivotTime`, `endTime` and `duration` when preparing a smart
+/// transition (`Updated content item with transition info`), plus cancellation events on queue reloads.
+/// Once playback enters `[startTime, pivotTime]`, `activeMix` drives Apple's 4-stage `AlchemyAnimation`
+/// (`fadeIn` -> `leftRing` outgoing pulse -> `pivotSwitch` artwork crossfade -> `rightRing` incoming pulse -> `fadeOut`).
+@MainActor
+final class AppleMusicAutoMixMonitor: ObservableObject {
+    struct PlannedTransition: Equatable {
+        let startTime: Double
+        let pivotTime: Double
+        let endTime: Double
+        let duration: Double
+        var outgoingTitle: String?
+        var incomingTitle: String?
+    }
+
+    struct ActiveMix: Equatable {
+        let id = UUID()
+        let startedAt: Date
+        let duration: Double
+        let pivotFraction: Double
+        let incomingTitle: String?
+        let isPreview: Bool
+    }
+
+    static let shared = AppleMusicAutoMixMonitor()
+
+    @Published private(set) var activeMix: ActiveMix?
+
+    var isMixing: Bool { activeMix != nil }
+
+    private static let logger = Logger(subsystem: "theboringteam.boringnotch", category: "AutoMix")
+    private static let infoRegex = try? NSRegularExpression(
+        pattern: #"startTime:\s*([0-9.]+),\s*pivotTime:\s*([0-9.]+),\s*endTime:\s*([0-9.]+),\s*overlapBegin:\s*[0-9.]+,\s*duration:\s*([0-9.]+)"#
+    )
+    private static let titlesRegex = try? NSRegularExpression(
+        pattern: #"\(\d+::\d+\)\s+(.+?)\],\s*isSpatialized:.*?􀜍.*?\(\d+::\d+\)\s+(.+?)\],\s*isSpatialized:"#
+    )
+
+    private var planned: PlannedTransition?
+    private var lastParsedTitles: (outgoing: String, incoming: String)?
+    private var process: Process?
+    private var pending = Data()
+    private var cancellables = Set<AnyCancellable>()
+    private var watchTask: Task<Void, Never>?
+    private var finishTask: Task<Void, Never>?
+    private var restartTask: Task<Void, Never>?
+    private var started = false
+    private var quickExits = 0
+    private var launchedAt = Date.distantPast
+
+    private init() {}
+
+    func start() {
+        guard !started else { return }
+        started = true
+        Defaults.publisher(.showAutoMixIndicator)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in
+                if change.newValue { self?.launchStream() } else { self?.stopAll() }
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .sink { [weak self] _ in self?.stopAll() }
+            .store(in: &cancellables)
+    }
+
+    /// Runs a 6 s demonstration of the 4-stage `AlchemyAnimation` (outgoing ring -> pivot -> incoming ring)
+    func preview() {
+        guard Defaults[.showAutoMixIndicator] else { return }
+        beginActiveMix(
+            startedAt: Date(),
+            duration: 6.0,
+            pivotFraction: 0.5,
+            incomingTitle: nil,
+            isPreview: true
+        )
+    }
+
+    func progress(at date: Date) -> (progress: Double, pivotFraction: Double, elapsed: Double, duration: Double)? {
+        guard let mix = activeMix else { return nil }
+        let elapsed = max(0, date.timeIntervalSince(mix.startedAt))
+        let duration = max(1.0, mix.duration)
+        let p = min(1, max(0, elapsed / duration))
+        return (p, mix.pivotFraction, elapsed, duration)
+    }
+
+    func playbackUpdated(title: String, isPlaying: Bool, bundleIdentifier: String?) {
+        guard let mix = activeMix, !mix.isPreview else {
+            if bundleIdentifier != "com.apple.Music" {
+                clearPlanned()
+            }
+            return
+        }
+        if !isPlaying || bundleIdentifier != "com.apple.Music" {
+            endActiveMix()
+            return
+        }
+        // If the user manually skipped to an unrelated third track mid-mix, end immediately
+        if let incoming = mix.incomingTitle, !incoming.isEmpty {
+            let currentKey = MusicManager.lyricsTitleKey(title)
+            let incomingKey = MusicManager.lyricsTitleKey(incoming)
+            let outgoingKey = planned?.outgoingTitle.map(MusicManager.lyricsTitleKey) ?? ""
+            if !currentKey.isEmpty, currentKey != incomingKey, !outgoingKey.isEmpty, currentKey != outgoingKey {
+                endActiveMix()
+            }
+        }
+    }
+
+    private func launchStream() {
+        guard process == nil else { return }
+        restartTask?.cancel()
+        SystemLogStream.killOrphansOnce()
+        let proc = SystemLogStream.makeProcess(
+            predicate: #"process == "Music" AND (subsystem == "com.apple.Sonic" OR subsystem == "com.apple.amp.mediaplaybackcore") AND (eventMessage CONTAINS "Updated content item with transition info" OR eventMessage CONTAINS "Transition setup completed" OR eventMessage CONTAINS "Cancelling current transition" OR eventMessage CONTAINS "Cleared planned transition info")"#
+        )
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        pipe.fileHandleForReading.readabilityHandler = { [weak self, weak proc] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            DispatchQueue.main.async { [weak self, weak proc] in
+                MainActor.assumeIsolated {
+                    guard let self, let proc, self.process === proc else { return }
+                    self.consume(data)
+                }
+            }
+        }
+        proc.terminationHandler = { [weak self] ended in
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.streamEnded(ended)
+                }
+            }
+        }
+        do {
+            try proc.run()
+            process = proc
+            launchedAt = Date()
+        } catch {
+            Self.logger.error("Could not start AutoMix log stream: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func stopAll() {
+        restartTask?.cancel()
+        clearPlanned()
+        endActiveMix()
+        pending.removeAll()
+        guard let proc = process else { return }
+        process = nil
+        (proc.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+        if proc.isRunning { proc.terminate() }
+    }
+
+    private func streamEnded(_ ended: Process) {
+        guard ended === process else { return }
+        process = nil
+        pending.removeAll()
+        guard Defaults[.showAutoMixIndicator] else { return }
+        quickExits = Date().timeIntervalSince(launchedAt) < 5 ? quickExits + 1 : 0
+        guard quickExits < 5 else {
+            Self.logger.notice("AutoMix log stream unavailable on this account (status \(ended.terminationStatus, privacy: .public))")
+            return
+        }
+        restartTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Double(2 << min(self?.quickExits ?? 0, 4))))
+            guard !Task.isCancelled else { return }
+            self?.launchStream()
+        }
+    }
+
+    private func consume(_ data: Data) {
+        pending.append(data)
+        while let newline = pending.firstIndex(of: 0x0A) {
+            let line = pending[pending.startIndex..<newline]
+            pending.removeSubrange(pending.startIndex...newline)
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let message = object["eventMessage"] as? String else { continue }
+            handleLogMessage(message)
+        }
+    }
+
+    private func handleLogMessage(_ message: String) {
+        if message.contains("Cancelling current transition") {
+            clearPlanned()
+            if let mix = activeMix, !mix.isPreview {
+                endActiveMix()
+            }
+            return
+        }
+        if message.contains("Cleared planned transition info") {
+            clearPlanned()
+            return
+        }
+        let ns = message as NSString
+        let fullRange = NSRange(location: 0, length: ns.length)
+
+        if message.contains("Transition setup completed"),
+           let match = Self.titlesRegex?.firstMatch(in: message, range: fullRange) {
+            let outTitle = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let inTitle = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+            lastParsedTitles = (outTitle, inTitle)
+            if var current = planned {
+                current.outgoingTitle = outTitle
+                current.incomingTitle = inTitle
+                planned = current
+            }
+            return
+        }
+
+        if message.contains("Updated content item with transition info"),
+           let match = Self.infoRegex?.firstMatch(in: message, range: fullRange),
+           let start = Double(ns.substring(with: match.range(at: 1))),
+           let pivot = Double(ns.substring(with: match.range(at: 2))),
+           let end = Double(ns.substring(with: match.range(at: 3))),
+           let rawDuration = Double(ns.substring(with: match.range(at: 4))) {
+            let duration = max(2.0, min(18.0, rawDuration > 0.5 ? rawDuration : (end - start)))
+            guard start > 1.0, end > start else { return }
+            planned = PlannedTransition(
+                startTime: start,
+                pivotTime: min(max(start + 0.5, pivot), end - 0.5),
+                endTime: end,
+                duration: duration,
+                outgoingTitle: lastParsedTitles?.outgoing,
+                incomingTitle: lastParsedTitles?.incoming
+            )
+            Self.logger.notice("Planned AutoMix at \(start, privacy: .public)s -> pivot \(pivot, privacy: .public)s (\(duration, privacy: .public)s)")
+            armTransitionWatch()
+        }
+    }
+
+    private func clearPlanned() {
+        watchTask?.cancel()
+        watchTask = nil
+        planned = nil
+    }
+
+    private func armTransitionWatch() {
+        watchTask?.cancel()
+        watchTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled, let self, let plan = self.planned {
+                let manager = MusicManager.shared
+                // Plans arrive at track start, minutes ahead: idle until about a second before the mix
+                var nap = 1.0
+                if manager.isPlaying, manager.bundleIdentifier == "com.apple.Music" {
+                    let titlesMatch: Bool = {
+                        guard let out = plan.outgoingTitle, !out.isEmpty else { return true }
+                        return MusicManager.lyricsTitleKey(manager.songTitle) == MusicManager.lyricsTitleKey(out)
+                    }()
+                    if titlesMatch {
+                        let elapsed = manager.smoothedPlaybackPosition()
+                        let lead = plan.startTime - elapsed
+                        nap = lead > 1.5 ? min(lead - 1.0, 10) : (elapsed > plan.pivotTime + 1.2 ? 1.0 : 0.15)
+                        if elapsed >= plan.startTime - 0.08 && elapsed <= plan.pivotTime + 1.2 {
+                            let alreadyIn = max(0, elapsed - plan.startTime)
+                            let pivotFrac = min(0.8, max(0.2, (plan.pivotTime - plan.startTime) / plan.duration))
+                            self.beginActiveMix(
+                                startedAt: Date().addingTimeInterval(-alreadyIn),
+                                duration: plan.duration,
+                                pivotFraction: pivotFrac,
+                                incomingTitle: plan.incomingTitle,
+                                isPreview: false
+                            )
+                            self.watchTask = nil
+                            return
+                        }
+                    }
+                }
+                try? await Task.sleep(for: .seconds(nap))
+            }
+        }
+    }
+
+    private func beginActiveMix(
+        startedAt: Date,
+        duration: Double,
+        pivotFraction: Double,
+        incomingTitle: String?,
+        isPreview: Bool
+    ) {
+        finishTask?.cancel()
+        let mix = ActiveMix(
+            startedAt: startedAt,
+            duration: duration,
+            pivotFraction: pivotFraction,
+            incomingTitle: incomingTitle,
+            isPreview: isPreview
+        )
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.94)) {
+            activeMix = mix
+        }
+        let remaining = max(0.2, duration - Date().timeIntervalSince(startedAt))
+        finishTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(remaining))
+            guard !Task.isCancelled, let self, self.activeMix?.id == mix.id else { return }
+            self.endActiveMix()
+        }
+    }
+
+    private func endActiveMix() {
+        finishTask?.cancel()
+        finishTask = nil
+        guard activeMix != nil else { return }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.95)) {
+            activeMix = nil
+        }
+    }
+}
+
+/// Faithful recreation of Apple Music's internal `Music.AlchemyAnimation`:
+/// Two interlocking Venn rings (`leftRing` = outgoing track, `rightRing` = incoming track) that fade in,
+/// pulse & thicken on the outgoing ring before `pivotTime`, glide across the intersection at `pivotTime`,
+/// then pulse & thicken on the incoming ring until fading out cleanly.
+struct AutoMixAlchemyRingsView: View {
+    @ObservedObject private var monitor = AppleMusicAutoMixMonitor.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var diameter: CGFloat = 11
+    var accent: Color = .white
+
+    var body: some View {
+        let baseLine = max(1.25, diameter * 0.135)
+        let width = diameter * 1.68
+        let height = diameter * 1.24
+
+        TimelineView(.animation(paused: !monitor.isMixing || reduceMotion)) { context in
+            let state = monitor.progress(at: context.date)
+            let p = state?.progress ?? 0.5
+            let pivot = state?.pivotFraction ?? 0.5
+            let elapsed = state?.elapsed ?? 0
+            let duration = state?.duration ?? 6.0
+
+            // Smooth fade-in (`0.45 s`) and fade-out (`0.55 s`) envelopes
+            let fadeIn = Self.smooth(elapsed / 0.45)
+            let fadeOut = Self.smooth((duration - elapsed) / 0.55)
+            let envelope = reduceMotion ? 1.0 : min(fadeIn, fadeOut)
+
+            // `pivotSwitchAnimation`: 0 = full outgoing (left ring), 1 = full incoming (right ring)
+            let handoff = Self.smooth((p - (pivot - 0.11)) / 0.22)
+            let breath = reduceMotion ? 0.5 : (0.5 + 0.5 * sin(elapsed * .pi * 2.3))
+            // Subtle magnetic pull bringing the two rings slightly closer right around the pivot
+            let pivotCloseness = exp(-pow((p - pivot) / 0.22, 2))
+
+            Canvas { ctx, size in
+                let r = diameter * 0.5
+                let cy = size.height * 0.5
+                let separation = diameter * (0.56 - 0.08 * CGFloat(pivotCloseness))
+                let leftCenter = CGPoint(x: size.width * 0.5 - separation * 0.5, y: cy)
+                let rightCenter = CGPoint(x: size.width * 0.5 + separation * 0.5, y: cy)
+
+                let leftRect = CGRect(x: leftCenter.x - r, y: leftCenter.y - r, width: diameter, height: diameter)
+                let rightRect = CGRect(x: rightCenter.x - r, y: rightCenter.y - r, width: diameter, height: diameter)
+
+                let leftDominance = 1 - handoff
+                let rightDominance = handoff
+
+                let leftWidth = baseLine * CGFloat(0.84 + 0.36 * leftDominance + 0.14 * leftDominance * breath)
+                let rightWidth = baseLine * CGFloat(0.84 + 0.36 * rightDominance + 0.14 * rightDominance * breath)
+
+                let leftAlpha = (0.42 + 0.58 * leftDominance) * envelope
+                let rightAlpha = (0.42 + 0.58 * rightDominance) * envelope
+
+                // Soft ring glow (`leftRingGlowAnimation` -> `rightRingGlowAnimation`)
+                if leftDominance > 0.05 {
+                    var glow = ctx
+                    glow.opacity = 0.42 * leftDominance * envelope
+                    glow.addFilter(.blur(radius: diameter * 0.18))
+                    glow.stroke(Path(ellipseIn: leftRect), with: .color(accent), lineWidth: leftWidth * 1.4)
+                }
+                if rightDominance > 0.05 {
+                    var glow = ctx
+                    glow.opacity = 0.42 * rightDominance * envelope
+                    glow.addFilter(.blur(radius: diameter * 0.18))
+                    glow.stroke(Path(ellipseIn: rightRect), with: .color(accent), lineWidth: rightWidth * 1.4)
+                }
+
+                // Draw the recessive ring first, then the dominant ring cleanly on top
+                if handoff < 0.5 {
+                    var rightCtx = ctx
+                    rightCtx.opacity = rightAlpha
+                    rightCtx.stroke(Path(ellipseIn: rightRect), with: .color(accent), lineWidth: rightWidth)
+
+                    var leftCtx = ctx
+                    leftCtx.opacity = leftAlpha
+                    leftCtx.stroke(Path(ellipseIn: leftRect), with: .color(.white), lineWidth: leftWidth)
+                } else {
+                    var leftCtx = ctx
+                    leftCtx.opacity = leftAlpha
+                    leftCtx.stroke(Path(ellipseIn: leftRect), with: .color(accent), lineWidth: leftWidth)
+
+                    var rightCtx = ctx
+                    rightCtx.opacity = rightAlpha
+                    rightCtx.stroke(Path(ellipseIn: rightRect), with: .color(.white), lineWidth: rightWidth)
+                }
+            }
+            .scaleEffect(0.92 + 0.08 * CGFloat(envelope))
+        }
+        .frame(width: width, height: height)
+        .allowsHitTesting(false)
+    }
+
+    private static func smooth(_ value: Double) -> Double {
+        let t = min(1, max(0, value))
+        return t * t * (3 - 2 * t)
+    }
+}
+
+struct AutoMixBadgeView: View {
+    var accent: Color = .white
+    var compact: Bool = false
+
+    var body: some View {
+        HStack(spacing: compact ? 4.5 : 5.5) {
+            AutoMixAlchemyRingsView(diameter: compact ? 9.5 : 10.5, accent: accent)
+            Text(String(localized: "Mixing…"))
+                .font(.system(size: compact ? 10 : 10.5, weight: .semibold))
+                .tracking(-0.15)
+                .foregroundStyle(.white.opacity(0.88))
+                .lineLimit(1)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -7769,6 +8238,16 @@ private struct LockScreenArtworkHeader: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
+                    .overlay {
+                        if let outgoing = musicManager.outgoingAutoMixArt, musicManager.outgoingAutoMixArtOpacity > 0.005 {
+                            Image(nsImage: outgoing)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: size, height: size)
+                                .opacity(musicManager.outgoingAutoMixArtOpacity)
+                                .allowsHitTesting(false)
+                        }
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -7956,6 +8435,8 @@ private struct LockScreenSyncedLyricsCard: View {
 
 private struct LockScreenScrubBar: View {
     @ObservedObject var musicManager = MusicManager.shared
+    @ObservedObject private var autoMixMonitor = AppleMusicAutoMixMonitor.shared
+    @Default(.showAutoMixIndicator) private var showAutoMixIndicator
     let elapsed: Double
     let duration: Double
     let accentColor: Color
@@ -7983,71 +8464,80 @@ private struct LockScreenScrubBar: View {
 
     var body: some View {
         let activeHeight: CGFloat = (isDragging || isHovering) ? 7 : 5
+        let isAutoMixing = autoMixMonitor.isMixing && showAutoMixIndicator
 
-        HStack(spacing: 8) {
-            Text(formatTime(displayedElapsed))
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(isDragging ? 0.95 : 0.65))
-                .frame(width: 34, alignment: .leading)
-                .contentTransition(.numericText())
-
-            GeometryReader { geo in
-                let width = max(1, geo.size.width)
-                let filled = max(4, width * CGFloat(effectiveProgress))
-
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.2))
-                        .frame(height: activeHeight)
-
-                    Capsule()
-                        .fill(Color.white)
-                        .frame(width: min(width, filled), height: activeHeight)
-                        .shadow(color: isDragging ? accentColor.opacity(0.45) : .clear, radius: 5)
-                }
-                .frame(height: 14, alignment: .center)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            isDragging = true
-                            dragProgress = min(1, max(0, Double(value.location.x / width)))
-                        }
-                        .onEnded { value in
-                            let finalRatio = min(1, max(0, Double(value.location.x / width)))
-                            let target = finalRatio * max(0, duration)
-                            optimisticTarget = target
-                            lastSeekDate = Date()
-                            isDragging = false
-                            musicManager.seek(to: target)
-                        }
-                )
-            }
-            .frame(height: 14)
-            .onHover { hovering in
-                withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
-                    isHovering = hovering
-                }
-            }
-            .animation(.spring(response: 0.22, dampingFraction: 0.8), value: isDragging)
-
-            Button {
-                withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
-                    showRemainingTime.toggle()
-                }
-            } label: {
-                let rightText = showRemainingTime && duration > 0
-                    ? "-\(formatTime(max(0, duration - displayedElapsed)))"
-                    : formatTime(duration)
-                Text(rightText)
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Text(formatTime(displayedElapsed))
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .frame(width: 38, alignment: .trailing)
+                    .foregroundStyle(.white.opacity(isDragging ? 0.95 : 0.65))
+                    .frame(width: 34, alignment: .leading)
                     .contentTransition(.numericText())
+
+                GeometryReader { geo in
+                    let width = max(1, geo.size.width)
+                    let filled = max(4, width * CGFloat(effectiveProgress))
+
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.2))
+                            .frame(height: activeHeight)
+
+                        Capsule()
+                            .fill(Color.white)
+                            .frame(width: min(width, filled), height: activeHeight)
+                            .shadow(color: isDragging ? accentColor.opacity(0.45) : .clear, radius: 5)
+                    }
+                    .frame(height: 14, alignment: .center)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                isDragging = true
+                                dragProgress = min(1, max(0, Double(value.location.x / width)))
+                            }
+                            .onEnded { value in
+                                let finalRatio = min(1, max(0, Double(value.location.x / width)))
+                                let target = finalRatio * max(0, duration)
+                                optimisticTarget = target
+                                lastSeekDate = Date()
+                                isDragging = false
+                                musicManager.seek(to: target)
+                            }
+                    )
+                }
+                .frame(height: 14)
+                .onHover { hovering in
+                    withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
+                        isHovering = hovering
+                    }
+                }
+                .animation(.spring(response: 0.22, dampingFraction: 0.8), value: isDragging)
+
+                Button {
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
+                        showRemainingTime.toggle()
+                    }
+                } label: {
+                    let rightText = showRemainingTime && duration > 0
+                        ? "-\(formatTime(max(0, duration - displayedElapsed)))"
+                        : formatTime(duration)
+                    Text(rightText)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(width: 38, alignment: .trailing)
+                        .contentTransition(.numericText())
+                }
+                .buttonStyle(.plain)
+                .help("Click to toggle remaining / total time")
             }
-            .buttonStyle(.plain)
-            .help("Click to toggle remaining / total time")
+
+            if isAutoMixing {
+                AutoMixBadgeView(accent: accentColor, compact: false)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            }
         }
+        .animation(.spring(response: 0.4, dampingFraction: 0.94), value: isAutoMixing)
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -9417,6 +9907,16 @@ struct LockScreenLyricsLayoutView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: artworkSize, height: artworkSize)
+                    .overlay {
+                        if let outgoing = musicManager.outgoingAutoMixArt, musicManager.outgoingAutoMixArtOpacity > 0.005 {
+                            Image(nsImage: outgoing)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: artworkSize, height: artworkSize)
+                                .opacity(musicManager.outgoingAutoMixArtOpacity)
+                                .allowsHitTesting(false)
+                        }
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -9553,6 +10053,18 @@ private struct LockScreenLyricsBackground: View {
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
                     .frame(width: geo.size.width, height: geo.size.height)
+                    .overlay {
+                        if let outgoing = MusicManager.shared.outgoingAutoMixArt,
+                           MusicManager.shared.outgoingAutoMixArtOpacity > 0.005 {
+                            Image(nsImage: outgoing)
+                                .resizable()
+                                .interpolation(.high)
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .opacity(MusicManager.shared.outgoingAutoMixArtOpacity)
+                                .allowsHitTesting(false)
+                        }
+                    }
                     .clipped()
                     .blur(radius: videoURL == nil ? 80 : 0, opaque: true)
                     .saturation(videoURL == nil ? 1.35 : 1)

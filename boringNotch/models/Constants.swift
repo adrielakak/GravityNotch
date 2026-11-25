@@ -198,6 +198,7 @@ extension Defaults.Keys {
     static let waitInterval = Key<Double>("waitInterval", default: 3)
     static let showShuffleAndRepeat = Key<Bool>("showShuffleAndRepeat", default: false)
     static let enableLyrics = Key<Bool>("enableLyrics", default: true)
+    static let showAutoMixIndicator = Key<Bool>("showAutoMixIndicator", default: true)
     /// LRCLIB for everyone by default; Apple Music (word timing, needs the user signed in) falls back to LRCLIB
     static let lyricsSource = Key<LyricsSource>("lyricsSource", default: .lrclib)
     static let musicControlSlots = Key<[MusicControlButton]>(

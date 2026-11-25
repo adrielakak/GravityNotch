@@ -19,6 +19,7 @@ struct ContentView: View {
 
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var musicManager = MusicManager.shared
+    @ObservedObject var autoMixMonitor = AppleMusicAutoMixMonitor.shared
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var agentMonitor = AntigravityAgentMonitor.shared
     @ObservedObject var notchTimer = NotchTimerManager.shared
@@ -578,9 +579,23 @@ struct ContentView: View {
 
     @ViewBuilder
     func MusicLiveActivity() -> some View {
+        let isAutoMixing = autoMixMonitor.isMixing && Defaults[.showAutoMixIndicator]
+        let ringColor = Defaults[.coloredSpectrogram]
+            ? Color(nsColor: musicManager.avgColor).ensureMinimumBrightness(factor: 0.72)
+            : Color.white.opacity(0.9)
+
         HStack {
             Image(nsImage: musicManager.albumArt)
                 .resizable()
+                .overlay {
+                    if let outgoing = musicManager.outgoingAutoMixArt, musicManager.outgoingAutoMixArtOpacity > 0.005 {
+                        Image(nsImage: outgoing)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .opacity(musicManager.outgoingAutoMixArtOpacity)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .clipped()
                 .clipShape(
                     RoundedRectangle(
@@ -640,7 +655,10 @@ struct ContentView: View {
                 )
 
             HStack {
-                if useMusicVisualizer {
+                if isAutoMixing {
+                    AutoMixAlchemyRingsView(diameter: 11.5, accent: ringColor)
+                        .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                } else if useMusicVisualizer {
                     Rectangle()
                         .fill(
                             Defaults[.coloredSpectrogram]
@@ -653,11 +671,14 @@ struct ContentView: View {
                             AudioSpectrumView(isPlaying: $musicManager.isPlaying)
                                 .frame(width: 16, height: 12)
                         }
+                        .transition(.opacity)
                 } else {
                     LottieAnimationContainer()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity)
                 }
             }
+            .animation(.spring(response: 0.38, dampingFraction: 0.92), value: isAutoMixing)
             .frame(
                 width: max(
                     0,

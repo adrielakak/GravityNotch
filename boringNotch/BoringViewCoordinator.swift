@@ -187,6 +187,7 @@ class BoringViewCoordinator: ObservableObject {
             _ = ClipboardHistoryManager.shared
             _ = BluetoothAudioLiveActivityManager.shared
             AirPodsListeningModeMonitor.shared.start()
+            AppleMusicAutoMixMonitor.shared.start()
 
             if Defaults[.hudReplacement] {
                 await MediaKeyInterceptor.shared.start(promptIfNeeded: false)

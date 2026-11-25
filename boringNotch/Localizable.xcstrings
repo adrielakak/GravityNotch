@@ -27943,6 +27943,54 @@
         }
       }
     },
+    "Mixing…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mixing…"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mixage…"
+          }
+        }
+      }
+    },
+    "Show Apple Music AutoMix transitions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Apple Music AutoMix transitions"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Afficher les transitions AutoMix d'Apple Music"
+          }
+        }
+      }
+    },
+    "Preview AutoMix Animation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview AutoMix Animation"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prévisualiser l’animation AutoMix"
+          }
+        }
+      }
+    },
     "Lyrics source": {
       "localizations": {
         "en": {

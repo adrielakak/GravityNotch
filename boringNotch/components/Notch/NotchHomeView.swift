@@ -41,6 +41,15 @@ struct AlbumArtView: View {
     private var albumArtBackground: some View {
         Image(nsImage: musicManager.albumArt)
             .resizable()
+            .overlay {
+                if let outgoing = musicManager.outgoingAutoMixArt, musicManager.outgoingAutoMixArtOpacity > 0.005 {
+                    Image(nsImage: outgoing)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .opacity(musicManager.outgoingAutoMixArtOpacity)
+                        .allowsHitTesting(false)
+                }
+            }
             .clipped()
             .clipShape(
                 RoundedRectangle(
@@ -85,6 +94,15 @@ struct AlbumArtView: View {
         Image(nsImage: musicManager.albumArt)
             .resizable()
             .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                if let outgoing = musicManager.outgoingAutoMixArt, musicManager.outgoingAutoMixArtOpacity > 0.005 {
+                    Image(nsImage: outgoing)
+                        .resizable()
+                        .aspectRatio(1, contentMode: .fill)
+                        .opacity(musicManager.outgoingAutoMixArtOpacity)
+                        .allowsHitTesting(false)
+                }
+            }
             .matchedGeometryEffect(id: "albumArt", in: albumArtNamespace)
             .clipped()
             .clipShape(
@@ -502,6 +520,8 @@ struct NotchHomeView: View {
 }
 
 struct MusicSliderView: View {
+    @ObservedObject private var autoMixMonitor = AppleMusicAutoMixMonitor.shared
+    @Default(.showAutoMixIndicator) private var showAutoMixIndicator
     @Binding var sliderValue: Double
     @Binding var duration: Double
     @Binding var lastDragged: Date
@@ -517,6 +537,10 @@ struct MusicSliderView: View {
 
     var body: some View {
         let safeDuration = duration.isFinite ? max(0, duration) : 0
+        let tintColor = Defaults[.playerColorTinting]
+            ? Color(nsColor: color).ensureMinimumBrightness(factor: 0.65)
+            : .gray
+        let isAutoMixing = autoMixMonitor.isMixing && showAutoMixIndicator
         VStack {
             CustomSlider(
                 value: $sliderValue,
@@ -533,8 +557,14 @@ struct MusicSliderView: View {
             HStack {
                 Text(timeString(from: sliderValue))
                 Spacer()
+                if isAutoMixing {
+                    AutoMixBadgeView(accent: tintColor, compact: true)
+                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    Spacer()
+                }
                 Text(timeString(from: safeDuration))
             }
+            .animation(.spring(response: 0.38, dampingFraction: 0.94), value: isAutoMixing)
             .fontWeight(.medium)
             .foregroundColor(
                 Defaults[.playerColorTinting]

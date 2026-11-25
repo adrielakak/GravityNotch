@@ -85,6 +85,10 @@ class MusicManager: ObservableObject {
 
     @Published var isFlipping: Bool = false
     private var flipWorkItem: DispatchWorkItem?
+    /// Outgoing cover held briefly during an Apple Music AutoMix pivot so the two covers crossfade smoothly
+    @Published var outgoingAutoMixArt: NSImage? = nil
+    @Published var outgoingAutoMixArtOpacity: Double = 0
+    private var autoMixArtFadeTask: Task<Void, Never>?
 
     @Published var isTransitioning: Bool = false
     private var transitionWorkItem: DispatchWorkItem?
@@ -329,6 +333,11 @@ class MusicManager: ObservableObject {
         }
         
         self.timestampDate = state.lastUpdated
+        AppleMusicAutoMixMonitor.shared.playbackUpdated(
+            title: self.songTitle,
+            isPlaying: self.isPlaying,
+            bundleIdentifier: self.bundleIdentifier
+        )
 
         if hasContentChange || !state.isPlaying || !wasPlaying || now < self.explicitSeekUntil {
             self.lyricsClockOffset = 0
@@ -724,6 +733,11 @@ class MusicManager: ObservableObject {
     private func triggerFlipAnimation() {
         // Cancel any existing animation
         flipWorkItem?.cancel()
+        // During an Apple Music AutoMix transition the cover crossfades smoothly instead of flipping
+        guard !AppleMusicAutoMixMonitor.shared.isMixing else {
+            isFlipping = false
+            return
+        }
 
         // Create a new animation
         let workItem = DispatchWorkItem { [weak self] in
@@ -775,6 +789,26 @@ class MusicManager: ObservableObject {
 
     func updateAlbumArt(newAlbumArt: NSImage) {
         workItem?.cancel()
+        autoMixArtFadeTask?.cancel()
+        if AppleMusicAutoMixMonitor.shared.isMixing, newAlbumArt !== self.albumArt {
+            self.outgoingAutoMixArt = self.albumArt
+            self.outgoingAutoMixArtOpacity = 1.0
+            self.albumArt = newAlbumArt
+            if Defaults[.coloredSpectrogram] {
+                self.calculateAverageColor()
+            }
+            withAnimation(.easeInOut(duration: 1.6)) {
+                self.outgoingAutoMixArtOpacity = 0
+            }
+            autoMixArtFadeTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(1700))
+                guard !Task.isCancelled, let self else { return }
+                self.outgoingAutoMixArt = nil
+            }
+            return
+        }
+        self.outgoingAutoMixArt = nil
+        self.outgoingAutoMixArtOpacity = 0
         withAnimation(.smooth) {
             self.albumArt = newAlbumArt
             if Defaults[.coloredSpectrogram] {

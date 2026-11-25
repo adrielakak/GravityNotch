@@ -788,6 +788,7 @@ struct Media: View {
     @Default(.sneakPeekStyles) var sneakPeekStyles
 
     @Default(.enableLyrics) var enableLyrics
+    @Default(.showAutoMixIndicator) var showAutoMixIndicator
     @Default(.showOnLockScreen) var showOnLockScreen
     @Default(.lockScreenMediaPlayer) var lockScreenMediaPlayer
     @Default(.lockScreenPlayerStyle) var lockScreenPlayerStyle
@@ -905,6 +906,13 @@ struct Media: View {
                         customBadge(text: "Beta")
                     }
                 }
+                Defaults.Toggle(key: .showAutoMixIndicator) {
+                    Text("Show Apple Music AutoMix transitions")
+                }
+                Button("Preview AutoMix Animation") {
+                    AppleMusicAutoMixMonitor.shared.preview()
+                }
+                .disabled(!showAutoMixIndicator)
             } header: {
                 Text("Media controls")
             }  footer: {
