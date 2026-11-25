@@ -1653,8 +1653,9 @@ final class AppleMusicAutoMixMonitor: ObservableObject {
     private static let infoRegex = try? NSRegularExpression(
         pattern: #"startTime:\s*([0-9.]+),\s*pivotTime:\s*([0-9.]+),\s*endTime:\s*([0-9.]+),\s*overlapBegin:\s*[0-9.]+,\s*duration:\s*([0-9.]+)"#
     )
+    private static let streamPredicate = #"process == "Music" AND (subsystem == "com.apple.Sonic" OR subsystem == "com.apple.amp.mediaplaybackcore") AND (eventMessage CONTAINS "Updated content item with transition info" OR eventMessage CONTAINS "Transition setup completed" OR eventMessage CONTAINS "Cancelling current transition" OR eventMessage CONTAINS "Cleared planned transition info")"#
     private static let titlesRegex = try? NSRegularExpression(
-        pattern: #"\(\d+::\d+\)\s+(.+?)\],\s*isSpatialized:.*?􀜍.*?\(\d+::\d+\)\s+(.+?)\],\s*isSpatialized:"#
+        pattern: #"\([\d+]+::\d+\)\s+(.+?)\],\s*isSpatialized:.*?􀜍.*?\([\d+]+::\d+\)\s+(.+?)\],\s*isSpatialized:"#
     )
 
     private var planned: PlannedTransition?
@@ -1731,9 +1732,7 @@ final class AppleMusicAutoMixMonitor: ObservableObject {
         guard process == nil else { return }
         restartTask?.cancel()
         SystemLogStream.killOrphansOnce()
-        let proc = SystemLogStream.makeProcess(
-            predicate: #"process == "Music" AND (subsystem == "com.apple.Sonic" OR subsystem == "com.apple.amp.mediaplaybackcore") AND (eventMessage CONTAINS "Updated content item with transition info" OR eventMessage CONTAINS "Transition setup completed" OR eventMessage CONTAINS "Cancelling current transition" OR eventMessage CONTAINS "Cleared planned transition info")"#
-        )
+        let proc = SystemLogStream.makeProcess(predicate: Self.streamPredicate)
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
@@ -1761,8 +1760,35 @@ final class AppleMusicAutoMixMonitor: ObservableObject {
             try proc.run()
             process = proc
             launchedAt = Date()
+            backfillRecentPlan()
         } catch {
             Self.logger.error("Could not start AutoMix log stream: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Music announces a mix when the song starts, so a launch mid-song would miss the current one:
+    /// replay the last 10 minutes once (about 0.3 s of CPU), unless the live stream already got a plan.
+    private func backfillRecentPlan() {
+        let predicate = Self.streamPredicate
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let show = Process()
+            show.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+            show.arguments = ["show", "--last", "10m", "--style", "ndjson", "--predicate", predicate]
+            let pipe = Pipe()
+            show.standardOutput = pipe
+            show.standardError = FileHandle.nullDevice
+            guard (try? show.run()) != nil else { return }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            show.waitUntilExit()
+            let messages = data.split(separator: 0x0A).compactMap { line in
+                (try? JSONSerialization.jsonObject(with: line) as? [String: Any])?["eventMessage"] as? String
+            }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.process != nil, self.planned == nil, self.activeMix == nil else { return }
+                    messages.forEach { self.handleLogMessage($0) }
+                }
+            }
         }
     }
 
@@ -1820,15 +1846,14 @@ final class AppleMusicAutoMixMonitor: ObservableObject {
         let ns = message as NSString
         let fullRange = NSRange(location: 0, length: ns.length)
 
-        if message.contains("Transition setup completed"),
-           let match = Self.titlesRegex?.firstMatch(in: message, range: fullRange) {
-            let outTitle = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-            let inTitle = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
-            lastParsedTitles = (outTitle, inTitle)
-            if var current = planned {
-                current.outgoingTitle = outTitle
-                current.incomingTitle = inTitle
-                planned = current
+        // Queue items from a playlist or Autoplay carry ids like (10643+11511::11512). A line that does not
+        // parse must not leave the previous pair behind: stale titles would never match the playing song.
+        if message.contains("Transition setup completed") {
+            lastParsedTitles = nil
+            if let match = Self.titlesRegex?.firstMatch(in: message, range: fullRange) {
+                let outTitle = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let inTitle = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+                lastParsedTitles = (outTitle, inTitle)
             }
             return
         }
@@ -1849,7 +1874,8 @@ final class AppleMusicAutoMixMonitor: ObservableObject {
                 outgoingTitle: lastParsedTitles?.outgoing,
                 incomingTitle: lastParsedTitles?.incoming
             )
-            Self.logger.notice("Planned AutoMix at \(start, privacy: .public)s -> pivot \(pivot, privacy: .public)s (\(duration, privacy: .public)s)")
+            lastParsedTitles = nil
+            Self.logger.notice("Planned AutoMix at \(start, privacy: .public)s -> pivot \(pivot, privacy: .public)s (\(duration, privacy: .public)s), out: \(self.planned?.outgoingTitle ?? "?", privacy: .public)")
             armTransitionWatch()
         }
     }
@@ -1911,6 +1937,9 @@ final class AppleMusicAutoMixMonitor: ObservableObject {
             incomingTitle: incomingTitle,
             isPreview: isPreview
         )
+        if !isPreview {
+            Self.logger.notice("AutoMix animation started (\(duration, privacy: .public)s)")
+        }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.94)) {
             activeMix = mix
         }
@@ -9862,7 +9891,9 @@ struct LockScreenLyricsLayoutView: View {
             ZStack {
                 LockScreenLyricsBackground(
                     videoURL: manager.animatedArtworkURL,
-                    cover: artworkService.stillImage(for: trackKey) ?? musicManager.albumArt
+                    cover: artworkService.stillImage(for: trackKey) ?? musicManager.albumArt,
+                    outgoingCover: musicManager.outgoingAutoMixArt,
+                    outgoingOpacity: musicManager.outgoingAutoMixArtOpacity
                 )
 
                 // Without lyrics (none found, hidden, still loading, nothing playing) the same player moves
@@ -10042,6 +10073,10 @@ struct LockScreenLyricsLayoutView: View {
 private struct LockScreenLyricsBackground: View {
     let videoURL: URL?
     let cover: NSImage
+    /// Passed in rather than read from MusicManager.shared: an unobserved read froze the AutoMix fade
+    /// on its first frame, leaving the previous cover over the background until the next lock
+    var outgoingCover: NSImage? = nil
+    var outgoingOpacity: Double = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -10054,14 +10089,13 @@ private struct LockScreenLyricsBackground: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: geo.size.width, height: geo.size.height)
                     .overlay {
-                        if let outgoing = MusicManager.shared.outgoingAutoMixArt,
-                           MusicManager.shared.outgoingAutoMixArtOpacity > 0.005 {
-                            Image(nsImage: outgoing)
+                        if let outgoingCover, outgoingOpacity > 0.005 {
+                            Image(nsImage: outgoingCover)
                                 .resizable()
                                 .interpolation(.high)
                                 .aspectRatio(contentMode: .fill)
                                 .frame(width: geo.size.width, height: geo.size.height)
-                                .opacity(MusicManager.shared.outgoingAutoMixArtOpacity)
+                                .opacity(outgoingOpacity)
                                 .allowsHitTesting(false)
                         }
                     }
