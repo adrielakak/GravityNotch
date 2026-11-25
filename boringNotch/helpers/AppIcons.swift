@@ -10072,10 +10072,13 @@ private struct KaraokeGlyphRenderer: TextRenderer {
         var maxX: CGFloat
     }
 
-    /// Room for the lifted letters and their glow
+    /// Vertical room for lifted letters and glow. Horizontal padding stays 0 because SwiftUI adds
+    /// `leading + trailing` to CoreText's line-wrap width (`+36 pt`), which kept short words like "de"
+    /// or "en" past the column width where `.clipped()` cut their last letter at 1.0x scale; `edgeMargin`
+    /// (`24 pt`) already provides horizontal room for side glow.
     var displayPadding: EdgeInsets {
         let padding = fontSize * 0.6
-        return EdgeInsets(top: padding, leading: padding, bottom: padding, trailing: padding)
+        return EdgeInsets(top: padding, leading: 0, bottom: padding, trailing: 0)
     }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
