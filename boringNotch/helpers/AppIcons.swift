@@ -9619,6 +9619,8 @@ private struct LockScreenFullLyricsView: View {
     private static let estimatedHeight: CGFloat = 40
     private static let interludeHeight: CGFloat = 30
     fileprivate static let settleDuration: Double = 0.6
+    /// Slight anticipation so the next line begins gliding into focus right before its first syllable starts
+    private static let scrollLeadTime: Double = 0.08
     /// Room on both sides of the text inside the clipped column, so the blur of the inactive lines and the
     /// glow of the active one fade out instead of being cut along a hard vertical edge
     static let edgeMargin: CGFloat = 24
@@ -9628,21 +9630,15 @@ private struct LockScreenFullLyricsView: View {
             list(active: activeLineIndex, size: geo.size)
         }
         .background(
-            // Evaluate the 10 Hz clock in a zero-cost background view and only invalidate the lyrics list
-            // when the active line index changes or a settling line finishes its transition.
-            TimelineView(.animation(minimumInterval: 0.1, paused: !musicManager.isPlaying && settlingLines.isEmpty)) { context in
+            // Evaluate a lightweight 30 Hz index check in a zero-cost background view (sub-16 ms scroll reaction)
+            // and never mutate state mid-scroll: each row pauses its own TimelineView locally once settled.
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !musicManager.isPlaying)) { context in
                 Color.clear
                     .onChange(of: context.date) { _, now in
-                        let next = activeIndex(at: musicManager.smoothedPlaybackPosition(at: now))
+                        let lead = isSynced && musicManager.isPlaying ? Self.scrollLeadTime : 0
+                        let next = activeIndex(at: musicManager.smoothedPlaybackPosition(at: now) + lead)
                         if next != activeLineIndex {
                             activateLine(next, at: now)
-                        }
-                        if !settlingLines.isEmpty {
-                            let cutoff = Self.settleDuration + 0.08
-                            let remaining = settlingLines.filter { now.timeIntervalSince($0.value) < cutoff }
-                            if remaining.count != settlingLines.count {
-                                settlingLines = remaining
-                            }
                         }
                     }
             }
@@ -9653,7 +9649,8 @@ private struct LockScreenFullLyricsView: View {
         }
         .onChange(of: musicManager.timestampDate) { _, _ in
             let now = Date()
-            let next = activeIndex(at: musicManager.smoothedPlaybackPosition(at: now))
+            let lead = isSynced && musicManager.isPlaying ? Self.scrollLeadTime : 0
+            let next = activeIndex(at: musicManager.smoothedPlaybackPosition(at: now) + lead)
             if next != activeLineIndex {
                 activateLine(next, at: now)
             }
@@ -9668,6 +9665,7 @@ private struct LockScreenFullLyricsView: View {
     private func activateLine(_ next: Int, at now: Date) {
         let previous = activeLineIndex
         if isSynced, lines.indices.contains(previous), !lines[previous].isInterlude, abs(next - previous) <= 3 {
+            settlingLines = settlingLines.filter { now.timeIntervalSince($0.value) < 3.0 }
             settlingLines[previous] = now
         } else {
             settlingLines.removeAll()
@@ -9691,13 +9689,14 @@ private struct LockScreenFullLyricsView: View {
         }
         let shift = size.height * 0.16 - (tops.indices.contains(active) ? tops[active] : 0)
         let creditsTop = y
+        let rowSpring = Animation.spring(response: 0.56, dampingFraction: 0.98)
 
         return ZStack(alignment: .topLeading) {
             ForEach(lines) { line in
                 row(line, active: active, width: max(0, size.width - 2 * Self.edgeMargin))
                     .offset(x: Self.edgeMargin, y: tops[line.id] + shift)
                     .animation(
-                        .spring(response: 0.7, dampingFraction: 0.86).delay(waveDelay(for: line.id, active: active)),
+                        rowSpring.delay(waveDelay(for: line.id, active: active)),
                         value: active
                     )
             }
@@ -9706,7 +9705,7 @@ private struct LockScreenFullLyricsView: View {
                     .opacity(lines.count - 1 - active <= 14 ? 1 : 0)
                     .offset(x: Self.edgeMargin, y: creditsTop + shift + 6)
                     .animation(
-                        .spring(response: 0.7, dampingFraction: 0.86).delay(waveDelay(for: lines.count, active: active)),
+                        rowSpring.delay(waveDelay(for: lines.count, active: active)),
                         value: active
                     )
             }
@@ -9764,16 +9763,20 @@ private struct LockScreenFullLyricsView: View {
         let isHovered = hoveredLine == line.id && line.time != nil
         let restOpacity = isHovered ? 0.75 : inactiveOpacity(distance)
         let deactivatedAt = isActive ? nil : settlingLines[line.id]
+        // Keep the same view identity across all visible synced lines so transitioning into or out of
+        // the active slot never destroys/recreates the underlying layer mid-spring.
+        let usesKaraoke = isVisible && isSynced && line.time != nil
         let text = line.text.isEmpty ? "♪" : line.text
 
         Group {
-            if (isActive || deactivatedAt != nil) && isSynced, let start = line.time {
+            if usesKaraoke, let start = line.time {
                 LockScreenKaraokeLine(
                     text: text,
                     start: start,
                     end: lineEnd(after: line.id, start: start),
                     words: line.words,
                     fontSize: Self.fontSize,
+                    isActive: isActive,
                     deactivatedAt: deactivatedAt,
                     restOpacity: restOpacity
                 )
@@ -9792,8 +9795,8 @@ private struct LockScreenFullLyricsView: View {
             }
         )
         .scaleEffect(isActive ? 1 : 0.96, anchor: .leading)
-        .blur(radius: (isActive || isHovered || !isVisible) ? 0 : min(CGFloat(abs(distance)) * 1.2, 5))
-        .shadow(color: isActive ? .white.opacity(0.18) : .clear, radius: 12)
+        .blur(radius: (isActive || isHovered || !isVisible) ? 0 : min(CGFloat(abs(distance)) * 1.15, 5))
+        .shadow(color: (isActive && !usesKaraoke) ? .white.opacity(0.18) : .clear, radius: 12)
         .opacity(isVisible ? 1 : 0)
         .contentShape(Rectangle())
         .onHover { inside in
@@ -9807,13 +9810,14 @@ private struct LockScreenFullLyricsView: View {
     }
 
     private func inactiveOpacity(_ distance: Int) -> Double {
-        if distance < 0 { return 0.32 }
-        return distance == 1 ? 0.5 : 0.38
+        // Upcoming lines match `KaraokeGlyphRenderer.baseDimOpacity` (0.38) so rising into the active
+        // slot produces zero brightness flash before the first word sweeps to 1.0.
+        distance < 0 ? 0.32 : 0.38
     }
 
     private func waveDelay(for index: Int, active: Int) -> Double {
         let distance = index - active
-        return distance > 0 ? Double(min(distance, 10)) * 0.035 : 0
+        return distance > 0 ? Double(min(distance, 8)) * 0.024 : 0
     }
 
     private func lineEnd(after index: Int, start: Double) -> Double {
@@ -9846,7 +9850,8 @@ private struct LockScreenFullLyricsView: View {
     }
 }
 
-/// The active line (or a just-finished line settling back to rest), lit word by word.
+/// Synced lyric row: stays mounted across the visible viewport (paused at 0 Hz while inactive) so scrolling
+/// into or out of the active slot keeps one persistent layer and spring velocity with zero view swap.
 private struct LockScreenKaraokeLine: View {
     @ObservedObject private var musicManager = MusicManager.shared
     @Default(.lockScreenFullScreenLetterAnimation) private var animateLetters
@@ -9856,9 +9861,12 @@ private struct LockScreenKaraokeLine: View {
     /// Real timing (Apple Music, or LRCLIB word sync); empty when only lines are timed, where it is estimated
     var words: [TimedLyricWord] = []
     let fontSize: CGFloat
+    var isActive: Bool = true
     /// Non-nil once the next line takes over: lifted letters, swell and brightness ease smoothly down to rest
     var deactivatedAt: Date? = nil
     var restOpacity: Double = 0.32
+
+    @State private var isSettling = false
 
     fileprivate struct Piece {
         let begin: Double
@@ -9869,45 +9877,72 @@ private struct LockScreenKaraokeLine: View {
 
     var body: some View {
         let timedPieces = words.isEmpty ? estimatedWords : words
-        let isPaused = !musicManager.isPlaying && deactivatedAt == nil
-        if #available(macOS 15.0, *) {
-            // Lines timed only as a whole get estimated word times: they rise too, but never swell,
-            // since how long a word is held is unknown
-            let pieces = timedPieces.map { word in
-                Piece(
-                    begin: word.begin,
-                    end: word.end,
-                    emphasis: (words.isEmpty || !animateLetters) ? 0 : Self.emphasis(of: word),
-                    followedBySpace: word.followedBySpace
-                )
+        let isPaused = !(isActive && musicManager.isPlaying) && !isSettling
+        Group {
+            if #available(macOS 15.0, *) {
+                // Lines timed only as a whole get estimated word times: they rise too, but never swell,
+                // since how long a word is held is unknown
+                let pieces = timedPieces.map { word in
+                    Piece(
+                        begin: word.begin,
+                        end: word.end,
+                        emphasis: (words.isEmpty || !animateLetters) ? 0 : Self.emphasis(of: word),
+                        followedBySpace: word.followedBySpace
+                    )
+                }
+                let renderedText = Self.taggedText(timedPieces)
+                // Unthrottled `.animation` locks 1:1 to CADisplayLink VSync (60/120 Hz) without beat-frequency drops
+                TimelineView(.animation(paused: isPaused)) { context in
+                    let elapsed = musicManager.smoothedPlaybackPosition(at: context.date)
+                    let settle = Self.settleProgress(isActive: isActive, deactivatedAt: deactivatedAt, now: context.date)
+                    renderedText
+                        .font(.system(size: fontSize, weight: .bold))
+                        .textRenderer(KaraokeGlyphRenderer(
+                            pieces: pieces,
+                            elapsed: elapsed,
+                            isActive: isActive,
+                            settle: settle,
+                            restOpacity: restOpacity,
+                            fontSize: fontSize,
+                            animateLetters: animateLetters
+                        ))
+                }
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { context in
+                    let elapsed = musicManager.smoothedPlaybackPosition(at: context.date)
+                    let settle = Self.settleProgress(isActive: isActive, deactivatedAt: deactivatedAt, now: context.date)
+                    if !isActive && settle >= 0.999 {
+                        Text(verbatim: text)
+                            .foregroundColor(.white.opacity(restOpacity))
+                            .font(.system(size: fontSize, weight: .bold))
+                    } else {
+                        (words.isEmpty ? estimatedText(at: elapsed, settle: settle) : timedText(at: elapsed, settle: settle))
+                            .font(.system(size: fontSize, weight: .bold))
+                    }
+                }
             }
-            let renderedText = Self.taggedText(timedPieces)
-            TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: isPaused)) { context in
-                let elapsed = musicManager.smoothedPlaybackPosition(at: context.date)
-                let settle = Self.settleProgress(deactivatedAt: deactivatedAt, now: context.date)
-                renderedText
-                    .font(.system(size: fontSize, weight: .bold))
-                    .textRenderer(KaraokeGlyphRenderer(
-                        pieces: pieces,
-                        elapsed: elapsed,
-                        settle: settle,
-                        restOpacity: restOpacity,
-                        fontSize: fontSize,
-                        animateLetters: animateLetters
-                    ))
+        }
+        .task(id: deactivatedAt) {
+            guard !isActive, let deactivatedAt else {
+                isSettling = false
+                return
             }
-        } else {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { context in
-                let elapsed = musicManager.smoothedPlaybackPosition(at: context.date)
-                let settle = Self.settleProgress(deactivatedAt: deactivatedAt, now: context.date)
-                (words.isEmpty ? estimatedText(at: elapsed, settle: settle) : timedText(at: elapsed, settle: settle))
-                    .font(.system(size: fontSize, weight: .bold))
+            let remaining = LockScreenFullLyricsView.settleDuration + 0.05 - Date().timeIntervalSince(deactivatedAt)
+            guard remaining > 0 else {
+                isSettling = false
+                return
+            }
+            isSettling = true
+            try? await Task.sleep(for: .seconds(remaining))
+            if !Task.isCancelled {
+                isSettling = false
             }
         }
     }
 
-    private static func settleProgress(deactivatedAt: Date?, now: Date) -> Double {
-        guard let deactivatedAt else { return 0 }
+    private static func settleProgress(isActive: Bool, deactivatedAt: Date?, now: Date) -> Double {
+        if isActive { return 0 }
+        guard let deactivatedAt else { return 1 }
         let t = min(1, max(0, now.timeIntervalSince(deactivatedAt) / LockScreenFullLyricsView.settleDuration))
         return t * t * (3 - 2 * t)
     }
@@ -10000,25 +10035,27 @@ private struct KaraokeWordAttribute: TextAttribute {
     let index: Int
 }
 
-/// Draws the active line like Apple Music:
-/// - Each word (including multi-syllable words) is swept horizontally by a continuous linear gradient mask.
-/// - Each letter starts rising at its own ignition instant over a fixed ~0.6 s critically damped curve, so
-///   even fast 0.08 s syllables glide smoothly instead of snapping.
-/// - Held syllables swell and emit a single per-word glow with soft attack and soft release, and when the
-///   line ends all lifted letters settle smoothly back to the resting baseline.
+/// Draws the active line in the style of Apple Music:
+/// - `.disablesSubpixelQuantization` on every glyph draw bypasses CoreText integer pixel snapping so slow
+///   vertical floats and scales move smoothly between Retina subpixels without shimmering or trembling.
+/// - Single-pass horizontal `LinearGradient` mask (`.destinationIn`) inside a fixed, integer-aligned layer
+///   bounds eliminates dual-pass subpixel misregistration and moving-layer origin jitter.
+/// - Held syllables fan out proportionally from the word center (`xOffset`)
+///   so swollen letters preserve their relative kerning instead of colliding.
 @available(macOS 15.0, *)
 private struct KaraokeGlyphRenderer: TextRenderer {
     let pieces: [LockScreenKaraokeLine.Piece]
     let elapsed: Double
+    let isActive: Bool
     let settle: Double
     let restOpacity: Double
     let fontSize: CGFloat
     let animateLetters: Bool
 
     private static let baseDimOpacity: Double = 0.38
-    private static let liftResponse: Double = 0.60
-    private static let swellAttackResponse: Double = 0.55
-    private static let swellReleaseResponse: Double = 0.60
+    private static let liftTau: Double = 0.11
+    private static let swellAttackTau: Double = 0.105
+    private static let swellReleaseTau: Double = 0.12
 
     private struct PreparedGlyph {
         let slice: Text.Layout.RunSlice
@@ -10042,6 +10079,17 @@ private struct KaraokeGlyphRenderer: TextRenderer {
     }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        if !isActive && settle >= 0.999 {
+            var resting = context
+            resting.opacity = restOpacity
+            for line in layout {
+                for run in line {
+                    resting.draw(run, options: .disablesSubpixelQuantization)
+                }
+            }
+            return
+        }
+
         var totalGlyphs = Array(repeating: 0, count: pieces.count)
         for line in layout {
             for run in line {
@@ -10070,7 +10118,7 @@ private struct KaraokeGlyphRenderer: TextRenderer {
                     }
                     var spaceCtx = context
                     spaceCtx.opacity = dimOpacity
-                    spaceCtx.draw(run)
+                    spaceCtx.draw(run, options: .disablesSubpixelQuantization)
                     continue
                 }
 
@@ -10111,7 +10159,10 @@ private struct KaraokeGlyphRenderer: TextRenderer {
         var currentSegCount = 0
         var currentSegMinX: CGFloat = .infinity
         var currentSegMaxX: CGFloat = -.infinity
+        var staticMinY: CGFloat = .infinity
+        var staticMaxY: CGFloat = -.infinity
         var maxHeld: Double = 0
+        var maxRise: CGFloat = 0
 
         func flushSegment() {
             guard let idx = currentSegIndex, currentSegCount > 0 else { return }
@@ -10150,26 +10201,29 @@ private struct KaraokeGlyphRenderer: TextRenderer {
                 let bounds = slice.typographicBounds.rect
                 currentSegMinX = min(currentSegMinX, bounds.minX)
                 currentSegMaxX = max(currentSegMaxX, bounds.maxX)
+                staticMinY = min(staticMinY, bounds.minY)
+                staticMaxY = max(staticMaxY, bounds.maxY)
 
                 let fraction = position / count
                 let glyphStart = piece.begin + fraction * duration
                 let raised = animateLetters
-                    ? Self.criticallyDamped(elapsed - glyphStart, response: Self.liftResponse) * settleFactor
+                    ? Self.criticallyDamped(elapsed - glyphStart, tau: Self.liftTau) * settleFactor
                     : 0
 
                 let held: Double
                 if animateLetters, piece.emphasis > 0, elapsed > glyphStart {
-                    let attack = Self.criticallyDamped(elapsed - glyphStart, response: Self.swellAttackResponse)
+                    let attack = Self.criticallyDamped(elapsed - glyphStart, tau: Self.swellAttackTau)
                     let releaseStart = max(glyphStart + 0.22, piece.end - 0.16 + 0.12 * fraction)
-                    let release = 1 - Self.criticallyDamped(elapsed - releaseStart, response: Self.swellReleaseResponse)
+                    let release = 1 - Self.criticallyDamped(elapsed - releaseStart, tau: Self.swellReleaseTau)
                     held = piece.emphasis * attack * release * settleFactor
                 } else {
                     held = 0
                 }
 
                 if held > maxHeld { maxHeld = held }
-                let rise = fontSize * CGFloat(0.06 * raised + 0.10 * held)
-                let scale = 1 + CGFloat(0.10 * held)
+                let rise = fontSize * CGFloat(0.048 * raised + 0.075 * held)
+                if rise > maxRise { maxRise = rise }
+                let scale = 1 + CGFloat(0.085 * held)
                 glyphs.append(PreparedGlyph(slice: slice, bounds: bounds, rise: rise, scale: scale, held: held))
             }
         }
@@ -10188,104 +10242,104 @@ private struct KaraokeGlyphRenderer: TextRenderer {
 
         let clusterMinX = segments[0].minX
         let clusterMaxX = max(clusterMinX + 1, segments[segments.count - 1].maxX)
+        let clusterMidX = 0.5 * (clusterMinX + clusterMaxX)
         let sweep = Self.sweepFraction(elapsed: elapsed, segments: segments, minX: clusterMinX, maxX: clusterMaxX)
 
-        // Unsung word: draw directly without offscreen layers
-        if sweep <= 0, maxHeld <= 0.01 {
+        // Unsung word: draw directly with subpixel quantization disabled so ignition never shifts alignment
+        if sweep <= 0, maxHeld <= 0.002, maxRise <= 0.002 {
             var dimmed = context
             dimmed.opacity = dimOpacity
             for (_, run) in runs {
-                dimmed.draw(run)
+                dimmed.draw(run, options: .disablesSubpixelQuantization)
             }
             return
         }
 
-        // Single per-word glow pass when a held syllable is active (avoids per-glyph shadow blurs at 60 Hz)
-        if maxHeld > 0.015 {
+        // Single per-word glow pass when a held syllable is active
+        if maxHeld > 0.012 {
             var glowContext = context
             glowContext.addFilter(.shadow(
-                color: .white.opacity(0.6 * maxHeld),
-                radius: fontSize * 0.3 * CGFloat(maxHeld),
+                color: .white.opacity(0.55 * maxHeld),
+                radius: fontSize * 0.28 * CGFloat(maxHeld),
                 x: 0,
                 y: 0,
                 options: .shadowOnly
             ))
             glowContext.drawLayer { glowLayer in
-                for glyph in glyphs where glyph.held > 0.01 {
+                for glyph in glyphs where glyph.held > 0.008 {
                     var sliceCtx = glowLayer
                     sliceCtx.opacity = min(1, glyph.held / maxHeld)
-                    Self.drawTransformed(glyph, in: &sliceCtx)
+                    Self.drawTransformed(glyph, clusterMidX: clusterMidX, in: &sliceCtx)
                 }
             }
         }
 
-        // Fully sung word (or settling after completion): draw transformed glyphs directly
+        // Fully sung word (or settling after completion): single subpixel-smooth pass
         if sweep >= 1 || abs(litOpacity - dimOpacity) < 0.002 {
             for glyph in glyphs {
                 var sliceCtx = context
                 sliceCtx.opacity = litOpacity
-                Self.drawTransformed(glyph, in: &sliceCtx)
+                Self.drawTransformed(glyph, clusterMidX: clusterMidX, in: &sliceCtx)
             }
             return
         }
 
-        // Active sweep: draw the dimmed run first, then mask the bright run with a continuous linear gradient
-        var unionRect = glyphs[0].bounds
-        for glyph in glyphs {
-            unionRect = unionRect.union(glyph.bounds)
-            var dimmed = context
-            dimmed.opacity = dimOpacity
-            Self.drawTransformed(glyph, in: &dimmed)
-        }
-
+        // Active sweep: single-pass glyph draw inside a fixed integer-aligned layer, modulated by a
+        // continuous horizontal `.destinationIn` gradient from `litOpacity` to `dimOpacity`.
         let width = clusterMaxX - clusterMinX
-        let feather = max(fontSize * 0.55, min(fontSize * 1.3, width * 0.5))
+        let feather = max(fontSize * 0.6, min(fontSize * 1.35, width * 0.52))
         let edgeStart = (clusterMinX - feather) + CGFloat(sweep) * (width + feather)
         let edgeEnd = edgeStart + feather
 
-        let maskMinX = min(unionRect.minX - fontSize * 0.6, edgeStart - 4)
-        let maskMaxX = max(unionRect.maxX + fontSize * 0.6, edgeEnd + 4)
-        let maskRect = CGRect(
-            x: maskMinX,
-            y: unionRect.minY - fontSize * 0.8,
-            width: max(1, maskMaxX - maskMinX),
-            height: unionRect.height + fontSize * 1.6
+        let padX = ceil(feather + fontSize * 0.5)
+        let padY = ceil(fontSize * 0.9)
+        let staticMaskRect = CGRect(
+            x: floor(clusterMinX - padX),
+            y: floor(staticMinY - padY),
+            width: max(1, ceil(width + 2 * padX)),
+            height: max(1, ceil((staticMaxY - staticMinY) + 2 * padY))
         )
-        let s0 = Double((edgeStart - maskRect.minX) / maskRect.width)
-        let s1 = Double((edgeEnd - maskRect.minX) / maskRect.width)
-        let overlayAlpha = max(0, min(1, (litOpacity - dimOpacity) / max(0.01, 1 - dimOpacity)))
+        let s0 = max(0, min(1, Double((edgeStart - staticMaskRect.minX) / staticMaskRect.width)))
+        let s1 = max(s0, min(1, Double((edgeEnd - staticMaskRect.minX) / staticMaskRect.width)))
+        let midA = dimOpacity + (litOpacity - dimOpacity) * 0.74
+        let midB = dimOpacity + (litOpacity - dimOpacity) * 0.26
 
         context.drawLayer { layer in
             for glyph in glyphs {
-                var bright = layer
-                bright.opacity = overlayAlpha
-                Self.drawTransformed(glyph, in: &bright)
+                var sliceCtx = layer
+                Self.drawTransformed(glyph, clusterMidX: clusterMidX, in: &sliceCtx)
             }
             var mask = layer
             mask.blendMode = .destinationIn
             mask.fill(
-                Path(maskRect),
+                Path(staticMaskRect),
                 with: .linearGradient(
                     Gradient(stops: [
-                        .init(color: .white, location: max(0, s0)),
-                        .init(color: .white.opacity(0.74), location: max(0, min(1, s0 + (s1 - s0) * 0.33))),
-                        .init(color: .white.opacity(0.26), location: max(0, min(1, s0 + (s1 - s0) * 0.67))),
-                        .init(color: .clear, location: min(1, s1))
+                        .init(color: .white.opacity(litOpacity), location: s0),
+                        .init(color: .white.opacity(midA), location: s0 + (s1 - s0) * 0.33),
+                        .init(color: .white.opacity(midB), location: s0 + (s1 - s0) * 0.67),
+                        .init(color: .white.opacity(dimOpacity), location: s1)
                     ]),
-                    startPoint: CGPoint(x: maskRect.minX, y: maskRect.midY),
-                    endPoint: CGPoint(x: maskRect.maxX, y: maskRect.midY)
+                    startPoint: CGPoint(x: staticMaskRect.minX, y: staticMaskRect.midY),
+                    endPoint: CGPoint(x: staticMaskRect.maxX, y: staticMaskRect.midY)
                 )
             )
         }
     }
 
-    private static func drawTransformed(_ glyph: PreparedGlyph, in context: inout GraphicsContext) {
-        if glyph.rise > 0.01 || glyph.scale > 1.001 {
-            context.translateBy(x: glyph.bounds.midX, y: glyph.bounds.maxY - glyph.rise)
+    private static func drawTransformed(
+        _ glyph: PreparedGlyph,
+        clusterMidX: CGFloat,
+        in context: inout GraphicsContext
+    ) {
+        if glyph.rise > 0.002 || glyph.scale > 1.0005 {
+            // Fan letters out proportionally from the word center on swell
+            let xOffset = (glyph.bounds.midX - clusterMidX) * (glyph.scale - 1)
+            context.translateBy(x: glyph.bounds.midX + xOffset, y: glyph.bounds.maxY - glyph.rise)
             context.scaleBy(x: glyph.scale, y: glyph.scale)
             context.translateBy(x: -glyph.bounds.midX, y: -glyph.bounds.maxY)
         }
-        context.draw(glyph.slice)
+        context.draw(glyph.slice, options: .disablesSubpixelQuantization)
     }
 
     private static func sweepFraction(
@@ -10313,18 +10367,12 @@ private struct KaraokeGlyphRenderer: TextRenderer {
         return min(1, max(0, Double((cursorX - minX) / max(1, maxX - minX))))
     }
 
-    /// Closed-form critically damped spring (`damping = 1.0`, zero bounce, `f'(0) = 0`) settling in `response` s
-    private static func criticallyDamped(_ dt: Double, response: Double) -> Double {
+    /// Pure C-infinity critically damped spring (`damping = 1.0`, `f(0) = 0`, `f'(0) = 0`, no piecewise splice)
+    private static func criticallyDamped(_ dt: Double, tau: Double) -> Double {
         guard dt > 0 else { return 0 }
-        if dt >= response * 1.35 { return 1 }
-        let u = (dt / response) * 6.0
-        let raw = 1 - (1 + u) * exp(-u)
-        // Smoothly close the final ~0.8% tail between 1.0x and 1.35x response so settled letters rest at 1.0
-        if dt > response {
-            let tail = (dt - response) / (response * 0.35)
-            return raw + (1 - raw) * tail * tail * (3 - 2 * tail)
-        }
-        return raw
+        let u = dt / tau
+        if u >= 12 { return 1 }
+        return 1 - (1 + u) * exp(-u)
     }
 }
 
