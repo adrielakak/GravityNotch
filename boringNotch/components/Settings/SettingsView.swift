@@ -797,6 +797,7 @@ struct Media: View {
     @Default(.lockScreenMediaVerticalPosition) var lockScreenMediaVerticalPosition
     @Default(.lyricsSource) var lyricsSource
     @ObservedObject var appleMusicLyrics = AppleMusicLyricsService.shared
+    @Default(.lockScreenFullScreenShowLyrics) var lockScreenFullScreenShowLyrics
     @Default(.lockScreenFullScreenHorizontalPosition) var lockScreenFullScreenHorizontalPosition
     @Default(.lockScreenFullScreenVerticalPosition) var lockScreenFullScreenVerticalPosition
 
@@ -981,6 +982,12 @@ struct Media: View {
                         Text("Show interactive lyrics on lock screen")
                     }
                     .disabled(!showOnLockScreen || !lockScreenMediaPlayer)
+                    if #available(macOS 15.0, *) {
+                        Defaults.Toggle(key: .lockScreenFullScreenLetterAnimation) {
+                            Text("Animate letters as words are sung")
+                        }
+                        .disabled(!showOnLockScreen || !lockScreenMediaPlayer || !lockScreenFullScreenShowLyrics)
+                    }
                 } else {
                     Defaults.Toggle(key: .lockScreenShowLyrics) {
                         Text("Show interactive lyrics on lock screen")

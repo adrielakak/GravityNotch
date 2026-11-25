@@ -27911,6 +27911,38 @@
         }
       }
     },
+    "Written by: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Written by: %@"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Écrit par : %@"
+          }
+        }
+      }
+    },
+    "Animate letters as words are sung": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Animate letters as words are sung"
+          }
+        },
+        "fr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Animer les lettres au fil du chant"
+          }
+        }
+      }
+    },
     "Lyrics source": {
       "localizations": {
         "en": {

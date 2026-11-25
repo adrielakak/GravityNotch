@@ -8432,6 +8432,11 @@ struct TimedLyricWord: Equatable {
     var followedBySpace: Bool
 }
 
+struct AppleMusicLyrics {
+    let lines: [TimedLyricLine]
+    let songwriters: [String]
+}
+
 struct TimedLyricLine: Equatable {
     let begin: Double
     let end: Double
@@ -8752,7 +8757,7 @@ final class AppleMusicLyricsService: ObservableObject {
     /// Lyrics of the catalog song matching the track, word timed when Apple has it, nil otherwise.
     /// `catalogID` is the exact song Music plays (from MediaRemote): the text search below can pick
     /// another version (remix, edit, live) or miss the song, then LRCLIB shows other lyrics.
-    func lyrics(title: String, artist: String, duration: Double, catalogID: String? = nil) async -> [TimedLyricLine]? {
+    func lyrics(title: String, artist: String, album: String, duration: Double, catalogID: String? = nil) async -> AppleMusicLyrics? {
         guard let userToken = currentUserToken() else { return nil }
         do {
             let storefront = try await currentStorefront(userToken: userToken)
@@ -8763,7 +8768,7 @@ final class AppleMusicLyricsService: ObservableObject {
                 Self.logger.notice("Apple Music lyrics: none for the playing song, using LRCLIB")
                 return nil
             }
-            guard let songID = try await findSong(title: title, artist: artist, duration: duration, storefront: storefront) else {
+            guard let songID = try await findSong(title: title, artist: artist, album: album, duration: duration, storefront: storefront) else {
                 Self.logger.notice("Apple Music lyrics: no catalog match, using LRCLIB")
                 return nil
             }
@@ -8778,7 +8783,7 @@ final class AppleMusicLyricsService: ObservableObject {
         return nil
     }
 
-    private func fetchLyrics(songID: String, storefront: String, userToken: String) async throws -> [TimedLyricLine]? {
+    private func fetchLyrics(songID: String, storefront: String, userToken: String) async throws -> AppleMusicLyrics? {
         for kind in ["syllable-lyrics", "lyrics"] {
             do {
                 let data = try await request("/v1/catalog/\(storefront)/songs/\(songID)/\(kind)", userToken: userToken)
@@ -8787,8 +8792,9 @@ final class AppleMusicLyricsService: ObservableObject {
                     if !lines.isEmpty {
                         let wordTimed = lines.contains { !$0.words.isEmpty }
                         let declared = Self.matches(of: #"itunes:timing="[A-Za-z]+""#, in: ttml).first ?? "no timing attribute"
-                        Self.logger.notice("Apple Music lyrics: \(lines.count, privacy: .public) lines, \(kind, privacy: .public), word timed: \(wordTimed, privacy: .public), \(declared, privacy: .public)")
-                        return lines
+                        let songwriters = Self.songwriters(in: ttml)
+                        Self.logger.notice("Apple Music lyrics: \(lines.count, privacy: .public) lines, \(kind, privacy: .public), word timed: \(wordTimed, privacy: .public), \(declared, privacy: .public), \(songwriters.count, privacy: .public) songwriters")
+                        return AppleMusicLyrics(lines: lines, songwriters: songwriters)
                     }
                 }
             } catch ServiceError.notFound {
@@ -8796,6 +8802,24 @@ final class AppleMusicLyricsService: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// Names listed in the TTML head (`<songwriters><songwriter>`), shown after the last line like Apple Music
+    static func songwriters(in ttml: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"<(?:\w+:)?songwriter>([^<]+)</(?:\w+:)?songwriter>"#) else { return [] }
+        var names: [String] = []
+        for match in regex.matches(in: ttml, range: NSRange(ttml.startIndex..., in: ttml)) {
+            guard let range = Range(match.range(at: 1), in: ttml) else { continue }
+            let name = String(ttml[range])
+                .replacingOccurrences(of: "&apos;", with: "'")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&amp;", with: "&")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty, !names.contains(name) { names.append(name) }
+        }
+        return names
     }
 
     /// A local file's identifier is not a catalog id: only trust the id when the catalog song has this title.
@@ -8832,41 +8856,79 @@ final class AppleMusicLyricsService: ObservableObject {
         return id
     }
 
-    private func findSong(title: String, artist: String, duration: Double, storefront: String) async throws -> String? {
-        let data = try await request(
-            "/v1/catalog/\(storefront)/search",
-            query: [
-                URLQueryItem(name: "term", value: "\(Self.searchable(title)) \(Self.searchable(artist))"),
-                URLQueryItem(name: "types", value: "songs"),
-                URLQueryItem(name: "limit", value: "10")
-            ],
-            userToken: nil
-        )
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let results = json["results"] as? [String: Any],
-              let songs = (results["songs"] as? [String: Any])?["data"] as? [[String: Any]] else { return nil }
-
-        let wantedTitle = Self.normalized(title)
-        let wantedArtist = Self.normalized(artist)
+    /// Catalog search is picky: in some storefronts "I'm Not Alone Calvin Harris" only finds a remix while
+    /// "Im Not Alone Calvin Harris" finds every version. Several phrasings are tried until one finds the version
+    /// playing, judged on the full title (edit, remix, live), the album and the duration.
+    private func findSong(title: String, artist: String, album: String, duration: Double, storefront: String) async throws -> String? {
+        let baseTitle = Self.searchable(title)
+        let baseArtist = Self.searchable(artist)
+        let terms = [
+            "\(baseTitle) \(baseArtist)",
+            "\(Self.withoutApostrophes(baseTitle)) \(Self.withoutApostrophes(baseArtist))",
+            Self.withoutApostrophes(baseTitle)
+        ]
         var best: (id: String, score: Double)?
-        for song in songs {
-            guard let id = song["id"] as? String,
-                  let attributes = song["attributes"] as? [String: Any],
-                  attributes["hasLyrics"] as? Bool != false else { continue }
-            let name = Self.normalized(attributes["name"] as? String ?? "")
-            let songArtist = Self.normalized(attributes["artistName"] as? String ?? "")
-            let titleMatches = name == wantedTitle || name.contains(wantedTitle) || wantedTitle.contains(name)
-            let artistMatches = wantedArtist.isEmpty || songArtist.contains(wantedArtist) || wantedArtist.contains(songArtist)
-            guard titleMatches, artistMatches, !name.isEmpty else { continue }
-
-            var score = name == wantedTitle ? 2.0 : 1.0
-            if attributes["hasTimeSyncedLyrics"] as? Bool == true { score += 1 }
-            if duration > 0, let millis = attributes["durationInMillis"] as? Double {
-                score -= min(2, abs(millis / 1000 - duration) / 5)
+        var searched: Set<String> = []
+        for term in terms where searched.insert(term).inserted {
+            let data = try await request(
+                "/v1/catalog/\(storefront)/search",
+                query: [
+                    URLQueryItem(name: "term", value: term),
+                    URLQueryItem(name: "types", value: "songs"),
+                    URLQueryItem(name: "limit", value: "25")
+                ],
+                userToken: nil
+            )
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = json["results"] as? [String: Any],
+                  let songs = (results["songs"] as? [String: Any])?["data"] as? [[String: Any]] else { continue }
+            for song in songs {
+                guard let id = song["id"] as? String,
+                      let attributes = song["attributes"] as? [String: Any],
+                      let score = Self.score(attributes, title: title, artist: artist, album: album, duration: duration)
+                else { continue }
+                if best == nil || score > best!.score { best = (id, score) }
             }
-            if best == nil || score > best!.score { best = (id, score) }
+            // Same full title and close duration: this is the version playing, no need to search further
+            if let best, best.score >= 4 { break }
         }
         return best?.id
+    }
+
+    private static func score(_ attributes: [String: Any], title: String, artist: String, album: String, duration: Double) -> Double? {
+        guard attributes["hasLyrics"] as? Bool != false else { return nil }
+        let rawName = attributes["name"] as? String ?? ""
+        let name = normalized(rawName)
+        let wantedTitle = normalized(title)
+        let songArtist = normalized(attributes["artistName"] as? String ?? "")
+        let wantedArtist = normalized(artist)
+        let titleMatches = name == wantedTitle || name.contains(wantedTitle) || wantedTitle.contains(name)
+        let artistMatches = wantedArtist.isEmpty || songArtist.contains(wantedArtist) || wantedArtist.contains(songArtist)
+        guard titleMatches, artistMatches, !name.isEmpty else { return nil }
+
+        var score = name == wantedTitle ? 1.0 : 0.0
+        // "(2019 Edit)" against "(Tiesto Remix)": the same base title, another recording with other lyrics
+        if fullyNormalized(rawName) == fullyNormalized(title) { score += 2 }
+        let wantedAlbum = fullyNormalized(album)
+        if !wantedAlbum.isEmpty, fullyNormalized(attributes["albumName"] as? String ?? "") == wantedAlbum { score += 1 }
+        if attributes["hasTimeSyncedLyrics"] as? Bool == true { score += 1 }
+        if duration > 0, let millis = attributes["durationInMillis"] as? Double {
+            score -= min(4, abs(millis / 1000 - duration) / 3)
+        }
+        return score
+    }
+
+    private static func withoutApostrophes(_ text: String) -> String {
+        text.replacingOccurrences(of: "'", with: "").replacingOccurrences(of: "\u{2019}", with: "")
+    }
+
+    /// Like `normalized`, but keeps what is in brackets, so versions of a song stay apart
+    private static func fullyNormalized(_ text: String) -> String {
+        withoutApostrophes(text)
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     /// The title without "(feat. ...)" and similar, which catalog search handles poorly
@@ -9549,11 +9611,14 @@ private struct LockScreenFullLyricsView: View {
     @State private var heights: [Int: CGFloat] = [:]
     @State private var hoveredLine: Int?
     @State private var activeLineIndex: Int = 0
+    /// Recently active lines kept on the glyph renderer while their lifted letters and glow settle smoothly
+    @State private var settlingLines: [Int: Date] = [:]
 
     private static let spacing: CGFloat = 24
     private static let fontSize: CGFloat = 30
     private static let estimatedHeight: CGFloat = 40
     private static let interludeHeight: CGFloat = 30
+    fileprivate static let settleDuration: Double = 0.6
     /// Room on both sides of the text inside the clipped column, so the blur of the inactive lines and the
     /// glow of the active one fade out instead of being cut along a hard vertical edge
     static let edgeMargin: CGFloat = 24
@@ -9564,30 +9629,51 @@ private struct LockScreenFullLyricsView: View {
         }
         .background(
             // Evaluate the 10 Hz clock in a zero-cost background view and only invalidate the lyrics list
-            // when the active line index actually changes (typically once every 2-5 seconds).
-            TimelineView(.animation(minimumInterval: 0.1, paused: !musicManager.isPlaying)) { context in
+            // when the active line index changes or a settling line finishes its transition.
+            TimelineView(.animation(minimumInterval: 0.1, paused: !musicManager.isPlaying && settlingLines.isEmpty)) { context in
                 Color.clear
                     .onChange(of: context.date) { _, now in
-                        let next = activeIndex(at: musicManager.estimatedPlaybackPosition(at: now))
+                        let next = activeIndex(at: musicManager.smoothedPlaybackPosition(at: now))
                         if next != activeLineIndex {
-                            activeLineIndex = next
+                            activateLine(next, at: now)
+                        }
+                        if !settlingLines.isEmpty {
+                            let cutoff = Self.settleDuration + 0.08
+                            let remaining = settlingLines.filter { now.timeIntervalSince($0.value) < cutoff }
+                            if remaining.count != settlingLines.count {
+                                settlingLines = remaining
+                            }
                         }
                     }
             }
         )
         .onAppear {
-            activeLineIndex = activeIndex(at: musicManager.estimatedPlaybackPosition())
+            settlingLines.removeAll()
+            activeLineIndex = activeIndex(at: musicManager.smoothedPlaybackPosition())
         }
         .onChange(of: musicManager.timestampDate) { _, _ in
-            let next = activeIndex(at: musicManager.estimatedPlaybackPosition())
+            let now = Date()
+            let next = activeIndex(at: musicManager.smoothedPlaybackPosition(at: now))
             if next != activeLineIndex {
-                activeLineIndex = next
+                activateLine(next, at: now)
             }
         }
         .onChange(of: lines.count) { _, _ in
-            activeLineIndex = activeIndex(at: musicManager.estimatedPlaybackPosition())
+            settlingLines.removeAll()
+            activeLineIndex = activeIndex(at: musicManager.smoothedPlaybackPosition())
         }
         .onPreferenceChange(LyricLineHeightsKey.self) { heights = $0 }
+    }
+
+    private func activateLine(_ next: Int, at now: Date) {
+        let previous = activeLineIndex
+        if isSynced, lines.indices.contains(previous), !lines[previous].isInterlude, abs(next - previous) <= 3 {
+            settlingLines[previous] = now
+        } else {
+            settlingLines.removeAll()
+        }
+        settlingLines.removeValue(forKey: next)
+        activeLineIndex = next
     }
 
     private func list(active: Int, size: CGSize) -> some View {
@@ -9604,6 +9690,7 @@ private struct LockScreenFullLyricsView: View {
             }
         }
         let shift = size.height * 0.16 - (tops.indices.contains(active) ? tops[active] : 0)
+        let creditsTop = y
 
         return ZStack(alignment: .topLeading) {
             ForEach(lines) { line in
@@ -9611,6 +9698,15 @@ private struct LockScreenFullLyricsView: View {
                     .offset(x: Self.edgeMargin, y: tops[line.id] + shift)
                     .animation(
                         .spring(response: 0.7, dampingFraction: 0.86).delay(waveDelay(for: line.id, active: active)),
+                        value: active
+                    )
+            }
+            if !musicManager.lyricsSongwriters.isEmpty {
+                creditsRow(width: max(0, size.width - 2 * Self.edgeMargin))
+                    .opacity(lines.count - 1 - active <= 14 ? 1 : 0)
+                    .offset(x: Self.edgeMargin, y: creditsTop + shift + 6)
+                    .animation(
+                        .spring(response: 0.7, dampingFraction: 0.86).delay(waveDelay(for: lines.count, active: active)),
                         value: active
                     )
             }
@@ -9629,6 +9725,17 @@ private struct LockScreenFullLyricsView: View {
                 endPoint: .bottom
             )
         )
+    }
+
+    /// "Written by" after the last line, as Apple Music ends its lyrics
+    private func creditsRow(width: CGFloat) -> some View {
+        let names = musicManager.lyricsSongwriters.formatted(.list(type: .and))
+        return Text(String(localized: "Written by: \(names)"))
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.45))
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: width, alignment: .leading)
     }
 
     @ViewBuilder
@@ -9655,21 +9762,25 @@ private struct LockScreenFullLyricsView: View {
         let isActive = distance == 0
         let isVisible = distance >= -4 && distance <= 14
         let isHovered = hoveredLine == line.id && line.time != nil
+        let restOpacity = isHovered ? 0.75 : inactiveOpacity(distance)
+        let deactivatedAt = isActive ? nil : settlingLines[line.id]
         let text = line.text.isEmpty ? "♪" : line.text
 
         Group {
-            if isActive && isSynced, let start = line.time {
+            if (isActive || deactivatedAt != nil) && isSynced, let start = line.time {
                 LockScreenKaraokeLine(
                     text: text,
                     start: start,
                     end: lineEnd(after: line.id, start: start),
                     words: line.words,
-                    fontSize: Self.fontSize
+                    fontSize: Self.fontSize,
+                    deactivatedAt: deactivatedAt,
+                    restOpacity: restOpacity
                 )
             } else {
                 Text(text)
                     .font(.system(size: Self.fontSize, weight: .bold))
-                    .foregroundStyle(.white.opacity(isActive ? 1 : (isHovered ? 0.75 : inactiveOpacity(distance))))
+                    .foregroundStyle(.white.opacity(isActive ? 1 : restOpacity))
             }
         }
         .multilineTextAlignment(.leading)
@@ -9735,41 +9846,130 @@ private struct LockScreenFullLyricsView: View {
     }
 }
 
-/// The active line, lit word by word.
+/// The active line (or a just-finished line settling back to rest), lit word by word.
 private struct LockScreenKaraokeLine: View {
     @ObservedObject private var musicManager = MusicManager.shared
+    @Default(.lockScreenFullScreenLetterAnimation) private var animateLetters
     let text: String
     let start: Double
     let end: Double
     /// Real timing (Apple Music, or LRCLIB word sync); empty when only lines are timed, where it is estimated
     var words: [TimedLyricWord] = []
     let fontSize: CGFloat
+    /// Non-nil once the next line takes over: lifted letters, swell and brightness ease smoothly down to rest
+    var deactivatedAt: Date? = nil
+    var restOpacity: Double = 0.32
+
+    fileprivate struct Piece {
+        let begin: Double
+        let end: Double
+        let emphasis: Double
+        let followedBySpace: Bool
+    }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !musicManager.isPlaying)) { context in
-            let elapsed = musicManager.estimatedPlaybackPosition(at: context.date)
-            (words.isEmpty ? estimatedText(at: elapsed) : timedText(at: elapsed))
-                .font(.system(size: fontSize, weight: .bold))
+        let timedPieces = words.isEmpty ? estimatedWords : words
+        let isPaused = !musicManager.isPlaying && deactivatedAt == nil
+        if #available(macOS 15.0, *) {
+            // Lines timed only as a whole get estimated word times: they rise too, but never swell,
+            // since how long a word is held is unknown
+            let pieces = timedPieces.map { word in
+                Piece(
+                    begin: word.begin,
+                    end: word.end,
+                    emphasis: (words.isEmpty || !animateLetters) ? 0 : Self.emphasis(of: word),
+                    followedBySpace: word.followedBySpace
+                )
+            }
+            let renderedText = Self.taggedText(timedPieces)
+            TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: isPaused)) { context in
+                let elapsed = musicManager.smoothedPlaybackPosition(at: context.date)
+                let settle = Self.settleProgress(deactivatedAt: deactivatedAt, now: context.date)
+                renderedText
+                    .font(.system(size: fontSize, weight: .bold))
+                    .textRenderer(KaraokeGlyphRenderer(
+                        pieces: pieces,
+                        elapsed: elapsed,
+                        settle: settle,
+                        restOpacity: restOpacity,
+                        fontSize: fontSize,
+                        animateLetters: animateLetters
+                    ))
+            }
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { context in
+                let elapsed = musicManager.smoothedPlaybackPosition(at: context.date)
+                let settle = Self.settleProgress(deactivatedAt: deactivatedAt, now: context.date)
+                (words.isEmpty ? estimatedText(at: elapsed, settle: settle) : timedText(at: elapsed, settle: settle))
+                    .font(.system(size: fontSize, weight: .bold))
+            }
         }
     }
 
-    /// Each word or syllable lights up over its exact time
-    private func timedText(at elapsed: Double) -> Text {
+    private static func settleProgress(deactivatedAt: Date?, now: Date) -> Double {
+        guard let deactivatedAt else { return 0 }
+        let t = min(1, max(0, now.timeIntervalSince(deactivatedAt) / LockScreenFullLyricsView.settleDuration))
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Every word or syllable tagged with its index, with spaces outside the tag so trailing spaces never
+    /// consume sweep width or syllable duration
+    @available(macOS 15.0, *)
+    private static func taggedText(_ pieces: [TimedLyricWord]) -> Text {
+        pieces.indices.reduce(Text(verbatim: "")) { result, index in
+            let wordText = Text(verbatim: pieces[index].text)
+                .customAttribute(KaraokeWordAttribute(index: index))
+            let space = pieces[index].followedBySpace && index < pieces.count - 1
+                ? Text(verbatim: " ")
+                : Text(verbatim: "")
+            return result + wordText + space
+        }
+    }
+
+    /// The words of a line timed only as a whole, spread like `estimatedText`
+    private var estimatedWords: [TimedLyricWord] {
+        let parts = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard !parts.isEmpty else { return [] }
+        let sungDuration = Self.sungDuration(text: text, gap: end - start)
+        let weights = parts.map { Double($0.count) + 1.5 }
+        let total = weights.reduce(0, +)
+        var cursor = start
+        return parts.enumerated().map { index, part in
+            let duration = sungDuration * weights[index] / total
+            defer { cursor += duration }
+            return TimedLyricWord(begin: cursor, end: cursor + duration, text: part, followedBySpace: true)
+        }
+    }
+
+    /// How much a word or syllable swells, from how long it is sung: barely for a quick one, fully from
+    /// about 1.8 s, like Apple Music
+    private static func emphasis(of word: TimedLyricWord) -> Double {
+        let t = min(1, max(0, (word.end - word.begin - 0.35) / 1.45))
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Each word or syllable lights up over its exact time (macOS 14 fallback)
+    private func timedText(at elapsed: Double, settle: Double) -> Text {
         var result = Text(verbatim: "")
         for (index, word) in words.enumerated() {
             let progress = min(1, max(0, (elapsed - word.begin) / max(0.05, word.end - word.begin)))
+            let activeAlpha = 0.38 + 0.62 * progress
+            let opacity = activeAlpha + (restOpacity - activeAlpha) * settle
             let spacer = word.followedBySpace && index < words.count - 1 ? " " : ""
             result = result + Text(verbatim: word.text + spacer)
-                .foregroundColor(.white.opacity(0.38 + 0.62 * progress))
+                .foregroundColor(.white.opacity(opacity))
         }
         return result
     }
 
     /// Most LRCLIB entries only time whole lines, so the line is spread over its words, weighted by their length, to
     /// estimate when each one is sung. A line is usually sung faster than the gap before the next one.
-    private func estimatedText(at elapsed: Double) -> Text {
+    private func estimatedText(at elapsed: Double, settle: Double) -> Text {
         let words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        guard !words.isEmpty else { return Text(verbatim: text).foregroundColor(.white) }
+        guard !words.isEmpty else {
+            let opacity = 1 + (restOpacity - 1) * settle
+            return Text(verbatim: text).foregroundColor(.white.opacity(opacity))
+        }
         let sungDuration = Self.sungDuration(text: text, gap: end - start)
         let weights = words.map { Double($0.count) + 1.5 }
         let total = weights.reduce(0, +)
@@ -9779,8 +9979,10 @@ private struct LockScreenKaraokeLine: View {
         for (index, word) in words.enumerated() {
             let wordDuration = sungDuration * weights[index] / total
             let progress = min(1, max(0, (elapsed - cursor) / max(0.08, wordDuration)))
+            let activeAlpha = 0.38 + 0.62 * progress
+            let opacity = activeAlpha + (restOpacity - activeAlpha) * settle
             let piece = Text(verbatim: index == 0 ? word : " " + word)
-                .foregroundColor(.white.opacity(0.38 + 0.62 * progress))
+                .foregroundColor(.white.opacity(opacity))
             result = result + piece
             cursor += wordDuration
         }
@@ -9790,6 +9992,339 @@ private struct LockScreenKaraokeLine: View {
     /// Estimated time to sing a line: about 0.11 s per character, never more than most of the gap
     static func sungDuration(text: String, gap: Double) -> Double {
         min(max(0.4, gap) * 0.9, max(1.0, Double(text.count) * 0.11))
+    }
+}
+
+@available(macOS 15.0, *)
+private struct KaraokeWordAttribute: TextAttribute {
+    let index: Int
+}
+
+/// Draws the active line like Apple Music:
+/// - Each word (including multi-syllable words) is swept horizontally by a continuous linear gradient mask.
+/// - Each letter starts rising at its own ignition instant over a fixed ~0.6 s critically damped curve, so
+///   even fast 0.08 s syllables glide smoothly instead of snapping.
+/// - Held syllables swell and emit a single per-word glow with soft attack and soft release, and when the
+///   line ends all lifted letters settle smoothly back to the resting baseline.
+@available(macOS 15.0, *)
+private struct KaraokeGlyphRenderer: TextRenderer {
+    let pieces: [LockScreenKaraokeLine.Piece]
+    let elapsed: Double
+    let settle: Double
+    let restOpacity: Double
+    let fontSize: CGFloat
+    let animateLetters: Bool
+
+    private static let baseDimOpacity: Double = 0.38
+    private static let liftResponse: Double = 0.60
+    private static let swellAttackResponse: Double = 0.55
+    private static let swellReleaseResponse: Double = 0.60
+
+    private struct PreparedGlyph {
+        let slice: Text.Layout.RunSlice
+        let bounds: CGRect
+        let rise: CGFloat
+        let scale: CGFloat
+        let held: Double
+    }
+
+    private struct SyllableSegment {
+        let begin: Double
+        let end: Double
+        var minX: CGFloat
+        var maxX: CGFloat
+    }
+
+    /// Room for the lifted letters and their glow
+    var displayPadding: EdgeInsets {
+        let padding = fontSize * 0.6
+        return EdgeInsets(top: padding, leading: padding, bottom: padding, trailing: padding)
+    }
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        var totalGlyphs = Array(repeating: 0, count: pieces.count)
+        for line in layout {
+            for run in line {
+                if let index = run[KaraokeWordAttribute.self]?.index, totalGlyphs.indices.contains(index) {
+                    totalGlyphs[index] += run.count
+                }
+            }
+        }
+
+        let settleFactor = 1 - settle
+        let dimOpacity = Self.baseDimOpacity + (restOpacity - Self.baseDimOpacity) * settle
+        let litOpacity = 1 + (restOpacity - 1) * settle
+
+        var seenGlyphs = Array(repeating: 0, count: pieces.count)
+
+        for line in layout {
+            var clusterRuns: [(index: Int, run: Text.Layout.Run)] = []
+
+            for run in line {
+                guard let index = run[KaraokeWordAttribute.self]?.index, pieces.indices.contains(index) else {
+                    if !clusterRuns.isEmpty {
+                        drawCluster(clusterRuns, totalGlyphs: totalGlyphs, seenGlyphs: &seenGlyphs,
+                                    settleFactor: settleFactor, dimOpacity: dimOpacity, litOpacity: litOpacity,
+                                    in: &context)
+                        clusterRuns.removeAll(keepingCapacity: true)
+                    }
+                    var spaceCtx = context
+                    spaceCtx.opacity = dimOpacity
+                    spaceCtx.draw(run)
+                    continue
+                }
+
+                if let last = clusterRuns.last {
+                    let continuesSamePiece = index == last.index
+                    let continuesMultiSyllableWord = index == last.index + 1 && !pieces[last.index].followedBySpace
+                    if !continuesSamePiece && !continuesMultiSyllableWord {
+                        drawCluster(clusterRuns, totalGlyphs: totalGlyphs, seenGlyphs: &seenGlyphs,
+                                    settleFactor: settleFactor, dimOpacity: dimOpacity, litOpacity: litOpacity,
+                                    in: &context)
+                        clusterRuns.removeAll(keepingCapacity: true)
+                    }
+                }
+                clusterRuns.append((index, run))
+            }
+
+            if !clusterRuns.isEmpty {
+                drawCluster(clusterRuns, totalGlyphs: totalGlyphs, seenGlyphs: &seenGlyphs,
+                            settleFactor: settleFactor, dimOpacity: dimOpacity, litOpacity: litOpacity,
+                            in: &context)
+            }
+        }
+    }
+
+    private func drawCluster(
+        _ runs: [(index: Int, run: Text.Layout.Run)],
+        totalGlyphs: [Int],
+        seenGlyphs: inout [Int],
+        settleFactor: Double,
+        dimOpacity: Double,
+        litOpacity: Double,
+        in context: inout GraphicsContext
+    ) {
+        var glyphs: [PreparedGlyph] = []
+        var segments: [SyllableSegment] = []
+        var currentSegIndex: Int?
+        var currentSegStartOffset = 0
+        var currentSegCount = 0
+        var currentSegMinX: CGFloat = .infinity
+        var currentSegMaxX: CGFloat = -.infinity
+        var maxHeld: Double = 0
+
+        func flushSegment() {
+            guard let idx = currentSegIndex, currentSegCount > 0 else { return }
+            let piece = pieces[idx]
+            let total = Double(max(1, totalGlyphs[idx]))
+            let duration = max(0.02, piece.end - piece.begin)
+            let segBegin = piece.begin + (Double(currentSegStartOffset) / total) * duration
+            let segEnd = piece.begin + (Double(currentSegStartOffset + currentSegCount) / total) * duration
+            segments.append(SyllableSegment(
+                begin: segBegin,
+                end: max(segBegin + 0.01, segEnd),
+                minX: currentSegMinX,
+                maxX: max(currentSegMinX + 0.5, currentSegMaxX)
+            ))
+        }
+
+        for (index, run) in runs {
+            if currentSegIndex != index {
+                flushSegment()
+                currentSegIndex = index
+                currentSegStartOffset = seenGlyphs[index]
+                currentSegCount = 0
+                currentSegMinX = .infinity
+                currentSegMaxX = -.infinity
+            }
+
+            let piece = pieces[index]
+            let count = Double(max(1, totalGlyphs[index]))
+            let duration = max(0.02, piece.end - piece.begin)
+
+            for slice in run {
+                let position = Double(seenGlyphs[index])
+                seenGlyphs[index] += 1
+                currentSegCount += 1
+
+                let bounds = slice.typographicBounds.rect
+                currentSegMinX = min(currentSegMinX, bounds.minX)
+                currentSegMaxX = max(currentSegMaxX, bounds.maxX)
+
+                let fraction = position / count
+                let glyphStart = piece.begin + fraction * duration
+                let raised = animateLetters
+                    ? Self.criticallyDamped(elapsed - glyphStart, response: Self.liftResponse) * settleFactor
+                    : 0
+
+                let held: Double
+                if animateLetters, piece.emphasis > 0, elapsed > glyphStart {
+                    let attack = Self.criticallyDamped(elapsed - glyphStart, response: Self.swellAttackResponse)
+                    let releaseStart = max(glyphStart + 0.22, piece.end - 0.16 + 0.12 * fraction)
+                    let release = 1 - Self.criticallyDamped(elapsed - releaseStart, response: Self.swellReleaseResponse)
+                    held = piece.emphasis * attack * release * settleFactor
+                } else {
+                    held = 0
+                }
+
+                if held > maxHeld { maxHeld = held }
+                let rise = fontSize * CGFloat(0.06 * raised + 0.10 * held)
+                let scale = 1 + CGFloat(0.10 * held)
+                glyphs.append(PreparedGlyph(slice: slice, bounds: bounds, rise: rise, scale: scale, held: held))
+            }
+        }
+        flushSegment()
+
+        guard !glyphs.isEmpty, !segments.isEmpty else { return }
+
+        // Join adjacent syllable bounds seamlessly so a multi-syllable word sweeps with zero gap
+        if segments.count > 1 {
+            for i in 0..<(segments.count - 1) {
+                let join = 0.5 * (segments[i].maxX + segments[i + 1].minX)
+                segments[i].maxX = join
+                segments[i + 1].minX = join
+            }
+        }
+
+        let clusterMinX = segments[0].minX
+        let clusterMaxX = max(clusterMinX + 1, segments[segments.count - 1].maxX)
+        let sweep = Self.sweepFraction(elapsed: elapsed, segments: segments, minX: clusterMinX, maxX: clusterMaxX)
+
+        // Unsung word: draw directly without offscreen layers
+        if sweep <= 0, maxHeld <= 0.01 {
+            var dimmed = context
+            dimmed.opacity = dimOpacity
+            for (_, run) in runs {
+                dimmed.draw(run)
+            }
+            return
+        }
+
+        // Single per-word glow pass when a held syllable is active (avoids per-glyph shadow blurs at 60 Hz)
+        if maxHeld > 0.015 {
+            var glowContext = context
+            glowContext.addFilter(.shadow(
+                color: .white.opacity(0.6 * maxHeld),
+                radius: fontSize * 0.3 * CGFloat(maxHeld),
+                x: 0,
+                y: 0,
+                options: .shadowOnly
+            ))
+            glowContext.drawLayer { glowLayer in
+                for glyph in glyphs where glyph.held > 0.01 {
+                    var sliceCtx = glowLayer
+                    sliceCtx.opacity = min(1, glyph.held / maxHeld)
+                    Self.drawTransformed(glyph, in: &sliceCtx)
+                }
+            }
+        }
+
+        // Fully sung word (or settling after completion): draw transformed glyphs directly
+        if sweep >= 1 || abs(litOpacity - dimOpacity) < 0.002 {
+            for glyph in glyphs {
+                var sliceCtx = context
+                sliceCtx.opacity = litOpacity
+                Self.drawTransformed(glyph, in: &sliceCtx)
+            }
+            return
+        }
+
+        // Active sweep: draw the dimmed run first, then mask the bright run with a continuous linear gradient
+        var unionRect = glyphs[0].bounds
+        for glyph in glyphs {
+            unionRect = unionRect.union(glyph.bounds)
+            var dimmed = context
+            dimmed.opacity = dimOpacity
+            Self.drawTransformed(glyph, in: &dimmed)
+        }
+
+        let width = clusterMaxX - clusterMinX
+        let feather = max(fontSize * 0.55, min(fontSize * 1.3, width * 0.5))
+        let edgeStart = (clusterMinX - feather) + CGFloat(sweep) * (width + feather)
+        let edgeEnd = edgeStart + feather
+
+        let maskMinX = min(unionRect.minX - fontSize * 0.6, edgeStart - 4)
+        let maskMaxX = max(unionRect.maxX + fontSize * 0.6, edgeEnd + 4)
+        let maskRect = CGRect(
+            x: maskMinX,
+            y: unionRect.minY - fontSize * 0.8,
+            width: max(1, maskMaxX - maskMinX),
+            height: unionRect.height + fontSize * 1.6
+        )
+        let s0 = Double((edgeStart - maskRect.minX) / maskRect.width)
+        let s1 = Double((edgeEnd - maskRect.minX) / maskRect.width)
+        let overlayAlpha = max(0, min(1, (litOpacity - dimOpacity) / max(0.01, 1 - dimOpacity)))
+
+        context.drawLayer { layer in
+            for glyph in glyphs {
+                var bright = layer
+                bright.opacity = overlayAlpha
+                Self.drawTransformed(glyph, in: &bright)
+            }
+            var mask = layer
+            mask.blendMode = .destinationIn
+            mask.fill(
+                Path(maskRect),
+                with: .linearGradient(
+                    Gradient(stops: [
+                        .init(color: .white, location: max(0, s0)),
+                        .init(color: .white.opacity(0.74), location: max(0, min(1, s0 + (s1 - s0) * 0.33))),
+                        .init(color: .white.opacity(0.26), location: max(0, min(1, s0 + (s1 - s0) * 0.67))),
+                        .init(color: .clear, location: min(1, s1))
+                    ]),
+                    startPoint: CGPoint(x: maskRect.minX, y: maskRect.midY),
+                    endPoint: CGPoint(x: maskRect.maxX, y: maskRect.midY)
+                )
+            )
+        }
+    }
+
+    private static func drawTransformed(_ glyph: PreparedGlyph, in context: inout GraphicsContext) {
+        if glyph.rise > 0.01 || glyph.scale > 1.001 {
+            context.translateBy(x: glyph.bounds.midX, y: glyph.bounds.maxY - glyph.rise)
+            context.scaleBy(x: glyph.scale, y: glyph.scale)
+            context.translateBy(x: -glyph.bounds.midX, y: -glyph.bounds.maxY)
+        }
+        context.draw(glyph.slice)
+    }
+
+    private static func sweepFraction(
+        elapsed: Double,
+        segments: [SyllableSegment],
+        minX: CGFloat,
+        maxX: CGFloat
+    ) -> Double {
+        guard let first = segments.first, let last = segments.last else { return 0 }
+        if elapsed <= first.begin { return 0 }
+        if elapsed >= last.end { return 1 }
+
+        var cursorX = last.maxX
+        for segment in segments {
+            if elapsed < segment.begin {
+                cursorX = segment.minX
+                break
+            }
+            if elapsed <= segment.end {
+                let p = (elapsed - segment.begin) / max(0.01, segment.end - segment.begin)
+                cursorX = segment.minX + CGFloat(p) * (segment.maxX - segment.minX)
+                break
+            }
+        }
+        return min(1, max(0, Double((cursorX - minX) / max(1, maxX - minX))))
+    }
+
+    /// Closed-form critically damped spring (`damping = 1.0`, zero bounce, `f'(0) = 0`) settling in `response` s
+    private static func criticallyDamped(_ dt: Double, response: Double) -> Double {
+        guard dt > 0 else { return 0 }
+        if dt >= response * 1.35 { return 1 }
+        let u = (dt / response) * 6.0
+        let raw = 1 - (1 + u) * exp(-u)
+        // Smoothly close the final ~0.8% tail between 1.0x and 1.35x response so settled letters rest at 1.0
+        if dt > response {
+            let tail = (dt - response) / (response * 0.35)
+            return raw + (1 - raw) * tail * tail * (3 - 2 * tail)
+        }
+        return raw
     }
 }
 
@@ -9805,7 +10340,7 @@ private struct LockScreenInterludeDots: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isActive || !musicManager.isPlaying)) { context in
-            let elapsed = musicManager.estimatedPlaybackPosition(at: context.date)
+            let elapsed = musicManager.smoothedPlaybackPosition(at: context.date)
             let progress = min(1, max(0, (elapsed - start) / max(0.5, end - start)))
             let exit = min(1, max(0, (end - elapsed) / 0.45))
             let breathe = 1 + 0.07 * sin(context.date.timeIntervalSinceReferenceDate * 2.6)

@@ -42,6 +42,12 @@ class MusicManager: ObservableObject {
     @Published var elapsedTime: TimeInterval = 0
     @Published var timestampDate: Date = .init()
     @Published var playbackRate: Double = 1
+    /// Drift offset absorbed smoothly by `smoothedPlaybackPosition(at:)` so periodic player resyncs never
+    /// make word-timed lyrics jump backwards or snap forward
+    private var lyricsClockOffset: TimeInterval = 0
+    private var lyricsClockAnchor: Date = .distantPast
+    private var lyricsClockTau: TimeInterval = 0.4
+    private var explicitSeekUntil: Date = .distantPast
     @Published var isShuffled: Bool = false
     @Published var repeatMode: RepeatMode = .off
     @Published var volume: Double = 0.5
@@ -55,6 +61,9 @@ class MusicManager: ObservableObject {
     /// word. Empty when only lines are timed.
     @Published var timedLyrics: [TimedLyricLine] = []
     private var timedLyricsCache: [String: [TimedLyricLine]] = [:]
+    /// "Written by" credits of the song (Apple Music lyrics only), shown after the last line
+    @Published var lyricsSongwriters: [String] = []
+    private var songwritersCache: [String: [String]] = [:]
     /// Skipping tracks starts overlapping lookups: only the latest one may publish its result.
     private var lyricsRequestID = 0
     /// Track whose lyrics are loaded or being looked up, so the same track is never searched twice.
@@ -199,6 +208,11 @@ class MusicManager: ObservableObject {
     // MARK: - Update Methods
     @MainActor
     private func updateFromPlaybackState(_ state: PlaybackState) {
+        let now = Date()
+        let wasPlaying = self.isPlaying
+        let previousTimestamp = self.timestampDate
+        let previousSmooth = smoothedPlaybackPosition(at: now)
+
         // Check for playback state changes (playing/paused)
         if state.isPlaying != self.isPlaying {
             NSLog("Playback state changed: \(state.isPlaying ? "Playing" : "Paused")")
@@ -315,6 +329,24 @@ class MusicManager: ObservableObject {
         }
         
         self.timestampDate = state.lastUpdated
+
+        if hasContentChange || !state.isPlaying || !wasPlaying || now < self.explicitSeekUntil {
+            self.lyricsClockOffset = 0
+        } else if timeChanged || state.lastUpdated != previousTimestamp || playbackRateChanged {
+            let newRaw = estimatedPlaybackPosition(at: now)
+            let delta = previousSmooth - newRaw
+            if abs(delta) > 2.0 {
+                // Intentional scrub or restart in the player: snap immediately
+                self.lyricsClockOffset = 0
+            } else if abs(delta) > 0.004 {
+                self.lyricsClockOffset = delta
+                self.lyricsClockAnchor = now
+                let rate = max(0.1, state.playbackRate)
+                // When raw jumped backwards (delta > 0), stretch tau so d(smooth)/dt >= 0.25 * rate > 0:
+                // the lyrics clock never goes backwards and glides smoothly back into sync.
+                self.lyricsClockTau = delta > 0 ? max(0.45, delta / (0.75 * rate)) : 0.35
+            }
+        }
     }
 
     func toggleFavoriteTrack() {
@@ -381,6 +413,7 @@ class MusicManager: ObservableObject {
     func reloadLyricsForNewSource() {
         lyricsCache.removeAll()
         timedLyricsCache.removeAll()
+        songwritersCache.removeAll()
         lyricsTrackKey = nil
         refreshLyrics()
     }
@@ -397,6 +430,7 @@ class MusicManager: ObservableObject {
                 self.currentLyrics = ""
                 self.syncedLyrics = []
                 self.timedLyrics = []
+                self.lyricsSongwriters = []
             }
             return
         }
@@ -425,6 +459,7 @@ class MusicManager: ObservableObject {
             currentLyrics = cached.plain
             syncedLyrics = cached.synced
             timedLyrics = timedLyricsCache[key] ?? []
+            lyricsSongwriters = songwritersCache[key] ?? []
             isFetchingLyrics = false
             return
         }
@@ -433,6 +468,7 @@ class MusicManager: ObservableObject {
         currentLyrics = ""
         syncedLyrics = []
         timedLyrics = []
+        lyricsSongwriters = []
         lyricsLookupFailed = false
 
         // 0. Apple Music lyrics when chosen in the settings: the real timing of every word
@@ -440,9 +476,11 @@ class MusicManager: ObservableObject {
             ? await NowPlayingController.fetchMusicCatalogID(title: title)
             : nil
         guard requestID == lyricsRequestID else { return }
-        if let timed = await AppleMusicLyricsService.shared.lyrics(
-            title: title, artist: artist, duration: songDuration, catalogID: catalogID) {
+        if let apple = await AppleMusicLyricsService.shared.lyrics(
+            title: title, artist: artist, album: album, duration: songDuration, catalogID: catalogID) {
             guard requestID == lyricsRequestID else { return }
+            let timed = apple.lines
+            lyricsSongwriters = apple.songwriters
             if TimedLyricLine.areUntimed(timed) {
                 // Apple only has the text of this song: LRCLIB may still have it synced
                 await fetchLyricsFromWeb(title: title, artist: artist, requestID: requestID)
@@ -515,9 +553,11 @@ class MusicManager: ObservableObject {
         if lyricsCache.count >= 200 {
             lyricsCache.removeAll()
             timedLyricsCache.removeAll()
+            songwritersCache.removeAll()
         }
         lyricsCache[key] = (currentLyrics, syncedLyrics)
         timedLyricsCache[key] = timedLyrics.isEmpty ? nil : timedLyrics
+        songwritersCache[key] = lyricsSongwriters.isEmpty ? nil : lyricsSongwriters
     }
 
     private func normalizedQuery(_ string: String) -> String {
@@ -752,6 +792,17 @@ class MusicManager: ObservableObject {
         return min(max(0, estimated), songDuration)
     }
 
+    /// Monotonic, drift-smoothed playback clock for full-screen karaoke lyrics: absorbs periodic resyncs
+    /// progressively without ever stepping backwards, while still snapping on explicit seeks or track changes.
+    public func smoothedPlaybackPosition(at date: Date = Date()) -> TimeInterval {
+        let raw = estimatedPlaybackPosition(at: date)
+        guard isPlaying, lyricsClockOffset != 0 else { return raw }
+        let dt = max(0, date.timeIntervalSince(lyricsClockAnchor))
+        let decayed = lyricsClockOffset * exp(-dt / lyricsClockTau)
+        if abs(decayed) < 0.001 { return raw }
+        return min(max(0, raw + decayed), songDuration)
+    }
+
     func calculateAverageColor() {
         let image = albumArt
         image.averageColor { [weak self] color in
@@ -825,8 +876,14 @@ class MusicManager: ObservableObject {
     }
 
     func seek(to position: TimeInterval) {
+        let clamped = songDuration > 0 ? min(max(0, position), songDuration) : max(0, position)
+        let now = Date()
+        explicitSeekUntil = now.addingTimeInterval(0.8)
+        lyricsClockOffset = 0
+        elapsedTime = clamped
+        timestampDate = now
         Task {
-            await activeController?.seek(to: position)
+            await activeController?.seek(to: clamped)
         }
     }
     func skip(seconds: TimeInterval) {
