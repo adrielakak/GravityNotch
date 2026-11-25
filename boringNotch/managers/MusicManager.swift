@@ -436,7 +436,12 @@ class MusicManager: ObservableObject {
         lyricsLookupFailed = false
 
         // 0. Apple Music lyrics when chosen in the settings: the real timing of every word
-        if let timed = await AppleMusicLyricsService.shared.lyrics(title: title, artist: artist, duration: songDuration) {
+        let catalogID = bundleIdentifier == "com.apple.Music" && Defaults[.lyricsSource] == .appleMusic
+            ? await NowPlayingController.fetchMusicCatalogID(title: title)
+            : nil
+        guard requestID == lyricsRequestID else { return }
+        if let timed = await AppleMusicLyricsService.shared.lyrics(
+            title: title, artist: artist, duration: songDuration, catalogID: catalogID) {
             guard requestID == lyricsRequestID else { return }
             if TimedLyricLine.areUntimed(timed) {
                 // Apple only has the text of this song: LRCLIB may still have it synced

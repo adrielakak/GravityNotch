@@ -8750,30 +8750,24 @@ final class AppleMusicLyricsService: ObservableObject {
     // MARK: Lyrics
 
     /// Lyrics of the catalog song matching the track, word timed when Apple has it, nil otherwise.
-    func lyrics(title: String, artist: String, duration: Double) async -> [TimedLyricLine]? {
+    /// `catalogID` is the exact song Music plays (from MediaRemote): the text search below can pick
+    /// another version (remix, edit, live) or miss the song, then LRCLIB shows other lyrics.
+    func lyrics(title: String, artist: String, duration: Double, catalogID: String? = nil) async -> [TimedLyricLine]? {
         guard let userToken = currentUserToken() else { return nil }
         do {
             let storefront = try await currentStorefront(userToken: userToken)
+            if let catalogID, try await catalogSong(catalogID, isTitled: title, storefront: storefront) {
+                if let lines = try await fetchLyrics(songID: catalogID, storefront: storefront, userToken: userToken) {
+                    return lines
+                }
+                Self.logger.notice("Apple Music lyrics: none for the playing song, using LRCLIB")
+                return nil
+            }
             guard let songID = try await findSong(title: title, artist: artist, duration: duration, storefront: storefront) else {
                 Self.logger.notice("Apple Music lyrics: no catalog match, using LRCLIB")
                 return nil
             }
-            for kind in ["syllable-lyrics", "lyrics"] {
-                do {
-                    let data = try await request("/v1/catalog/\(storefront)/songs/\(songID)/\(kind)", userToken: userToken)
-                    if let ttml = Self.ttml(in: data) {
-                        let lines = AppleLyricsTTMLParser.parse(ttml)
-                        if !lines.isEmpty {
-                            let wordTimed = lines.contains { !$0.words.isEmpty }
-                            let declared = Self.matches(of: #"itunes:timing="[A-Za-z]+""#, in: ttml).first ?? "no timing attribute"
-                            Self.logger.notice("Apple Music lyrics: \(lines.count, privacy: .public) lines, \(kind, privacy: .public), word timed: \(wordTimed, privacy: .public), \(declared, privacy: .public)")
-                            return lines
-                        }
-                    }
-                } catch ServiceError.notFound {
-                    continue
-                }
-            }
+            return try await fetchLyrics(songID: songID, storefront: storefront, userToken: userToken)
         } catch ServiceError.unauthorized {
             Self.logger.error("Apple Music refused the session, signing out")
             rejectedUserToken = userToken
@@ -8782,6 +8776,42 @@ final class AppleMusicLyricsService: ObservableObject {
             Self.logger.error("Apple Music lyrics lookup failed: \(String(describing: error), privacy: .public)")
         }
         return nil
+    }
+
+    private func fetchLyrics(songID: String, storefront: String, userToken: String) async throws -> [TimedLyricLine]? {
+        for kind in ["syllable-lyrics", "lyrics"] {
+            do {
+                let data = try await request("/v1/catalog/\(storefront)/songs/\(songID)/\(kind)", userToken: userToken)
+                if let ttml = Self.ttml(in: data) {
+                    let lines = AppleLyricsTTMLParser.parse(ttml)
+                    if !lines.isEmpty {
+                        let wordTimed = lines.contains { !$0.words.isEmpty }
+                        let declared = Self.matches(of: #"itunes:timing="[A-Za-z]+""#, in: ttml).first ?? "no timing attribute"
+                        Self.logger.notice("Apple Music lyrics: \(lines.count, privacy: .public) lines, \(kind, privacy: .public), word timed: \(wordTimed, privacy: .public), \(declared, privacy: .public)")
+                        return lines
+                    }
+                }
+            } catch ServiceError.notFound {
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// A local file's identifier is not a catalog id: only trust the id when the catalog song has this title.
+    private func catalogSong(_ id: String, isTitled title: String, storefront: String) async throws -> Bool {
+        let data: Data
+        do {
+            data = try await request("/v1/catalog/\(storefront)/songs/\(id)", userToken: nil)
+        } catch ServiceError.notFound {
+            return false
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let attributes = (json["data"] as? [[String: Any]])?.first?["attributes"] as? [String: Any],
+              let name = attributes["name"] as? String else { return false }
+        let wanted = Self.normalized(title)
+        let found = Self.normalized(name)
+        return !found.isEmpty && (found == wanted || found.contains(wanted) || wanted.contains(found))
     }
 
     private static func ttml(in data: Data) -> String? {

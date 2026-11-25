@@ -316,6 +316,29 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
 
     // One-shot read of the current now playing state through the adapter ("get" instead of "stream").
     static func fetchCurrentPayload() async -> NowPlayingPayload? {
+        guard let data = await fetchCurrentJSON() else { return nil }
+        return try? JSONDecoder().decode(NowPlayingPayload.self, from: data)
+    }
+
+    /// Apple Music catalog id of the song Music is playing (MediaRemote's unique identifier), when the
+    /// now playing item is still the track titled `title`. Read loosely so an odd value never breaks decoding.
+    static func fetchMusicCatalogID(title: String) async -> String? {
+        guard let data = await fetchCurrentJSON(),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["title"] as? String == title,
+              ((json["parentApplicationBundleIdentifier"] ?? json["bundleIdentifier"]) as? String) == "com.apple.Music"
+        else { return nil }
+        let id: String?
+        switch json["uniqueIdentifier"] {
+        case let number as NSNumber: id = number.stringValue
+        case let string as String: id = string
+        default: id = nil
+        }
+        guard let id, id.count >= 6, id.allSatisfy(\.isNumber) else { return nil }
+        return id
+    }
+
+    private static func fetchCurrentJSON() async -> Data? {
         guard
             let scriptURL = Bundle.main.url(forResource: "mediaremote-adapter", withExtension: "pl"),
             let frameworkPath = Bundle.main.privateFrameworksPath?.appending("/MediaRemoteAdapter.framework")
@@ -337,7 +360,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
                 }
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                continuation.resume(returning: try? JSONDecoder().decode(NowPlayingPayload.self, from: data))
+                continuation.resume(returning: data.isEmpty ? nil : data)
             }
         }
     }
