@@ -92,7 +92,7 @@
     "docs.meta.title": "GravityNotch documentation",
     "docs.meta.desc": "Everything about GravityNotch: install, permissions, music, lyrics, lock screen, HUDs, tools, AI agents, privacy and troubleshooting.",
     "docs.tagline": "Documentation",
-    "docs.eyebrow": "Documentation · version 1.4",
+    "docs.eyebrow": "Documentation · version 1.6",
     "docs.title": `<span class="soft">Everything about</span> GravityNotch`,
     "docs.lede": "Install, permissions, every feature and every setting, what stays on your Mac and what goes over the Internet. For the curious, in plain words.",
     "docs.q1": "Install",
