@@ -493,6 +493,9 @@ struct HUD: View {
     @Default(.hudTapSafetyTimeout) var hudTapSafetyTimeout
     @Default(.showBluetoothAudioLiveActivity) var showBluetoothAudioLiveActivity
     @Default(.showListeningModeLiveActivity) var showListeningModeLiveActivity
+    @Default(.showFocusLiveActivity) var showFocusLiveActivity
+    @Default(.showUniversalClipboardLiveActivity) var showUniversalClipboardLiveActivity
+    @Default(.showInputSourceLiveActivity) var showInputSourceLiveActivity
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var mediaKeyInterceptor = MediaKeyInterceptor.shared
     @ObservedObject var bluetoothAudioManager = BluetoothAudioLiveActivityManager.shared
@@ -752,6 +755,35 @@ struct HUD: View {
                 Text("AirPods & Bluetooth")
             } footer: {
                 Text("Displays an animated Live Activity with battery rings in the notch when AirPods or Bluetooth headphones connect.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Defaults.Toggle(key: .showFocusLiveActivity) {
+                    Text("Show Focus mode changes")
+                }
+                Defaults.Toggle(key: .showUniversalClipboardLiveActivity) {
+                    Text("Show Universal Clipboard from iPhone")
+                }
+                Defaults.Toggle(key: .showInputSourceLiveActivity) {
+                    Text("Show keyboard language changes")
+                }
+                HStack(spacing: 10) {
+                    Button("Preview Focus Animation") {
+                        SystemNotificationMonitor.shared.previewFocus()
+                    }
+                    .disabled(!showFocusLiveActivity)
+
+                    Button("Preview Universal Clipboard") {
+                        SystemNotificationMonitor.shared.previewUniversalClipboard()
+                    }
+                    .disabled(!showUniversalClipboardLiveActivity)
+                }
+            } header: {
+                Text("System Notifications")
+            } footer: {
+                Text("Shows discreet Dynamic Island animations for Focus modes, Handoff clipboard copies from iPhone or iPad, and keyboard input switches without requiring extra permissions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

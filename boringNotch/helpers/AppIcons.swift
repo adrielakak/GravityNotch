@@ -9,6 +9,7 @@ import SwiftUI
 import AppKit
 import ApplicationServices
 import AVFoundation
+import Carbon.HIToolbox
 import Combine
 import CoreAudio
 import Defaults
@@ -16,6 +17,7 @@ import IOKit.pwr_mgt
 import OSLog
 import Security
 import Sparkle
+import SQLite3
 import WebKit
 
 struct AppIcons {
@@ -1363,7 +1365,7 @@ enum SystemLogStream {
     wait $L
     """
 
-    private static let orphanPattern = #"^/usr/bin/log stream --style ndjson --level default --predicate .*(listening mode|transition info)"#
+    private static let orphanPattern = #"^/usr/bin/log stream --style ndjson --level default --predicate .*(listening mode|transition info|FocusModeSystemBannerContent|active focus activity)"#
 
     static func makeProcess(predicate: String) -> Process {
         let proc = Process()
@@ -1477,15 +1479,27 @@ final class AirPodsListeningModeMonitor: ObservableObject {
 
     private init() {}
 
+    private var shouldRunStream: Bool {
+        Defaults[.showListeningModeLiveActivity]
+            || Defaults[.showFocusLiveActivity]
+            || Defaults[.showBluetoothAudioLiveActivity]
+    }
+
     func start() {
         guard !started else { return }
         started = true
-        Defaults.publisher(.showListeningModeLiveActivity)
+        Defaults.publisher(keys: .showListeningModeLiveActivity, .showFocusLiveActivity, .showBluetoothAudioLiveActivity)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] change in
-                if change.newValue { self?.launchStream() } else { self?.stopStream() }
+            .sink { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.shouldRunStream { self.launchStream() } else { self.stopStream() }
+                }
             }
             .store(in: &cancellables)
+        if shouldRunStream {
+            launchStream()
+        }
         NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
             .sink { [weak self] _ in self?.stopStream() }
             .store(in: &cancellables)
@@ -1501,7 +1515,7 @@ final class AirPodsListeningModeMonitor: ObservableObject {
         restartTask?.cancel()
         SystemLogStream.killOrphansOnce()
         let proc = SystemLogStream.makeProcess(
-            predicate: #"(process == "ControlCenter" AND (category == "sound" OR category == "system-banners") AND eventMessage CONTAINS "listening mode") OR (process == "heard" AND eventMessage BEGINSWITH "Changed listening mode ")"#
+            predicate: #"(process == "ControlCenter" AND ((category == "sound" OR category == "system-banners") AND eventMessage CONTAINS "listening mode")) OR (process == "heard" AND eventMessage BEGINSWITH "Changed listening mode ") OR (process == "ControlCenter" AND (eventMessage CONTAINS "FocusModeSystemBannerContent" OR eventMessage CONTAINS "active focus activity")) OR (process == "ControlCenter" AND eventMessage CONTAINS "smart routing low battery")"#
         )
         let pipe = Pipe()
         proc.standardOutput = pipe
@@ -1551,10 +1565,10 @@ final class AirPodsListeningModeMonitor: ObservableObject {
         guard ended === process else { return }
         process = nil
         pending.removeAll()
-        guard Defaults[.showListeningModeLiveActivity] else { return }
+        guard shouldRunStream else { return }
         quickExits = Date().timeIntervalSince(launchedAt) < 5 ? quickExits + 1 : 0
         guard quickExits < 5 else {
-            Self.logger.error("log stream keeps exiting (status \(ended.terminationStatus, privacy: .public)), listening mode detection disabled")
+            Self.logger.error("log stream keeps exiting (status \(ended.terminationStatus, privacy: .public)), ControlCenter stream disabled")
             return
         }
         restartTask = Task { [weak self] in
@@ -1570,7 +1584,11 @@ final class AirPodsListeningModeMonitor: ObservableObject {
             let line = pending[pending.startIndex..<newline]
             pending.removeSubrange(pending.startIndex...newline)
             guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let message = object["eventMessage"] as? String,
+                  let message = object["eventMessage"] as? String else { continue }
+            if SystemNotificationMonitor.shared.consumeControlCenterLog(message) {
+                continue
+            }
+            guard Defaults[.showListeningModeLiveActivity],
                   let (mode, appleBannerShown) = Self.parse(message) else { continue }
             if appleBannerShown && BoringViewModel.openNotchCount == 0 && Defaults[.showListeningModeLiveActivity] {
                 BluetoothBannerSuppressor.shared.hideListeningModeBannerSoon()
@@ -2080,8 +2098,13 @@ struct ListeningModeClosedNotchView: View {
     @ObservedObject var bluetooth = BluetoothAudioLiveActivityManager.shared
     let closedHeight: CGFloat
     let centerSpacerWidth: CGFloat
+    var isHovered: Bool = false
 
-    static let wingWidth: CGFloat = 122
+    static let expandedWingWidth: CGFloat = 128
+
+    static func compactWingWidth(closedHeight: CGFloat) -> CGFloat {
+        closedHeight > 0 ? max(24, closedHeight - 6) : 26
+    }
 
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2092,27 +2115,48 @@ struct ListeningModeClosedNotchView: View {
 
     var body: some View {
         let mode = monitor.mode
+        let deviceName = bluetooth.currentDevice?.name ?? "AirPods"
+        let wingWidth = isHovered ? Self.expandedWingWidth : Self.compactWingWidth(closedHeight: closedHeight)
+
         HStack(spacing: 0) {
-            Image(systemName: bluetooth.currentDevice?.modelKind.symbolName ?? "airpodspro")
-                .font(.system(size: 16, weight: .regular))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.white)
-                .frame(width: 18, height: 18)
-                .padding(.leading, 6)
-                .frame(width: Self.wingWidth, height: earHeight, alignment: .leading)
-                .offset(x: appeared || reduceMotion ? 0 : 4)
+            HStack(spacing: 6) {
+                Image(systemName: bluetooth.currentDevice?.modelKind.symbolName ?? "airpodspro")
+                    .font(.system(size: 15.5, weight: .regular))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+
+                if isHovered {
+                    Text(deviceName)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .tracking(-0.1)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .truncationMode(.tail)
+                        .transition(.opacity.combined(with: .offset(x: -4)))
+                }
+            }
+            .padding(.leading, 4)
+            .frame(width: wingWidth, height: earHeight, alignment: .leading)
+            .clipped()
+            .offset(x: appeared || reduceMotion ? 0 : 4)
 
             Rectangle()
                 .fill(.black)
                 .frame(width: closedHeight > 0 ? max(20, centerSpacerWidth) : 18)
 
             HStack(spacing: 6) {
-                Text(mode.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .tracking(-0.1)
-                    .foregroundStyle(mode.tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                if isHovered {
+                    Text(mode.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .tracking(-0.1)
+                        .foregroundStyle(mode.tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .transition(.opacity.combined(with: .offset(x: 4)))
+                }
+
                 Image(systemName: mode.symbolName)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(mode.tint)
@@ -2122,19 +2166,511 @@ struct ListeningModeClosedNotchView: View {
                         view.symbolEffect(.bounce, value: monitor.animationNonce)
                     }
             }
-            .padding(.trailing, 6)
-            .frame(width: Self.wingWidth, height: earHeight, alignment: .trailing)
+            .padding(.trailing, 4)
+            .frame(width: wingWidth, height: earHeight, alignment: .trailing)
+            .clipped()
             .offset(x: appeared || reduceMotion ? 0 : -4)
         }
         .frame(height: earHeight, alignment: .center)
         .opacity(appeared ? 1 : 0)
+        .animation(.spring(response: 0.36, dampingFraction: 0.88), value: isHovered)
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: mode)
+        .help("\(deviceName) · \(mode.title)")
         .onAppear {
             guard !reduceMotion else {
                 appeared = true
                 return
             }
             withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
+                appeared = true
+            }
+        }
+    }
+}
+
+// MARK: - System Notifications (Discreet Focus Indicator, Universal Clipboard, Input Source & Accessory Battery)
+
+@MainActor
+final class SystemNotificationMonitor: ObservableObject {
+    static let shared = SystemNotificationMonitor()
+
+    struct ActiveFocus: Equatable {
+        let name: String
+        let symbol: String
+        let tint: Color
+    }
+
+    struct NotificationItem: Equatable {
+        let leadingSymbol: String
+        let leadingTitle: String
+        let leadingTint: Color
+        let trailingTitle: String
+        let trailingSymbol: String?
+        let compactTrailingBadge: String?
+        let compactDotTint: Color?
+        let batteryPercentage: Int?
+        let trailingTint: Color
+        var opensClipboard: Bool = false
+    }
+
+    @Published private(set) var activeFocus: ActiveFocus?
+    @Published private(set) var currentItem: NotificationItem?
+    @Published private(set) var animationNonce = UUID()
+
+    private static let focusRegex = try? NSRegularExpression(
+        pattern: #"FocusModeSystemBannerContent\(activity\.name:\s*(.+?),\s*isOn:\s*(true|false)\)"#
+    )
+    private static let setFocusActivityRegex = try? NSRegularExpression(
+        pattern: #"Setting active focus activity:\s*(\S+)"#
+    )
+    private static let clearFocusMarker = "Clearing active focus activity"
+    private static let lowBatteryRegex = try? NSRegularExpression(
+        pattern: #"smart routing low battery:\s*deviceName:\s*(.+?),\s*productID:\s*\S+,\s*isCase:\s*(\S+?),\s*batteryLevel:\s*(\d+)"#,
+        options: [.caseInsensitive]
+    )
+
+    private var started = false
+    private var cancellables = Set<AnyCancellable>()
+    private var lastFocusState: Bool?
+    private var lastFocusName: String = ""
+    private var lastFocusEventAt: Date = .distantPast
+    private var lastInputSourceName: String?
+    private var previewStep: Int = 0
+
+    private init() {}
+
+    func start() {
+        guard !started else { return }
+        started = true
+        lastInputSourceName = Self.currentKeyboardLayoutName()
+        seedInitialFocusState()
+
+        let inputNotification = Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String)
+        DistributedNotificationCenter.default()
+            .publisher(for: inputNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.handleInputSourceChanged()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Reads the most recent Focus event from the last 12 hours so an already-active Focus mode
+    /// shows its subtle corner icon on the music cover right after launching GravityNotch.
+    private func seedInitialFocusState() {
+        let bannerRegex = Self.focusRegex
+        let setRegex = Self.setFocusActivityRegex
+        let clearMarker = Self.clearFocusMarker
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+            proc.arguments = [
+                "show", "--last", "12h", "--style", "ndjson",
+                "--predicate", #"process == "ControlCenter" AND (eventMessage CONTAINS "FocusModeSystemBannerContent" OR eventMessage CONTAINS "active focus activity")"#
+            ]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+            do {
+                try proc.run()
+            } catch {
+                return
+            }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+
+            var latest: (name: String, isOn: Bool)?
+            for line in text.split(separator: "\n") {
+                guard let lineData = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                      let msg = obj["eventMessage"] as? String else { continue }
+                let ns = msg as NSString
+                let range = NSRange(location: 0, length: ns.length)
+                if let match = bannerRegex?.firstMatch(in: msg, range: range) {
+                    let name = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let isOn = ns.substring(with: match.range(at: 2)) == "true"
+                    if !name.isEmpty { latest = (name, isOn) }
+                } else if let match = setRegex?.firstMatch(in: msg, range: range) {
+                    let modeID = ns.substring(with: match.range(at: 1))
+                    latest = (Self.displayName(forModeIdentifier: modeID), true)
+                } else if msg.contains(clearMarker) {
+                    latest = (latest?.name ?? String(localized: "Do Not Disturb"), false)
+                }
+            }
+
+            guard let latest else { return }
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.lastFocusState == nil else { return }
+                    self.lastFocusState = latest.isOn
+                    if latest.isOn { self.lastFocusName = latest.name }
+                    self.applyRealFocusBadge(name: latest.name, isOn: latest.isOn)
+                }
+            }
+        }
+    }
+
+    /// Consumes Focus and Smart Routing low-battery events emitted by `ControlCenter` in the shared log stream.
+    func consumeControlCenterLog(_ message: String) -> Bool {
+        let ns = message as NSString
+        let fullRange = NSRange(location: 0, length: ns.length)
+
+        if let match = Self.focusRegex?.firstMatch(in: message, range: fullRange) {
+            let rawName = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let isOn = ns.substring(with: match.range(at: 2)) == "true"
+            handleFocusEvent(name: rawName, isOn: isOn, hideSystemBanner: true, isPreview: false)
+            return true
+        }
+
+        if let match = Self.setFocusActivityRegex?.firstMatch(in: message, range: fullRange) {
+            let modeID = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = Self.displayName(forModeIdentifier: modeID)
+            handleFocusEvent(name: name, isOn: true, hideSystemBanner: false, isPreview: false)
+            return true
+        }
+
+        if message.contains(Self.clearFocusMarker) {
+            let name = lastFocusName.isEmpty ? String(localized: "Do Not Disturb") : lastFocusName
+            handleFocusEvent(name: name, isOn: false, hideSystemBanner: false, isPreview: false)
+            return true
+        }
+
+        if let match = Self.lowBatteryRegex?.firstMatch(in: message, range: fullRange) {
+            guard Defaults[.showBluetoothAudioLiveActivity] else { return true }
+            let rawName = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let isCaseToken = ns.substring(with: match.range(at: 2)).lowercased()
+            let isCase = isCaseToken == "1" || isCaseToken == "true" || isCaseToken == "yes"
+            let level = Int(ns.substring(with: match.range(at: 3))) ?? 15
+            presentAccessoryLowBattery(deviceName: rawName, isCase: isCase, percentage: level)
+            return true
+        }
+
+        return false
+    }
+
+    func previewFocus() {
+        let samples: [(String, Bool)] = [
+            (String(localized: "Do Not Disturb"), true),
+            ("Repos", true),
+            ("Repos", false)
+        ]
+        let sample = samples[previewStep % samples.count]
+        previewStep += 1
+        presentFocusBanner(name: sample.0, isOn: sample.1)
+    }
+
+    func previewUniversalClipboard() {
+        presentUniversalClipboard(kindSymbol: "doc.on.clipboard.fill")
+    }
+
+    func presentUniversalClipboard(kindSymbol: String) {
+        guard Defaults[.showUniversalClipboardLiveActivity] else { return }
+        let sky = Color(red: 0.36, green: 0.78, blue: 1.0)
+        present(
+            NotificationItem(
+                leadingSymbol: "iphone.and.arrow.forward",
+                leadingTitle: "iPhone",
+                leadingTint: sky,
+                trailingTitle: String(localized: "Copied"),
+                trailingSymbol: kindSymbol,
+                compactTrailingBadge: nil,
+                compactDotTint: nil,
+                batteryPercentage: nil,
+                trailingTint: sky,
+                opensClipboard: true
+            )
+        )
+    }
+
+    private func applyRealFocusBadge(name: String, isOn: Bool) {
+        if isOn {
+            let style = Self.focusStyle(for: name)
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) {
+                activeFocus = ActiveFocus(name: name, symbol: style.symbol, tint: style.tint)
+            }
+        } else {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.92)) {
+                activeFocus = nil
+            }
+        }
+    }
+
+    private func presentFocusBanner(name: String, isOn: Bool) {
+        let style = Self.focusStyle(for: name)
+        let activeTint = isOn ? style.tint : Color.white.opacity(0.55)
+        present(
+            NotificationItem(
+                leadingSymbol: style.symbol,
+                leadingTitle: name,
+                leadingTint: activeTint,
+                trailingTitle: isOn ? String(localized: "Focus On") : String(localized: "Focus Off"),
+                trailingSymbol: nil,
+                compactTrailingBadge: nil,
+                compactDotTint: activeTint,
+                batteryPercentage: nil,
+                trailingTint: activeTint
+            )
+        )
+    }
+
+    private func handleFocusEvent(name: String, isOn: Bool, hideSystemBanner: Bool, isPreview: Bool) {
+        guard !name.isEmpty else { return }
+        let now = Date()
+
+        if !isPreview {
+            // `Setting active focus activity` can be followed ~250ms later by `FocusModeSystemBannerContent`
+            // carrying the exact user-customized Focus title: update the title in place without re-bouncing.
+            if lastFocusState == isOn && now.timeIntervalSince(lastFocusEventAt) < 2.0 {
+                if isOn && name != lastFocusName {
+                    lastFocusName = name
+                    applyRealFocusBadge(name: name, isOn: true)
+                    if BoringViewCoordinator.shared.expandingView.show
+                        && BoringViewCoordinator.shared.expandingView.type == .systemNotification {
+                        presentFocusBanner(name: name, isOn: true)
+                    }
+                }
+                if Defaults[.showFocusLiveActivity] && hideSystemBanner && BoringViewModel.openNotchCount == 0 {
+                    BluetoothBannerSuppressor.shared.hideListeningModeBannerSoon()
+                }
+                return
+            }
+            lastFocusState = isOn
+            if isOn { lastFocusName = name }
+            lastFocusEventAt = now
+            applyRealFocusBadge(name: name, isOn: isOn)
+        }
+
+        guard Defaults[.showFocusLiveActivity] else { return }
+        presentFocusBanner(name: name, isOn: isOn)
+
+        if !isPreview && hideSystemBanner && BoringViewModel.openNotchCount == 0 {
+            BluetoothBannerSuppressor.shared.hideListeningModeBannerSoon()
+        }
+    }
+
+    private func presentAccessoryLowBattery(deviceName: String, isCase: Bool, percentage: Int) {
+        let clamped = max(1, min(100, percentage))
+        let alertColor = clamped <= 10
+            ? Color(red: 1.0, green: 0.34, blue: 0.32)
+            : Color(red: 1.0, green: 0.72, blue: 0.24)
+        let symbol = isCase ? "airpodspro.chargingcase.wireless.fill" : "airpodspro"
+        present(
+            NotificationItem(
+                leadingSymbol: symbol,
+                leadingTitle: deviceName.isEmpty ? "AirPods" : deviceName,
+                leadingTint: .white,
+                trailingTitle: "\(clamped)%",
+                trailingSymbol: nil,
+                compactTrailingBadge: nil,
+                compactDotTint: nil,
+                batteryPercentage: clamped,
+                trailingTint: alertColor
+            )
+        )
+    }
+
+    private func handleInputSourceChanged() {
+        guard let current = Self.currentKeyboardLayoutName(), !current.isEmpty else { return }
+        let previous = lastInputSourceName
+        lastInputSourceName = current
+        guard let previous, previous != current else { return }
+        guard Defaults[.showInputSourceLiveActivity] else { return }
+
+        let mintBlue = Color(red: 0.56, green: 0.82, blue: 1.0)
+        let shortCode = String(current.filter(\.isLetter).prefix(2)).uppercased()
+        present(
+            NotificationItem(
+                leadingSymbol: "globe",
+                leadingTitle: String(localized: "Keyboard"),
+                leadingTint: mintBlue,
+                trailingTitle: current,
+                trailingSymbol: nil,
+                compactTrailingBadge: shortCode.isEmpty ? "KB" : shortCode,
+                compactDotTint: nil,
+                batteryPercentage: nil,
+                trailingTint: .white.opacity(0.88)
+            )
+        )
+    }
+
+    private func present(_ item: NotificationItem) {
+        currentItem = item
+        animationNonce = UUID()
+        BoringViewCoordinator.shared.toggleExpandingView(status: true, type: .systemNotification)
+    }
+
+    private nonisolated static func displayName(forModeIdentifier modeID: String) -> String {
+        let lower = modeID.lowercased()
+        if lower.contains("donotdisturb") { return String(localized: "Do Not Disturb") }
+        if lower.contains("sleep") { return "Repos" }
+        if lower.contains("work") { return "Travail" }
+        if lower.contains("personal") { return "Personnel" }
+        if lower.contains("gaming") { return "Jeu" }
+        if lower.contains("reading") { return "Lecture" }
+        if lower.contains("fitness") { return "Sport" }
+        if lower.contains("mindfulness") { return "Pleine conscience" }
+        if lower.contains("driving") { return "Conduite" }
+        return String(localized: "Do Not Disturb")
+    }
+
+    private static func currentKeyboardLayoutName() -> String? {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let rawPtr = TISGetInputSourceProperty(source, kTISPropertyLocalizedName) else {
+            return nil
+        }
+        return Unmanaged<CFString>.fromOpaque(rawPtr).takeUnretainedValue() as String
+    }
+
+    private static func focusStyle(for rawName: String) -> (symbol: String, tint: Color) {
+        let lower = rawName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        if lower.contains("repos") || lower.contains("sommeil") || lower.contains("sleep") {
+            return ("bed.double.fill", Color(red: 0.44, green: 0.76, blue: 0.98))
+        }
+        if lower.contains("ne pas deranger") || lower.contains("do not disturb") || lower == "dnd" {
+            return ("moon.fill", Color(red: 0.53, green: 0.48, blue: 1.0))
+        }
+        if lower.contains("travail") || lower.contains("work") {
+            return ("briefcase.fill", Color(red: 0.36, green: 0.69, blue: 1.0))
+        }
+        if lower.contains("personnel") || lower.contains("personal") {
+            return ("person.fill", Color(red: 0.75, green: 0.48, blue: 1.0))
+        }
+        if lower.contains("jeu") || lower.contains("gaming") || lower.contains("game") {
+            return ("gamecontroller.fill", Color(red: 0.38, green: 0.58, blue: 1.0))
+        }
+        if lower.contains("conduite") || lower.contains("driv") {
+            return ("car.fill", Color(red: 0.52, green: 0.56, blue: 1.0))
+        }
+        if lower.contains("lecture") || lower.contains("read") {
+            return ("book.fill", Color(red: 1.0, green: 0.74, blue: 0.36))
+        }
+        if lower.contains("sport") || lower.contains("forme") || lower.contains("fitness") {
+            return ("figure.run", Color(red: 0.52, green: 0.94, blue: 0.46))
+        }
+        if lower.contains("conscience") || lower.contains("mindful") {
+            return ("sparkles", Color(red: 0.38, green: 0.88, blue: 0.84))
+        }
+        return ("moon.stars.fill", Color(red: 0.55, green: 0.50, blue: 1.0))
+    }
+}
+
+struct SystemNotificationClosedNotchView: View {
+    @ObservedObject var monitor = SystemNotificationMonitor.shared
+    let closedHeight: CGFloat
+    let centerSpacerWidth: CGFloat
+    var isHovered: Bool = false
+
+    static let expandedWingWidth: CGFloat = 128
+
+    static func compactWingWidth(closedHeight: CGFloat) -> CGFloat {
+        closedHeight > 0 ? max(26, closedHeight - 4) : 28
+    }
+
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var earHeight: CGFloat {
+        closedHeight > 0 ? max(28, closedHeight) : 32
+    }
+
+    var body: some View {
+        let item = monitor.currentItem ?? SystemNotificationMonitor.NotificationItem(
+            leadingSymbol: "iphone.and.arrow.forward",
+            leadingTitle: "iPhone",
+            leadingTint: Color(red: 0.36, green: 0.78, blue: 1.0),
+            trailingTitle: String(localized: "Copied"),
+            trailingSymbol: "doc.on.clipboard.fill",
+            compactTrailingBadge: nil,
+            compactDotTint: nil,
+            batteryPercentage: nil,
+            trailingTint: Color(red: 0.36, green: 0.78, blue: 1.0)
+        )
+        let wingWidth = isHovered ? Self.expandedWingWidth : Self.compactWingWidth(closedHeight: closedHeight)
+
+        HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: item.leadingSymbol)
+                    .font(.system(size: 14, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(item.leadingTint)
+                    .frame(width: 18, height: 18)
+                    .contentTransition(.symbolEffect(.replace))
+                    .conditionalModifier(!reduceMotion) { view in
+                        view.symbolEffect(.bounce, value: monitor.animationNonce)
+                    }
+
+                if isHovered {
+                    Text(item.leadingTitle)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .tracking(-0.15)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .truncationMode(.tail)
+                        .transition(.opacity.combined(with: .offset(x: -4)))
+                }
+            }
+            .padding(.leading, 4)
+            .frame(width: wingWidth, height: earHeight, alignment: .leading)
+            .clipped()
+            .offset(x: appeared || reduceMotion ? 0 : 4)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: closedHeight > 0 ? max(20, centerSpacerWidth) : 18)
+
+            HStack(spacing: 5.5) {
+                if isHovered {
+                    Text(item.trailingTitle)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .tracking(-0.15)
+                        .foregroundStyle(item.trailingTint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .transition(.opacity.combined(with: .offset(x: 4)))
+                }
+
+                if let pct = item.batteryPercentage {
+                    BluetoothBatteryRingView(percentage: pct, size: min(20, max(17, earHeight - 12)), lineWidth: 2)
+                } else if let trailingSymbol = item.trailingSymbol {
+                    Image(systemName: trailingSymbol)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(item.trailingTint)
+                        .frame(width: 18, height: 18)
+                        .contentTransition(.symbolEffect(.replace))
+                } else if let dotTint = item.compactDotTint {
+                    Circle()
+                        .fill(dotTint)
+                        .frame(width: 6, height: 6)
+                        .shadow(color: dotTint.opacity(0.75), radius: 3)
+                        .padding(.trailing, 3)
+                } else if !isHovered, let badge = item.compactTrailingBadge {
+                    Text(badge)
+                        .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        .tracking(-0.2)
+                        .foregroundStyle(item.trailingTint)
+                        .frame(minWidth: 18)
+                }
+            }
+            .padding(.trailing, 4)
+            .frame(width: wingWidth, height: earHeight, alignment: .trailing)
+            .clipped()
+            .offset(x: appeared || reduceMotion ? 0 : -4)
+        }
+        .frame(height: earHeight, alignment: .center)
+        .opacity(appeared ? 1 : 0)
+        .animation(.spring(response: 0.36, dampingFraction: 0.88), value: isHovered)
+        .animation(.spring(response: 0.34, dampingFraction: 0.9), value: item)
+        .help("\(item.leadingTitle) · \(item.trailingTitle)")
+        .onAppear {
+            guard !reduceMotion else {
+                appeared = true
+                return
+            }
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.92)) {
                 appeared = true
             }
         }
@@ -3204,6 +3740,14 @@ final class ClipboardHistoryManager: ObservableObject {
                 }
             }
             .store(in: &settingsCancellables)
+        Defaults.publisher(.showUniversalClipboardLiveActivity, options: [])
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.updatePasteboardPolling()
+                }
+            }
+            .store(in: &settingsCancellables)
         updatePasteboardPolling()
         deactivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didDeactivateApplicationNotification,
@@ -3322,7 +3866,7 @@ final class ClipboardHistoryManager: ObservableObject {
     private func updatePasteboardPolling() {
         timer?.invalidate()
         timer = nil
-        guard Defaults[.showClipboardTab] else { return }
+        guard Defaults[.showClipboardTab] || Defaults[.showUniversalClipboardLiveActivity] else { return }
         lastChangeCount = NSPasteboard.general.changeCount
         let pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -3352,6 +3896,18 @@ final class ClipboardHistoryManager: ObservableObject {
     ]
 
     private static let sourcePasteboardType = NSPasteboard.PasteboardType("org.nspasteboard.source")
+    private static let remoteClipboardPasteboardType = NSPasteboard.PasteboardType("com.apple.is-remote-clipboard")
+
+    private static func isRemoteClipboard(_ pasteboard: NSPasteboard) -> Bool {
+        if let types = pasteboard.types, types.contains(remoteClipboardPasteboardType) {
+            return true
+        }
+        if let items = pasteboard.pasteboardItems,
+           items.contains(where: { $0.types.contains(remoteClipboardPasteboardType) }) {
+            return true
+        }
+        return false
+    }
 
     private static let ignoredBundleIdentifiers: Set<String> = [
         "com.apple.passwords",
@@ -3420,11 +3976,17 @@ final class ClipboardHistoryManager: ObservableObject {
         if Self.shouldIgnorePasteboard(pb, activeBundleID: activeBundle) {
             return
         }
+        let isRemote = !initial && Self.isRemoteClipboard(pb)
         let frontBundle = initial ? nil : activeBundle
 
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
            let firstFile = urls.first {
-            insertItem(kind: .file, content: firstFile.path, fileURL: firstFile, bundleID: frontBundle)
+            if isRemote {
+                SystemNotificationMonitor.shared.presentUniversalClipboard(kindSymbol: "doc.fill")
+            }
+            if Defaults[.showClipboardTab] {
+                insertItem(kind: .file, content: firstFile.path, fileURL: firstFile, bundleID: frontBundle)
+            }
             return
         }
 
@@ -3441,7 +4003,18 @@ final class ClipboardHistoryManager: ObservableObject {
             } else {
                 kind = .text
             }
-            insertItem(kind: kind, content: raw, fileURL: nil, bundleID: frontBundle)
+            if isRemote {
+                let symbol = kind == .url ? "link" : "doc.on.clipboard.fill"
+                SystemNotificationMonitor.shared.presentUniversalClipboard(kindSymbol: symbol)
+            }
+            if Defaults[.showClipboardTab] {
+                insertItem(kind: kind, content: raw, fileURL: nil, bundleID: frontBundle)
+            }
+            return
+        }
+
+        if isRemote, let types = pb.types, (types.contains(.tiff) || types.contains(.png)) {
+            SystemNotificationMonitor.shared.presentUniversalClipboard(kindSymbol: "photo.fill")
         }
     }
 
@@ -5084,6 +5657,9 @@ struct AgentDiffTally: Sendable {
         let added: Int
         let removed: Int
         let isEdit: Bool
+        var toolName: String = ""
+        var oldText: String = ""
+        var newText: String = ""
     }
 
     private(set) var offset: UInt64 = 0
@@ -5095,9 +5671,19 @@ struct AgentDiffTally: Sendable {
 
     private var pendingBatch: [PendingAntigravityTool] = []
     private var pendingConsumed: Int = 0
+    private var antigravityResetOnNextEdit: Bool = false
+    private var antigravityTurnAddedLines: [String: IndexSet] = [:]
+    private var pendingClaudeTools: [String: PendingAntigravityTool] = [:]
+    private var pendingClaudeOrder: [String] = []
+    private var subagentOffsets: [String: UInt64] = [:]
 
     private static let maxInitialBytes: UInt64 = 48 * 1024 * 1024
     private static let needle = Data("\"structuredPatch\"".utf8)
+    private static let bashDiffNeedle = Data("\"bashEditDiff\"".utf8)
+    private static let createTypeNeedle = Data("\"create\"".utf8)
+    private static let toolUseNeedle = Data("\"tool_use\"".utf8)
+    private static let toolResultNeedle = Data("\"tool_result\"".utf8)
+    private static let systemNeedle = Data("\"type\":\"system\"".utf8)
     private static let plannerNeedle = Data("\"PLANNER_RESPONSE\"".utf8)
     private static let userInputNeedle = Data("\"USER_INPUT\"".utf8)
     private static let toolCallsNeedle = Data("\"tool_calls\"".utf8)
@@ -5109,12 +5695,19 @@ struct AgentDiffTally: Sendable {
         Data("\"write_to_file\"".utf8)
     ]
 
-    /// When Antigravity is mid-batch and the next uncompleted tool call is a file edit, surface it immediately
-    /// so the focus card switches to that file and animates its green/red diff bar in real time.
+    /// When Antigravity or Claude Code is mid-batch and an uncompleted tool call is a file edit, surface it
+    /// immediately so the focus card switches to that file and animates its green/red diff bar in real time.
     var inFlightEdit: PendingAntigravityTool? {
-        guard pendingConsumed < pendingBatch.count else { return nil }
-        let next = pendingBatch[pendingConsumed]
-        return (next.isEdit && next.fileName != nil) ? next : nil
+        if pendingConsumed < pendingBatch.count {
+            let next = pendingBatch[pendingConsumed]
+            if next.isEdit && next.fileName != nil { return next }
+        }
+        for id in pendingClaudeOrder {
+            if let item = pendingClaudeTools[id], item.isEdit, item.fileName != nil {
+                return item
+            }
+        }
+        return nil
     }
 
     var liveEditSerial: Int {
@@ -5130,31 +5723,66 @@ struct AgentDiffTally: Sendable {
         return (base.added > 0 || base.removed > 0) ? base : nil
     }
 
-    mutating func advance(url: URL) {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
+    mutating func advance(url: URL, subagentURLs: [URL] = []) {
+        offset = advanceClaudeFile(url: url, startOffset: offset, trackInFlight: true)
+        for subURL in subagentURLs {
+            let subKey = subURL.lastPathComponent
+            let subOff = subagentOffsets[subKey] ?? 0
+            subagentOffsets[subKey] = advanceClaudeFile(url: subURL, startOffset: subOff, trackInFlight: false)
+        }
+    }
+
+    private mutating func advanceClaudeFile(url: URL, startOffset: UInt64, trackInFlight: Bool) -> UInt64 {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return startOffset }
         defer { try? handle.close() }
-        guard let size = try? handle.seekToEnd() else { return }
-        if size < offset { self = AgentDiffTally() }
-        var start = offset
+        guard let size = try? handle.seekToEnd() else { return startOffset }
+        var currentOffset = startOffset
+        if size < currentOffset {
+            currentOffset = 0
+            if trackInFlight {
+                self = AgentDiffTally()
+            }
+        }
+        var start = currentOffset
         var skipFirstLine = false
-        if offset == 0 && size > Self.maxInitialBytes {
+        if currentOffset == 0 && size > Self.maxInitialBytes {
             start = size - Self.maxInitialBytes
             skipFirstLine = true
         }
-        guard size > start else { return }
+        guard size > start else { return currentOffset }
         try? handle.seek(toOffset: start)
         guard let data = try? handle.read(upToCount: Int(size - start)), !data.isEmpty,
               // No newline yet: the row is still being written, read it whole next time
-              let lastNewline = data.lastIndex(of: 0x0A) else { return }
-        offset = start + UInt64(lastNewline - data.startIndex + 1)
+              let lastNewline = data.lastIndex(of: 0x0A) else { return currentOffset }
+        currentOffset = start + UInt64(lastNewline - data.startIndex + 1)
         var slice = data[data.startIndex..<lastNewline]
         if skipFirstLine, let firstNewline = slice.firstIndex(of: 0x0A) {
             slice = slice[slice.index(after: firstNewline)...]
         }
         let lines = slice.split(separator: 0x0A)
-        for line in lines where line.range(of: Self.needle) != nil {
-            record(line)
+        for line in lines {
+            let head = line.prefix(512)
+            // Never inspect internal API request snapshots (`api-request-blob`), which re-embed past tool_use blocks
+            if head.range(of: Data("\"type\":\"api-request".utf8)) != nil {
+                continue
+            }
+            let hasPatch = line.range(of: Self.needle) != nil
+                || line.range(of: Self.bashDiffNeedle) != nil
+                || line.range(of: Self.createTypeNeedle) != nil
+            var recordedPatch = false
+            if hasPatch {
+                recordedPatch = record(line)
+            }
+            guard trackInFlight else { continue }
+            if line.range(of: Self.toolUseNeedle) != nil {
+                recordClaudeToolUseLine(line)
+            } else if line.range(of: Self.toolResultNeedle) != nil {
+                recordClaudeToolResultLine(line, recordedPatch: recordedPatch)
+            } else if head.range(of: Self.systemNeedle) != nil {
+                clearClaudeInFlightIfTurnEnded(line)
+            }
         }
+        return currentOffset
     }
 
     mutating func advanceAntigravity(url: URL, isCompactTranscript: Bool = false) {
@@ -5192,10 +5820,24 @@ struct AgentDiffTally: Sendable {
             } else if head.range(of: Self.userInputNeedle) != nil {
                 pendingBatch.removeAll(keepingCapacity: true)
                 pendingConsumed = 0
+                // Antigravity scopes its "files changed +X -Y" review widget to a single user turn.
+                // Arm a lazy reset so follow-up Q&A prompts keep showing the last edited file until a new
+                // turn actually begins modifying files, preventing multi-day diffs from accumulating.
+                antigravityResetOnNextEdit = true
             } else if pendingConsumed < pendingBatch.count {
                 recordAntigravityResultLine(line)
             }
         }
+    }
+
+    private mutating func resetAntigravityTurnIfNeeded() {
+        guard antigravityResetOnNextEdit else { return }
+        antigravityResetOnNextEdit = false
+        added = 0
+        removed = 0
+        perFile.removeAll(keepingCapacity: true)
+        antigravityTurnAddedLines.removeAll(keepingCapacity: true)
+        lastEditedFile = nil
     }
 
     private mutating func recordAntigravityPlannerLine(_ line: Data, isCompactTranscript: Bool) {
@@ -5205,14 +5847,19 @@ struct AgentDiffTally: Sendable {
 
         var batch: [PendingAntigravityTool] = []
         batch.reserveCapacity(toolCalls.count)
+        var hasEditInBatch = false
         for tc in toolCalls {
             let name = (tc["name"] as? String) ?? ""
             let args = (tc["args"] as? [String: Any]) ?? [:]
             if let edit = Self.parseAntigravityEdit(name: name, args: args, isCompact: isCompactTranscript) {
                 batch.append(edit)
+                if edit.isEdit { hasEditInBatch = true }
             } else {
                 batch.append(PendingAntigravityTool(fileName: nil, added: 0, removed: 0, isEdit: false))
             }
+        }
+        if hasEditInBatch {
+            resetAntigravityTurnIfNeeded()
         }
         pendingBatch = batch
         pendingConsumed = 0
@@ -5224,17 +5871,140 @@ struct AgentDiffTally: Sendable {
         if recordType == "GENERIC" {
             let item = pendingBatch[pendingConsumed]
             pendingConsumed += 1
-            if item.isEdit, let name = item.fileName, item.added > 0 || item.removed > 0 {
-                perFile[name, default: FileDiff()].added += item.added
-                perFile[name, default: FileDiff()].removed += item.removed
-                added += item.added
-                removed += item.removed
+            guard item.isEdit, let name = item.fileName else { return }
+            resetAntigravityTurnIfNeeded()
+
+            let content = (obj["content"] as? String) ?? ""
+            if item.toolName == "write_file" || item.toolName == "write_to_file" {
+                let prev = perFile[name] ?? FileDiff()
+                added -= prev.added
+                removed -= prev.removed
+                let newAdd = item.added
+                perFile[name] = FileDiff(added: newAdd, removed: 0)
+                added += newAdd
+                antigravityTurnAddedLines[name] = newAdd > 0 ? IndexSet(integersIn: 1...newAdd) : IndexSet()
+                editCount += 1
+                lastEditedFile = name
+                return
+            }
+
+            let (netAdd, netRem) = applyAntigravityTurnEdit(item: item, fileName: name, genericContent: content)
+            if netAdd > 0 || netRem > 0 || perFile[name] != nil {
+                perFile[name, default: FileDiff()].added += netAdd
+                perFile[name, default: FileDiff()].removed += netRem
+                added += netAdd
+                removed += netRem
                 editCount += 1
                 lastEditedFile = name
             }
         } else if recordType == "ERROR_MESSAGE" {
             pendingConsumed += 1
         }
+    }
+
+    private static let antigravityLineDiffRegex = try? NSRegularExpression(
+        pattern: #"starting at line (\d+) \(\+(\d+)/-(\d+) lines?\)"#
+    )
+    private static let antigravitySummaryDiffRegex = try? NSRegularExpression(
+        pattern: #"\(\+(\d+)/-(\d+) lines?\)"#
+    )
+
+    /// Reconciles an individual Antigravity `edit_file` result against lines already inserted earlier in the
+    /// same turn so re-editing newly added lines cancels out instead of double-counting `+k / -k`.
+    private mutating func applyAntigravityTurnEdit(
+        item: PendingAntigravityTool,
+        fileName: String,
+        genericContent: String
+    ) -> (added: Int, removed: Int) {
+        let nsRange = NSRange(genericContent.startIndex..<genericContent.endIndex, in: genericContent)
+        if (item.toolName == "edit_file" || item.toolName == "replace_file_content"),
+           let regex = Self.antigravityLineDiffRegex,
+           let match = regex.firstMatch(in: genericContent, range: nsRange),
+           let r1 = Range(match.range(at: 1), in: genericContent),
+           let r2 = Range(match.range(at: 2), in: genericContent),
+           let r3 = Range(match.range(at: 3), in: genericContent),
+           let startLine = Int(genericContent[r1]), startLine >= 1,
+           let genAdd = Int(genericContent[r2]),
+           let genRem = Int(genericContent[r3]) {
+            let oldLines = Self.splitLines(item.oldText)
+            let newLines = Self.splitLines(item.newText)
+            guard oldLines.count + newLines.count <= 4000 else {
+                return (genAdd, genRem)
+            }
+            let aset = antigravityTurnAddedLines[fileName] ?? IndexSet()
+            let diff = newLines.difference(from: oldLines)
+
+            var removedOld = IndexSet()
+            var overlap = 0
+            for removal in diff.removals {
+                if case let .remove(offset, _, _) = removal {
+                    removedOld.insert(offset)
+                    if aset.contains(startLine + offset) {
+                        overlap += 1
+                    }
+                }
+            }
+            var insertedNew = IndexSet()
+            for insertion in diff.insertions {
+                if case let .insert(offset, _, _) = insertion {
+                    insertedNew.insert(offset)
+                }
+            }
+
+            var updatedSet = IndexSet()
+            for ln in aset {
+                if ln < startLine {
+                    updatedSet.insert(ln)
+                } else if ln >= startLine + oldLines.count {
+                    updatedSet.insert(ln + (newLines.count - oldLines.count))
+                }
+            }
+
+            var oldIdx = 0
+            var newIdx = 0
+            while oldIdx < oldLines.count && newIdx < newLines.count {
+                if removedOld.contains(oldIdx) {
+                    oldIdx += 1
+                    continue
+                }
+                if insertedNew.contains(newIdx) {
+                    updatedSet.insert(startLine + newIdx)
+                    newIdx += 1
+                    continue
+                }
+                if aset.contains(startLine + oldIdx) {
+                    updatedSet.insert(startLine + newIdx)
+                }
+                oldIdx += 1
+                newIdx += 1
+            }
+            while newIdx < newLines.count {
+                if insertedNew.contains(newIdx) {
+                    updatedSet.insert(startLine + newIdx)
+                }
+                newIdx += 1
+            }
+            antigravityTurnAddedLines[fileName] = updatedSet
+            return (max(0, genAdd - overlap), max(0, genRem - overlap))
+        }
+
+        if let regex = Self.antigravitySummaryDiffRegex {
+            let matches = regex.matches(in: genericContent, range: nsRange)
+            if !matches.isEmpty {
+                var sumAdd = 0
+                var sumRem = 0
+                for m in matches {
+                    if let ra = Range(m.range(at: 1), in: genericContent),
+                       let rr = Range(m.range(at: 2), in: genericContent) {
+                        sumAdd += Int(genericContent[ra]) ?? 0
+                        sumRem += Int(genericContent[rr]) ?? 0
+                    }
+                }
+                return (sumAdd, sumRem)
+            }
+        }
+
+        return (item.added, item.removed)
     }
 
     private static func unwrapArg(_ raw: Any?, isCompact: Bool) -> String? {
@@ -5265,12 +6035,28 @@ struct AgentDiffTally: Sendable {
             let target = unwrapArg(args["Target"], isCompact: isCompact) ?? ""
             let replacement = unwrapArg(args["Replacement"], isCompact: isCompact) ?? ""
             let (add, rem) = lineDiffCounts(old: target, new: replacement)
-            return PendingAntigravityTool(fileName: fileName, added: add, removed: rem, isEdit: true)
+            return PendingAntigravityTool(
+                fileName: fileName,
+                added: add,
+                removed: rem,
+                isEdit: true,
+                toolName: name,
+                oldText: target,
+                newText: replacement
+            )
         case "replace_file_content":
             let target = unwrapArg(args["TargetContent"], isCompact: isCompact) ?? ""
             let replacement = unwrapArg(args["ReplacementContent"], isCompact: isCompact) ?? ""
             let (add, rem) = lineDiffCounts(old: target, new: replacement)
-            return PendingAntigravityTool(fileName: fileName, added: add, removed: rem, isEdit: true)
+            return PendingAntigravityTool(
+                fileName: fileName,
+                added: add,
+                removed: rem,
+                isEdit: true,
+                toolName: name,
+                oldText: target,
+                newText: replacement
+            )
         case "multi_replace_file_content":
             var totalAdd = 0
             var totalRem = 0
@@ -5283,13 +6069,26 @@ struct AgentDiffTally: Sendable {
                     totalRem += rem
                 }
             }
-            return PendingAntigravityTool(fileName: fileName, added: totalAdd, removed: totalRem, isEdit: true)
+            return PendingAntigravityTool(
+                fileName: fileName,
+                added: totalAdd,
+                removed: totalRem,
+                isEdit: true,
+                toolName: name
+            )
         case "write_file", "write_to_file":
             let content = unwrapArg(args["Content"], isCompact: isCompact)
                 ?? unwrapArg(args["CodeContent"], isCompact: isCompact)
                 ?? ""
             let add = lineCount(content)
-            return PendingAntigravityTool(fileName: fileName, added: add, removed: 0, isEdit: true)
+            return PendingAntigravityTool(
+                fileName: fileName,
+                added: add,
+                removed: 0,
+                isEdit: true,
+                toolName: name,
+                newText: content
+            )
         default:
             return nil
         }
@@ -5342,28 +6141,158 @@ struct AgentDiffTally: Sendable {
         return (newSlice.count - common, oldSlice.count - common)
     }
 
-    private mutating func record(_ line: Data) {
+    @discardableResult
+    private mutating func record(_ line: Data) -> Bool {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let result = obj["toolUseResult"] as? [String: Any],
-              let path = result["filePath"] as? String, !path.isEmpty else { return }
-        var add = 0
-        var rem = 0
-        if let hunks = result["structuredPatch"] as? [[String: Any]], !hunks.isEmpty {
-            for hunk in hunks {
-                for patchLine in (hunk["lines"] as? [String]) ?? [] {
-                    if patchLine.hasPrefix("+") { add += 1 } else if patchLine.hasPrefix("-") { rem += 1 }
+              (obj["type"] as? String) == "user",
+              let result = obj["toolUseResult"] as? [String: Any] else { return false }
+
+        var recordedAny = false
+
+        // 1. Standard Edit / MultiEdit / Write structuredPatch or create payload
+        if let path = result["filePath"] as? String, !path.isEmpty {
+            var add = 0
+            var rem = 0
+            if let hunks = result["structuredPatch"] as? [[String: Any]], !hunks.isEmpty {
+                for hunk in hunks {
+                    for patchLine in (hunk["lines"] as? [String]) ?? [] {
+                        if patchLine.hasPrefix("+") { add += 1 } else if patchLine.hasPrefix("-") { rem += 1 }
+                    }
+                }
+            } else if (result["type"] as? String) == "create", let content = result["content"] as? String, !content.isEmpty {
+                add = content.split(separator: "\n", omittingEmptySubsequences: false).count - (content.hasSuffix("\n") ? 1 : 0)
+            }
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            if !name.isEmpty && (add > 0 || rem > 0) {
+                perFile[name, default: FileDiff()].added += add
+                perFile[name, default: FileDiff()].removed += rem
+                added += add
+                removed += rem
+                editCount += 1
+                lastEditedFile = name
+                recordedAny = true
+            }
+        }
+
+        // 2. Bash script/sed/python file edits tracked by Claude Code under `toolUseResult.bashEditDiff.files`
+        if let bashDiff = result["bashEditDiff"] as? [String: Any],
+           let files = bashDiff["files"] as? [[String: Any]] {
+            for fileEntry in files {
+                guard let path = fileEntry["filePath"] as? String, !path.isEmpty else { continue }
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                guard !name.isEmpty else { continue }
+                var add = 0
+                var rem = 0
+                for hunk in (fileEntry["hunks"] as? [[String: Any]]) ?? [] {
+                    for patchLine in (hunk["lines"] as? [String]) ?? [] {
+                        if patchLine.hasPrefix("+") { add += 1 } else if patchLine.hasPrefix("-") { rem += 1 }
+                    }
+                }
+                if add > 0 || rem > 0 {
+                    perFile[name, default: FileDiff()].added += add
+                    perFile[name, default: FileDiff()].removed += rem
+                    added += add
+                    removed += rem
+                    editCount += 1
+                    lastEditedFile = name
+                    recordedAny = true
                 }
             }
-        } else if (result["type"] as? String) == "create", let content = result["content"] as? String, !content.isEmpty {
-            add = content.split(separator: "\n", omittingEmptySubsequences: false).count - (content.hasSuffix("\n") ? 1 : 0)
         }
-        guard add > 0 || rem > 0 else { return }
-        let name = URL(fileURLWithPath: path).lastPathComponent
-        perFile[name, default: FileDiff()].added += add
-        perFile[name, default: FileDiff()].removed += rem
-        added += add
-        removed += rem
-        editCount += 1
+
+        return recordedAny
+    }
+
+    private mutating func recordClaudeToolUseLine(_ line: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              (obj["type"] as? String) == "assistant",
+              let message = obj["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else { return }
+        for item in content where (item["type"] as? String) == "tool_use" {
+            guard let id = item["id"] as? String, !id.isEmpty,
+                  let name = item["name"] as? String else { continue }
+            let input = (item["input"] as? [String: Any]) ?? [:]
+            if let edit = Self.parseClaudeToolEdit(name: name, input: input) {
+                if pendingClaudeTools[id] == nil {
+                    pendingClaudeOrder.append(id)
+                }
+                pendingClaudeTools[id] = edit
+            }
+        }
+    }
+
+    private mutating func recordClaudeToolResultLine(_ line: Data, recordedPatch: Bool) {
+        guard !pendingClaudeTools.isEmpty,
+              let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              (obj["type"] as? String) == "user",
+              let message = obj["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else { return }
+        for item in content where (item["type"] as? String) == "tool_result" {
+            guard let id = item["tool_use_id"] as? String,
+                  let finished = pendingClaudeTools.removeValue(forKey: id) else { continue }
+            pendingClaudeOrder.removeAll { $0 == id }
+            let isError = (item["is_error"] as? Bool) == true
+            // Fallback for edit tools without structuredPatch (such as NotebookEdit)
+            if !recordedPatch, !isError, finished.isEdit, let name = finished.fileName,
+               finished.added > 0 || finished.removed > 0 {
+                perFile[name, default: FileDiff()].added += finished.added
+                perFile[name, default: FileDiff()].removed += finished.removed
+                added += finished.added
+                removed += finished.removed
+                editCount += 1
+                lastEditedFile = name
+            }
+        }
+    }
+
+    private mutating func clearClaudeInFlightIfTurnEnded(_ line: Data) {
+        guard !pendingClaudeTools.isEmpty,
+              let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              (obj["type"] as? String) == "system" else { return }
+        let subtype = (obj["subtype"] as? String) ?? ""
+        if subtype == "turn_duration" || subtype == "stop_hook_summary" || subtype == "compact_boundary" {
+            pendingClaudeTools.removeAll(keepingCapacity: true)
+            pendingClaudeOrder.removeAll(keepingCapacity: true)
+        }
+    }
+
+    static func parseClaudeToolEdit(name: String, input: [String: Any]) -> PendingAntigravityTool? {
+        let rawPath = (input["file_path"] as? String)
+            ?? (input["notebook_path"] as? String)
+            ?? (input["path"] as? String)
+            ?? (input["TargetFile"] as? String)
+        guard let rawPath, !rawPath.isEmpty else { return nil }
+        let fileName = URL(fileURLWithPath: rawPath).lastPathComponent
+        guard !fileName.isEmpty else { return nil }
+
+        let lower = name.lowercased()
+        if name == "Edit" || lower.hasSuffix("__edit") || lower.contains("str_replace") {
+            let oldStr = (input["old_string"] as? String) ?? (input["old_str"] as? String) ?? ""
+            let newStr = (input["new_string"] as? String) ?? (input["new_str"] as? String) ?? ""
+            let (add, rem) = lineDiffCounts(old: oldStr, new: newStr)
+            return PendingAntigravityTool(fileName: fileName, added: max(add, rem == 0 && !newStr.isEmpty ? 1 : 0), removed: rem, isEdit: true)
+        }
+        if name == "MultiEdit" || lower.contains("multiedit") {
+            var totalAdd = 0
+            var totalRem = 0
+            for chunk in (input["edits"] as? [[String: Any]]) ?? [] {
+                let oldStr = (chunk["old_string"] as? String) ?? ""
+                let newStr = (chunk["new_string"] as? String) ?? ""
+                let (add, rem) = lineDiffCounts(old: oldStr, new: newStr)
+                totalAdd += add
+                totalRem += rem
+            }
+            return PendingAntigravityTool(fileName: fileName, added: totalAdd, removed: totalRem, isEdit: true)
+        }
+        if name == "Write" || lower.hasSuffix("__write") || lower.contains("write_file") {
+            let content = (input["content"] as? String) ?? ""
+            return PendingAntigravityTool(fileName: fileName, added: max(1, lineCount(content)), removed: 0, isEdit: true)
+        }
+        if name == "NotebookEdit" || lower.contains("notebookedit") {
+            let source = (input["new_source"] as? String) ?? ""
+            return PendingAntigravityTool(fileName: fileName, added: max(1, lineCount(source)), removed: 0, isEdit: true)
+        }
+        return nil
     }
 }
 
@@ -5877,13 +6806,21 @@ final class AntigravityAgentMonitor: ObservableObject {
             }
         }
         candidates.sort { $0.modDate > $1.modDate }
+        guard !candidates.isEmpty else { return [] }
+
+        let inspected = Array(candidates.prefix(12))
+        let metadataByID = loadAntigravityMetadata(home: home, ids: inspected.map(\.id))
+        let topLevelCandidates = inspected.filter { !(metadataByID[$0.id]?.isSubagent ?? false) }
+        let selectedCandidates = (topLevelCandidates.isEmpty ? inspected : topLevelCandidates).prefix(3)
 
         var entries: [CachedSessionEntry] = []
-        for candidate in candidates.prefix(3) {
+        for candidate in selectedCandidates {
             let key = "ag:\(candidate.id)"
+            let meta = metadataByID[candidate.id]
             if let cached = cache[key],
                cached.modDate == candidate.modDate,
-               cached.fileSize == candidate.fileSize {
+               cached.fileSize == candidate.fileSize,
+               (meta?.title.isEmpty ?? true) || cached.snapshot.sessionTitle == meta?.title {
                 entries.append(cached)
                 continue
             }
@@ -5909,7 +6846,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             var latestDetail = String(localized: "Session active")
             var latestPhase: AgentWorkPhase = .waiting
             var latestFile: String? = nil
-            var inferredProject = "Antigravity"
+            var inferredProject = meta?.workspaceName ?? "Antigravity"
+            let inferredProjectPath = meta?.workspacePath
             var events: [AgentToolEvent] = []
             var lastStepDate: Date = candidate.modDate
             var firstEventDate: Date? = nil
@@ -6119,12 +7057,18 @@ final class AntigravityAgentMonitor: ObservableObject {
             let fileDiff = focusFile.flatMap { tally.liveFileDiff(for: $0) }
             let liveAdded = tally.added + (tally.inFlightEdit?.added ?? 0)
             let liveRemoved = tally.removed + (tally.inFlightEdit?.removed ?? 0)
+            let distinctFilesCount = tally.perFile.count
+                + ((inFlightName != nil && tally.perFile[inFlightName!] == nil) ? 1 : 0)
+            let resolvedTitle: String = {
+                if let t = meta?.title, !t.isEmpty { return t }
+                return String(localized: "Step #\(lastStep)")
+            }()
 
             let baseSnapshot = AgentSessionSnapshot(
                 id: key,
                 kind: .antigravity,
                 projectName: inferredProject,
-                sessionTitle: String(localized: "Step #\(lastStep)"),
+                sessionTitle: resolvedTitle,
                 modelName: "Gemini",
                 phase: latestPhase,
                 isActive: false,
@@ -6135,7 +7079,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 maxContextWindow: 1_000_000.0,
                 cacheReadTokens: lastCache,
                 outputTokens: sumOutput,
-                filesModifiedCount: max(editCount, tally.perFile.count),
+                filesModifiedCount: distinctFilesCount > 0 ? distinctFilesCount : editCount,
                 linesAdded: liveAdded,
                 linesRemoved: liveRemoved,
                 currentFile: focusFile,
@@ -6147,7 +7091,8 @@ final class AntigravityAgentMonitor: ObservableObject {
                 editSerial: tally.liveEditSerial,
                 deletedName: deletion?.name,
                 deletedCount: deletion?.count ?? 0,
-                deletionSerial: deletionSerial
+                deletionSerial: deletionSerial,
+                projectPath: inferredProjectPath
             )
             let entry = CachedSessionEntry(
                 modDate: candidate.modDate,
@@ -6178,6 +7123,164 @@ final class AntigravityAgentMonitor: ObservableObject {
             let aborted = !entry.turnComplete && (executorError.map { $0 > entry.lastEventDate } ?? false)
             return resolveSnapshot(from: entry, now: now, promptSuperseded: superseded, turnAborted: aborted)
         }
+    }
+
+    private struct AntigravitySummaryMeta {
+        let title: String
+        let workspaceName: String?
+        let workspacePath: String?
+        let isSubagent: Bool
+    }
+
+    /// Reads conversation titles, workspace paths, and parent-subagent links from Antigravity's local
+    /// `conversation_summaries.db` and `annotations/<id>.pbtxt` files.
+    private nonisolated static func loadAntigravityMetadata(
+        home: String,
+        ids: [String]
+    ) -> [String: AntigravitySummaryMeta] {
+        guard !ids.isEmpty else { return [:] }
+        let agDir = URL(fileURLWithPath: home).appendingPathComponent(".gemini/antigravity")
+        let annotationsDir = agDir.appendingPathComponent("annotations")
+        let dbPath = agDir.appendingPathComponent("conversation_summaries.db").path
+
+        var dbRows: [String: (title: String, preview: String, parentID: String, workspaceURIs: String)] = [:]
+        if FileManager.default.fileExists(atPath: dbPath) {
+            var db: OpaquePointer? = nil
+            let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
+            if sqlite3_open_v2(dbPath, &db, flags, nil) == SQLITE_OK, let db {
+                defer { sqlite3_close_v2(db) }
+                sqlite3_busy_timeout(db, 50)
+                let sql = "SELECT title, preview, parent_conversation_id, workspace_uris FROM conversation_summaries WHERE conversation_id = ? LIMIT 1"
+                var stmt: OpaquePointer? = nil
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt {
+                    defer { sqlite3_finalize(stmt) }
+                    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                    for id in ids {
+                        sqlite3_reset(stmt)
+                        sqlite3_clear_bindings(stmt)
+                        _ = id.withCString { cStr in
+                            sqlite3_bind_text(stmt, 1, cStr, -1, transient)
+                        }
+                        if sqlite3_step(stmt) == SQLITE_ROW {
+                            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                            let preview = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                            let parentID = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                            let ws = sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? ""
+                            dbRows[id] = (title, preview, parentID, ws)
+                        }
+                    }
+                }
+            }
+        }
+
+        var result: [String: AntigravitySummaryMeta] = [:]
+        for id in ids {
+            let pbtxtURL = annotationsDir.appendingPathComponent("\(id).pbtxt")
+            let annotationTitle = (try? Data(contentsOf: pbtxtURL)).flatMap(parsePbtxtTitle)
+            let row = dbRows[id]
+
+            let chosenTitle: String = {
+                if let t = annotationTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    return t
+                }
+                if let t = row?.title.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                    return t
+                }
+                if let p = row?.preview {
+                    let firstLine = p
+                        .components(separatedBy: .newlines)
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .first { !$0.isEmpty } ?? ""
+                    if !firstLine.isEmpty {
+                        return firstLine.count > 72 ? String(firstLine.prefix(71)) + "…" : firstLine
+                    }
+                }
+                return ""
+            }()
+
+            var workspacePath: String? = nil
+            var workspaceName: String? = nil
+            if let wsRaw = row?.workspaceURIs, !wsRaw.isEmpty,
+               let wsData = wsRaw.data(using: .utf8),
+               let uris = try? JSONSerialization.jsonObject(with: wsData) as? [String],
+               let firstURI = uris.first,
+               let url = URL(string: firstURI), url.isFileURL {
+                let path = url.path
+                if !path.isEmpty && path != "/" {
+                    workspacePath = path
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    if !name.isEmpty && name != "/" {
+                        workspaceName = name
+                    }
+                }
+            }
+
+            let isSubagent = !(row?.parentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            result[id] = AntigravitySummaryMeta(
+                title: chosenTitle,
+                workspaceName: workspaceName,
+                workspacePath: workspacePath,
+                isSubagent: isSubagent
+            )
+        }
+        return result
+    }
+
+    private nonisolated static func parsePbtxtTitle(_ data: Data) -> String? {
+        let bytes = [UInt8](data)
+        let key = [UInt8]("title:".utf8)
+        guard bytes.count > key.count else { return nil }
+        var pos: Int? = nil
+        for i in 0...(bytes.count - key.count) {
+            let atBoundary = (i == 0) || bytes[i - 1] == 0x20 || bytes[i - 1] == 0x0A || bytes[i - 1] == 0x09
+            if atBoundary && Array(bytes[i..<(i + key.count)]) == key {
+                pos = i + key.count
+                break
+            }
+        }
+        guard var idx = pos else { return nil }
+        while idx < bytes.count && (bytes[idx] == 0x20 || bytes[idx] == 0x09) {
+            idx += 1
+        }
+        guard idx < bytes.count && bytes[idx] == 0x22 else { return nil }
+        idx += 1
+
+        var out: [UInt8] = []
+        while idx < bytes.count {
+            let b = bytes[idx]
+            if b == 0x22 {
+                let decoded = String(decoding: out, as: UTF8.self)
+                return decoded.isEmpty ? nil : decoded
+            }
+            if b == 0x5C, idx + 1 < bytes.count {
+                idx += 1
+                let esc = bytes[idx]
+                if esc >= 0x30 && esc <= 0x37 {
+                    var val = Int(esc - 0x30)
+                    var digits = 1
+                    while digits < 3, idx + 1 < bytes.count, bytes[idx + 1] >= 0x30, bytes[idx + 1] <= 0x37 {
+                        idx += 1
+                        val = (val << 3) | Int(bytes[idx] - 0x30)
+                        digits += 1
+                    }
+                    out.append(UInt8(val & 0xFF))
+                } else {
+                    switch esc {
+                    case 0x6E: out.append(0x0A) // \n
+                    case 0x74: out.append(0x09) // \t
+                    case 0x72: out.append(0x0D) // \r
+                    case 0x22: out.append(0x22) // \"
+                    case 0x27: out.append(0x27) // \'
+                    case 0x5C: out.append(0x5C) // \\
+                    default: out.append(esc)
+                    }
+                }
+            } else {
+                out.append(b)
+            }
+            idx += 1
+        }
+        return nil
     }
 
     /// Time of the last fatal "agent executor error" in the Antigravity agent logs written in the last
@@ -6233,20 +7336,70 @@ final class AntigravityAgentMonitor: ObservableObject {
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
-        var candidates: [(url: URL, id: String, modDate: Date, fileSize: Int)] = []
+        struct ClaudeCandidate {
+            let url: URL
+            let subagentURLs: [URL]
+            let newestSubagentURL: URL?
+            let newestSubagentModDate: Date
+            let id: String
+            let modDate: Date
+            let fileSize: Int
+        }
+
+        var candidates: [ClaudeCandidate] = []
         let cutoff = now.addingTimeInterval(-86_400)
+        let fm = FileManager.default
 
         for folder in projectFolders {
-            guard let files = try? FileManager.default.contentsOfDirectory(
+            guard let files = try? fm.contentsOfDirectory(
                 at: folder,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for file in files where file.pathExtension == "jsonl" && !file.lastPathComponent.hasPrefix("agent-") {
-                if let vals = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
-                   let modDate = vals.contentModificationDate,
-                   modDate > cutoff {
-                    candidates.append((file, file.deletingPathExtension().lastPathComponent, modDate, vals.fileSize ?? 0))
+                let sessionID = file.deletingPathExtension().lastPathComponent
+                let vals = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                var effectiveMod = vals?.contentModificationDate ?? .distantPast
+                var effectiveSize = vals?.fileSize ?? 0
+
+                var subURLs: [URL] = []
+                var newestSubURL: URL? = nil
+                var newestSubMod: Date = .distantPast
+                let subDir = folder.appendingPathComponent(sessionID, isDirectory: true)
+                    .appendingPathComponent("subagents", isDirectory: true)
+                if let subFiles = try? fm.contentsOfDirectory(
+                    at: subDir,
+                    includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                ) {
+                    for sf in subFiles where sf.pathExtension == "jsonl" {
+                        subURLs.append(sf)
+                        if let sVals = try? sf.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]) {
+                            effectiveSize &+= (sVals.fileSize ?? 0)
+                            if let sMod = sVals.contentModificationDate {
+                                if sMod > effectiveMod { effectiveMod = sMod }
+                                if sMod > newestSubMod {
+                                    newestSubMod = sMod
+                                    newestSubURL = sf
+                                }
+                            }
+                        }
+                    }
+                }
+                subURLs.sort { $0.lastPathComponent < $1.lastPathComponent }
+
+                if effectiveMod > cutoff {
+                    candidates.append(
+                        ClaudeCandidate(
+                            url: file,
+                            subagentURLs: subURLs,
+                            newestSubagentURL: newestSubURL,
+                            newestSubagentModDate: newestSubMod,
+                            id: sessionID,
+                            modDate: effectiveMod,
+                            fileSize: effectiveSize
+                        )
+                    )
                 }
             }
         }
@@ -6262,7 +7415,7 @@ final class AntigravityAgentMonitor: ObservableObject {
                 continue
             }
 
-            let lines = readTailLines(from: candidate.url)
+            let lines = readTailLines(from: candidate.url, maxBytes: 524_288)
             guard !lines.isEmpty else { continue }
 
             var projectName = "Claude Code"
@@ -6280,183 +7433,314 @@ final class AntigravityAgentMonitor: ObservableObject {
             var latestDetail = String(localized: "Session active")
             var latestPhase: AgentWorkPhase = .waiting
             var latestFile: String? = nil
+            var latestEditedFile: String? = nil
             var events: [AgentToolEvent] = []
+            var toolUseEventIndices: [String: Int] = [:]
+            var pendingToolIDs: Set<String> = []
             var lastEventDate: Date = .distantPast
             var lastTurnComplete = false
             var justSawCompactBoundary = false
-            var hasPendingTool = false
             var deletion: AgentDeletionParser.Deletion? = nil
             var deletionSerial = 0
 
-            for line in lines.suffix(180) {
-                guard let lineData = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
+            func processClaudeTranscriptLines(_ sourceLines: ArraySlice<String>, isSubagent: Bool) {
+                for line in sourceLines {
+                    // Fast skip internal diagnostic blobs (`api-request-blob`, `data-flow-records`, etc.)
+                    if line.contains("\"type\":\"api-request") || line.contains("\"type\":\"data-flow-records\"")
+                        || line.contains("\"type\":\"atis-latch\"") || line.contains("\"type\":\"attachment\"") {
+                        continue
+                    }
+                    guard let lineData = line.data(using: .utf8),
+                          let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
 
-                let rowType = (obj["type"] as? String) ?? ""
-                let parsedTimestamp = dateParser.parse(obj["timestamp"] as? String)
-                if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
-                    projectName = URL(fileURLWithPath: cwd).lastPathComponent
-                    projectPath = cwd
-                }
+                    let rowType = (obj["type"] as? String) ?? ""
+                    let parsedTimestamp = dateParser.parse(obj["timestamp"] as? String)
+                    if !isSubagent, let cwd = obj["cwd"] as? String, !cwd.isEmpty {
+                        projectName = URL(fileURLWithPath: cwd).lastPathComponent
+                        projectPath = cwd
+                    }
 
-                if rowType == "ai-title", let title = obj["aiTitle"] as? String, !title.isEmpty {
-                    sessionTitle = title
-                    continue
-                }
-                if rowType == "cost-state" {
-                    linesAdded = max(linesAdded, (obj["totalLinesAdded"] as? Int) ?? 0)
-                    linesRemoved = max(linesRemoved, (obj["totalLinesRemoved"] as? Int) ?? 0)
-                    continue
-                }
-                if rowType == "system" {
-                    let subtype = (obj["subtype"] as? String) ?? ""
-                    if subtype == "compact_boundary" {
-                        justSawCompactBoundary = true
-                        lastTurnComplete = true
-                        hasPendingTool = false
-                    } else if subtype == "turn_duration" || subtype == "stop_hook_summary" {
-                        justSawCompactBoundary = false
-                        lastTurnComplete = true
-                        hasPendingTool = false
+                    if !isSubagent && rowType == "ai-title", let title = obj["aiTitle"] as? String, !title.isEmpty {
+                        sessionTitle = title
+                        continue
+                    }
+                    if !isSubagent && rowType == "cost-state" {
+                        linesAdded = max(linesAdded, (obj["totalLinesAdded"] as? Int) ?? 0)
+                        linesRemoved = max(linesRemoved, (obj["totalLinesRemoved"] as? Int) ?? 0)
+                        continue
+                    }
+                    if !isSubagent && rowType == "system" {
+                        let subtype = (obj["subtype"] as? String) ?? ""
+                        if subtype == "compact_boundary" {
+                            justSawCompactBoundary = true
+                            lastTurnComplete = true
+                            pendingToolIDs.removeAll()
+                        } else if subtype == "turn_duration" || subtype == "stop_hook_summary" {
+                            justSawCompactBoundary = false
+                            lastTurnComplete = true
+                            pendingToolIDs.removeAll()
+                            if let d = parsedTimestamp, d > lastEventDate {
+                                lastEventDate = d
+                            }
+                        }
+                        continue
+                    }
+
+                    if rowType == "user" {
+                        let isMeta = (obj["isMeta"] as? Bool) == true
+                        let isCompactSummary = (obj["isCompactSummary"] as? Bool) == true
+                        let isVisibleInTranscriptOnly = (obj["isVisibleInTranscriptOnly"] as? Bool) == true
+                        let followsCompact = justSawCompactBoundary
+                        if !isSubagent { justSawCompactBoundary = false }
+
+                        let userMessage = obj["message"] as? [String: Any]
+                        let contentItems = userMessage?["content"] as? [[String: Any]]
+                        let isToolResultRow = (obj["toolUseResult"] != nil)
+                            || (contentItems?.contains(where: { ($0["type"] as? String) == "tool_result" }) == true)
+
+                        // Tool results are logged under `type: "user"`: extract Bash/Edit file modifications
+                        // and clear finished tool IDs instead of treating the row as a new user prompt.
+                        if isToolResultRow {
+                            if let d = parsedTimestamp, d > lastEventDate {
+                                lastEventDate = d
+                            }
+                            let finishedIDs = (contentItems ?? []).compactMap { item -> String? in
+                                guard (item["type"] as? String) == "tool_result" else { return nil }
+                                return item["tool_use_id"] as? String
+                            }
+                            for tid in finishedIDs {
+                                pendingToolIDs.remove(tid)
+                            }
+
+                            if let tur = obj["toolUseResult"] as? [String: Any] {
+                                var editedNames: [String] = []
+                                if let fp = tur["filePath"] as? String, !fp.isEmpty,
+                                   (tur["structuredPatch"] != nil || (tur["type"] as? String) == "create") {
+                                    let name = URL(fileURLWithPath: fp).lastPathComponent
+                                    if !name.isEmpty { editedNames.append(name) }
+                                }
+                                if let bashDiff = tur["bashEditDiff"] as? [String: Any],
+                                   let files = bashDiff["files"] as? [[String: Any]] {
+                                    for entry in files {
+                                        if let fp = entry["filePath"] as? String, !fp.isEmpty {
+                                            let name = URL(fileURLWithPath: fp).lastPathComponent
+                                            if !name.isEmpty && !editedNames.contains(name) {
+                                                editedNames.append(name)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if let lastEdited = editedNames.last {
+                                    deletion = nil
+                                    latestEditedFile = lastEdited
+                                    latestFile = lastEdited
+                                    // Retroactively enrich a Bash tool event with the file(s) it actually modified
+                                    for tid in finishedIDs {
+                                        if let evIdx = toolUseEventIndices[tid], evIdx < events.count,
+                                           events[evIdx].phase != .editing {
+                                            editCount += editedNames.count
+                                            let old = events[evIdx]
+                                            let summaryText = editedNames.count > 1
+                                                ? "\(lastEdited) +\(editedNames.count - 1)"
+                                                : lastEdited
+                                            events[evIdx] = AgentToolEvent(
+                                                id: old.id,
+                                                stepIndex: old.stepIndex,
+                                                toolName: old.toolName,
+                                                phase: .editing,
+                                                summary: summaryText,
+                                                targetFile: lastEdited,
+                                                timestamp: old.timestamp
+                                            )
+                                        }
+                                    }
+                                    latestDetail = lastEdited
+                                }
+                            }
+
+                            if pendingToolIDs.isEmpty && latestPhase == .editing {
+                                latestPhase = .thinking
+                            }
+                            continue
+                        }
+
+                        if isSubagent || isMeta || isCompactSummary || isVisibleInTranscriptOnly || followsCompact {
+                            continue
+                        }
+
+                        let userText = (userMessage?["content"] as? String)
+                            ?? (contentItems?.first?["text"] as? String)
+                            ?? ""
+                        if userText.hasPrefix("<command-name>") || userText.hasPrefix("<local-command-") {
+                            continue
+                        }
+
                         if let d = parsedTimestamp, d > lastEventDate {
                             lastEventDate = d
                         }
-                    }
-                    continue
-                }
-
-                if rowType == "user" {
-                    let isMeta = (obj["isMeta"] as? Bool) == true
-                    let isCompactSummary = (obj["isCompactSummary"] as? Bool) == true
-                    let isVisibleInTranscriptOnly = (obj["isVisibleInTranscriptOnly"] as? Bool) == true
-                    let followsCompact = justSawCompactBoundary
-                    justSawCompactBoundary = false
-
-                    if isMeta || isCompactSummary || isVisibleInTranscriptOnly || followsCompact {
+                        pendingToolIDs.removeAll()
+                        if userText.hasPrefix("[Request interrupted by user") {
+                            lastTurnComplete = true
+                            continue
+                        }
+                        lastTurnComplete = false
+                        latestPhase = .thinking
+                        latestTitle = String(localized: "Thinking")
+                        latestDetail = sessionTitle.isEmpty ? String(localized: "Analyzing context…") : sessionTitle
                         continue
                     }
 
-                    let userMessage = obj["message"] as? [String: Any]
-                    let userText = (userMessage?["content"] as? String)
-                        ?? ((userMessage?["content"] as? [[String: Any]])?.first?["text"] as? String)
-                        ?? ""
-                    // Local slash commands (/clear, /model, /mcp, /compact...) are logged as
-                    // "<command-name>..." and never reach the model. Commands that do prompt it
-                    // (skills, /init) are logged as "<command-message>..." and still start a turn.
-                    if userText.hasPrefix("<command-name>") || userText.hasPrefix("<local-command-") {
+                    guard rowType == "assistant", let message = obj["message"] as? [String: Any] else {
                         continue
                     }
 
+                    if !isSubagent { justSawCompactBoundary = false }
                     if let d = parsedTimestamp, d > lastEventDate {
                         lastEventDate = d
                     }
-                    hasPendingTool = false
-                    if userText.hasPrefix("[Request interrupted by user") {
-                        lastTurnComplete = true
-                        continue
+                    let eventTime = parsedTimestamp ?? (lastEventDate == .distantPast ? candidate.modDate : lastEventDate)
+                    if !isSubagent {
+                        lastTurnComplete = false
                     }
-                    lastTurnComplete = false
-                    latestPhase = .thinking
-                    latestTitle = String(localized: "Thinking")
-                    latestDetail = sessionTitle.isEmpty ? String(localized: "Analyzing context…") : sessionTitle
-                    continue
-                }
+                    stepCounter += 1
 
-                guard rowType == "assistant", let message = obj["message"] as? [String: Any] else {
-                    continue
-                }
-
-                justSawCompactBoundary = false
-                if let d = parsedTimestamp, d > lastEventDate {
-                    lastEventDate = d
-                }
-                let eventTime = parsedTimestamp ?? (lastEventDate == .distantPast ? candidate.modDate : lastEventDate)
-                lastTurnComplete = false
-                hasPendingTool = false
-                stepCounter += 1
-
-                if let model = message["model"] as? String, !model.isEmpty {
-                    modelDisplay = formatClaudeModelName(model)
-                }
-
-                if let usage = message["usage"] as? [String: Any] {
-                    let inTok = (usage["input_tokens"] as? Int) ?? 0
-                    let cacheCreate = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-                    let cRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
-                    let outTok = (usage["output_tokens"] as? Int) ?? 0
-                    let totalIn = inTok + cacheCreate + cRead
-                    if totalIn > 0 {
-                        contextTokens = totalIn
-                        cacheRead = cRead
+                    if !isSubagent, let model = message["model"] as? String, !model.isEmpty {
+                        modelDisplay = formatClaudeModelName(model)
                     }
-                    sumOutput += outTok
-                }
 
-                if let content = message["content"] as? [[String: Any]] {
-                    for item in content {
-                        let cType = (item["type"] as? String) ?? ""
-                        if cType == "thinking" {
-                            latestPhase = .thinking
-                            latestTitle = String(localized: "Thinking")
-                            latestDetail = sessionTitle.isEmpty ? String(localized: "Reasoning…") : sessionTitle
-                        } else if cType == "tool_use" {
-                            hasPendingTool = true
-                            let name = (item["name"] as? String) ?? "Tool"
-                            let input = (item["input"] as? [String: Any]) ?? [:]
-                            var phase = AgentWorkPhase.classify(toolName: name)
-                            if phase == .editing {
-                                editCount += 1
-                                deletion = nil
-                            } else if phase == .running,
-                                      let command = input["command"] as? String,
-                                      let found = AgentDeletionParser.deletion(in: command) {
-                                phase = .deleting
-                                deletion = found
-                                deletionSerial += 1
-                            }
+                    if !isSubagent, let usage = message["usage"] as? [String: Any] {
+                        let inTok = (usage["input_tokens"] as? Int) ?? 0
+                        let cacheCreate = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+                        let cRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+                        let outTok = (usage["output_tokens"] as? Int) ?? 0
+                        let totalIn = inTok + cacheCreate + cRead
+                        if totalIn > 0 {
+                            contextTokens = totalIn
+                            cacheRead = cRead
+                        }
+                        sumOutput += outTok
+                    }
 
-                            var targetFile: String? = nil
-                            if let fp = input["file_path"] as? String, !fp.isEmpty {
-                                targetFile = URL(fileURLWithPath: fp).lastPathComponent
-                            }
+                    if let content = message["content"] as? [[String: Any]] {
+                        for item in content {
+                            let cType = (item["type"] as? String) ?? ""
+                            if cType == "thinking" {
+                                if pendingToolIDs.isEmpty {
+                                    latestPhase = .thinking
+                                    latestTitle = String(localized: "Thinking")
+                                    latestDetail = sessionTitle.isEmpty ? String(localized: "Reasoning…") : sessionTitle
+                                }
+                            } else if cType == "tool_use" {
+                                let toolID = (item["id"] as? String) ?? ""
+                                if !toolID.isEmpty {
+                                    pendingToolIDs.insert(toolID)
+                                }
+                                let name = (item["name"] as? String) ?? "Tool"
+                                let input = (item["input"] as? [String: Any]) ?? [:]
+                                var phase = AgentWorkPhase.classify(toolName: name)
+                                if name == "NotebookEdit" || name == "MultiEdit" {
+                                    phase = .editing
+                                }
+                                if phase == .editing {
+                                    editCount += 1
+                                    deletion = nil
+                                } else if phase == .running,
+                                          let command = input["command"] as? String,
+                                          let found = AgentDeletionParser.deletion(in: command) {
+                                    phase = .deleting
+                                    deletion = found
+                                    deletionSerial += 1
+                                }
 
-                            let detail: String
-                            if let desc = input["description"] as? String, !desc.isEmpty {
-                                detail = desc
-                            } else if let targetFile {
-                                detail = targetFile
-                            } else if let cmd = input["command"] as? String, !cmd.isEmpty {
-                                detail = String(cmd.prefix(64))
-                            } else if let pattern = input["pattern"] as? String, !pattern.isEmpty {
-                                detail = pattern
-                            } else {
-                                detail = name
-                            }
+                                var targetFile: String? = nil
+                                if let fp = (input["file_path"] as? String)
+                                    ?? (input["notebook_path"] as? String)
+                                    ?? (input["path"] as? String)
+                                    ?? (input["TargetFile"] as? String),
+                                   !fp.isEmpty {
+                                    targetFile = URL(fileURLWithPath: fp).lastPathComponent
+                                }
 
-                            latestTitle = name
-                            latestDetail = detail
-                            latestPhase = phase
-                            if let targetFile { latestFile = targetFile }
+                                let detail: String
+                                if let desc = input["description"] as? String, !desc.isEmpty {
+                                    detail = desc
+                                } else if let targetFile {
+                                    detail = targetFile
+                                } else if let cmd = input["command"] as? String, !cmd.isEmpty {
+                                    detail = String(cmd.prefix(64))
+                                } else if let pattern = input["pattern"] as? String, !pattern.isEmpty {
+                                    detail = pattern
+                                } else {
+                                    detail = name
+                                }
 
-                            events.append(
-                                AgentToolEvent(
-                                    id: "cc-\(candidate.id.prefix(6))-\(stepCounter)-\(events.count)",
-                                    stepIndex: stepCounter,
-                                    toolName: name,
-                                    phase: phase,
-                                    summary: detail,
-                                    targetFile: targetFile,
-                                    timestamp: eventTime
+                                latestTitle = name
+                                latestDetail = detail
+                                latestPhase = phase
+                                if let targetFile {
+                                    latestFile = targetFile
+                                    if phase == .editing {
+                                        latestEditedFile = targetFile
+                                    }
+                                }
+
+                                let eventIndex = events.count
+                                if !toolID.isEmpty {
+                                    toolUseEventIndices[toolID] = eventIndex
+                                }
+                                events.append(
+                                    AgentToolEvent(
+                                        id: "cc-\(candidate.id.prefix(6))-\(isSubagent ? "sub-" : "")\(stepCounter)-\(eventIndex)",
+                                        stepIndex: stepCounter,
+                                        toolName: name,
+                                        phase: phase,
+                                        summary: detail,
+                                        targetFile: targetFile,
+                                        timestamp: eventTime
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
             }
 
+            processClaudeTranscriptLines(lines.suffix(360), isSubagent: false)
+
+            // When Claude Code delegates edits to an `Agent` subagent, overlay live activity from the active subagent
+            if !lastTurnComplete,
+               let subURL = candidate.newestSubagentURL,
+               now.timeIntervalSince(candidate.newestSubagentModDate) < 90 {
+                let subLines = readTailLines(from: subURL, maxBytes: 262_144)
+                if !subLines.isEmpty {
+                    processClaudeTranscriptLines(subLines.suffix(160), isSubagent: true)
+                }
+            }
+
+            let hasPendingTool = !pendingToolIDs.isEmpty
             var tally = cache[key]?.diff ?? AgentDiffTally()
-            tally.advance(url: candidate.url)
-            let fileDiff = latestFile.flatMap { tally.perFile[$0] }
+            tally.advance(url: candidate.url, subagentURLs: candidate.subagentURLs)
+
+            let inFlightName = tally.inFlightEdit?.fileName
+            let focusFile: String? = {
+                if let inFlightName, tally.liveFileDiff(for: inFlightName) != nil {
+                    return inFlightName
+                }
+                if let latestEditedFile, tally.liveFileDiff(for: latestEditedFile) != nil {
+                    return latestEditedFile
+                }
+                if let latestFile, tally.liveFileDiff(for: latestFile) != nil {
+                    return latestFile
+                }
+                if let lastEdited = tally.lastEditedFile, tally.liveFileDiff(for: lastEdited) != nil {
+                    return lastEdited
+                }
+                return inFlightName ?? latestEditedFile ?? latestFile
+            }()
+            let fileDiff = focusFile.flatMap { tally.liveFileDiff(for: $0) }
+            let liveAdded = max(linesAdded, tally.added + (tally.inFlightEdit?.added ?? 0))
+            let liveRemoved = max(linesRemoved, tally.removed + (tally.inFlightEdit?.removed ?? 0))
 
             let windowSize: Double = contextTokens > 200_000 ? 1_000_000.0 : 200_000.0
             let baseSnapshot = AgentSessionSnapshot(
@@ -6468,22 +7752,22 @@ final class AntigravityAgentMonitor: ObservableObject {
                 phase: latestPhase,
                 isActive: false,
                 isWorkingNow: false,
-                lastUpdated: lastEventDate,
+                lastUpdated: lastEventDate == .distantPast ? candidate.modDate : lastEventDate,
                 stepCount: stepCounter,
                 contextTokens: contextTokens,
                 maxContextWindow: windowSize,
                 cacheReadTokens: cacheRead,
                 outputTokens: sumOutput,
-                filesModifiedCount: editCount,
-                linesAdded: max(linesAdded, tally.added),
-                linesRemoved: max(linesRemoved, tally.removed),
-                currentFile: latestFile,
+                filesModifiedCount: max(editCount, tally.perFile.count),
+                linesAdded: liveAdded,
+                linesRemoved: liveRemoved,
+                currentFile: focusFile,
                 currentActionTitle: latestTitle,
                 currentActionDetail: latestDetail,
                 recentEvents: Array(events.suffix(12).reversed()),
                 fileLinesAdded: fileDiff?.added ?? 0,
                 fileLinesRemoved: fileDiff?.removed ?? 0,
-                editSerial: tally.editCount,
+                editSerial: tally.liveEditSerial,
                 deletedName: deletion?.name,
                 deletedCount: deletion?.count ?? 0,
                 deletionSerial: deletionSerial,
@@ -7607,8 +8891,32 @@ private struct AgentsEmptyStateView: View {
 // MARK: - Lock Screen Music Player Panel via SkyLightWindow (Gravity Lock Screen Music UI)
 
 @MainActor
+private final class LockScreenPassThroughHostingView<Content: View>: NSHostingView<Content> {
+    override var isOpaque: Bool { false }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        wantsLayer = true
+        layer?.isOpaque = false
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if LockScreenMediaPanelManager.shared.shouldPassThroughToLoginWindow(viewPoint: point, in: self) {
+            return nil
+        }
+        return super.hitTest(point)
+    }
+}
+
+@MainActor
 final class LockScreenMediaPanelManager: ObservableObject {
     static let shared = LockScreenMediaPanelManager()
+
+    /// Bottom-center aperture matching macOS LoginUIKit's avatar + username + password capsule stack
+    static let unlockCutoutWidth: CGFloat = 356
+    static let unlockCutoutHeight: CGFloat = 228
+    static let unlockCornerRadius: CGFloat = 30
 
     private var panelWindow: BoringNotchSkyLightWindow?
     private var panelScreen: NSScreen?
@@ -7637,7 +8945,12 @@ final class LockScreenMediaPanelManager: ObservableObject {
     private var screensWakeObserver: NSObjectProtocol?
     /// Full screen lyrics layout (player on the left, lyrics on the right) instead of the compact card
     @Published private(set) var isLyricsLayout: Bool = false
+    /// Punches a clean click-through aperture at the bottom center so the native macOS password field is visible and clickable
+    @Published private(set) var isUnlockZoneRevealed: Bool = false
     private var isPresentedOnSkyLight: Bool = false
+    private var globalUnlockMouseMonitor: Any?
+    private var localUnlockMouseMonitor: Any?
+    private var unlockAutoCloseTask: Task<Void, Never>?
 
     private init() {
         positionObserver = Defaults.publisher(keys: .lockScreenMediaHorizontalPosition, .lockScreenMediaVerticalPosition)
@@ -7788,6 +9101,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
         guard isWallpaperMode, let window = panelWindow else { return }
         wallpaperTransitionID += 1
         let transitionID = wallpaperTransitionID
+        hideUnlockZone(animated: true)
         withAnimation(.easeInOut(duration: 0.35)) {
             isWallpaperMode = false
         }
@@ -7805,8 +9119,119 @@ final class LockScreenMediaPanelManager: ObservableObject {
         wallpaperTransitionID += 1
         isWallpaperMode = false
         isWindowExpanded = false
+        isUnlockZoneRevealed = false
+        unlockAutoCloseTask?.cancel()
+        unlockAutoCloseTask = nil
         animatedArtworkURL = nil
         wallpaperVideoURL = nil
+    }
+
+    func shouldPassThroughToLoginWindow(viewPoint: NSPoint, in view: NSView) -> Bool {
+        guard isUnlockZoneRevealed, (isLyricsLayout || isWallpaperMode) else { return false }
+        let windowPoint = view.superview?.convert(viewPoint, to: nil) ?? viewPoint
+        let width = view.window?.frame.width ?? view.bounds.width
+        return windowPoint.y >= 0
+            && windowPoint.y <= Self.unlockCutoutHeight
+            && abs(windowPoint.x - width / 2) <= Self.unlockCutoutWidth / 2
+    }
+
+    func revealUnlockZone() {
+        guard isLyricsLayout || isWallpaperMode else { return }
+        if !isUnlockZoneRevealed {
+            withAnimation(.spring(response: 0.30, dampingFraction: 0.92)) {
+                isUnlockZoneRevealed = true
+            }
+        }
+        refreshUnlockAutoClose(for: NSEvent.mouseLocation)
+    }
+
+    func hideUnlockZone(animated: Bool = true) {
+        unlockAutoCloseTask?.cancel()
+        unlockAutoCloseTask = nil
+        guard isUnlockZoneRevealed else { return }
+        if animated {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.96)) {
+                isUnlockZoneRevealed = false
+            }
+        } else {
+            isUnlockZoneRevealed = false
+        }
+    }
+
+    private func installUnlockMouseMonitors() {
+        removeUnlockMouseMonitors()
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown]
+        globalUnlockMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            let mouse = NSEvent.mouseLocation
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.handleScreenMouseActivity(at: mouse)
+                }
+            }
+        }
+        localUnlockMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            let mouse = NSEvent.mouseLocation
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.handleScreenMouseActivity(at: mouse)
+                }
+            }
+            return event
+        }
+    }
+
+    private func removeUnlockMouseMonitors() {
+        unlockAutoCloseTask?.cancel()
+        unlockAutoCloseTask = nil
+        if let globalUnlockMouseMonitor {
+            NSEvent.removeMonitor(globalUnlockMouseMonitor)
+            self.globalUnlockMouseMonitor = nil
+        }
+        if let localUnlockMouseMonitor {
+            NSEvent.removeMonitor(localUnlockMouseMonitor)
+            self.localUnlockMouseMonitor = nil
+        }
+    }
+
+    private func handleScreenMouseActivity(at mouse: NSPoint) {
+        guard panelWindow?.isVisible == true,
+              (isLyricsLayout || isWallpaperMode),
+              let screen = panelScreen ?? targetScreen() else { return }
+
+        let dx = abs(mouse.x - screen.frame.midX)
+        let dy = mouse.y - screen.frame.minY
+
+        // Hovering the bottom-center password pill uncovers the native password field immediately
+        // so the user's very first click lands directly inside macOS's password input.
+        if !isUnlockZoneRevealed {
+            if dx <= 135 && dy >= 0 && dy <= 56 {
+                revealUnlockZone()
+                return
+            }
+        } else {
+            refreshUnlockAutoClose(for: mouse)
+        }
+    }
+
+    private func refreshUnlockAutoClose(for mouse: NSPoint) {
+        guard isUnlockZoneRevealed, let screen = panelScreen ?? targetScreen() else { return }
+        let dx = abs(mouse.x - screen.frame.midX)
+        let dy = mouse.y - screen.frame.minY
+        let insideBannerFrame = dx <= (Self.unlockCutoutWidth / 2 + 4)
+            && dy >= 0
+            && dy <= (Self.unlockCutoutHeight + 4)
+
+        if insideBannerFrame {
+            unlockAutoCloseTask?.cancel()
+            unlockAutoCloseTask = nil
+        } else if unlockAutoCloseTask == nil {
+            unlockAutoCloseTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled, let self else { return }
+                self.unlockAutoCloseTask = nil
+                self.hideUnlockZone(animated: true)
+            }
+        }
     }
 
     private static let desktopPlayerBundleIDs: Set<String> = [
@@ -7857,6 +9282,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
     private func dismissPanelWindow() {
         pendingDismissTask?.cancel()
         pendingDismissTask = nil
+        removeUnlockMouseMonitors()
         resetWallpaperMode()
         isLyricsLayout = false
         guard let window = panelWindow else { return }
@@ -7964,7 +9390,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
                 self?.hideFromLockScreen()
             }
         )
-        let host = NSHostingView(rootView: rootView)
+        let host = LockScreenPassThroughHostingView(rootView: rootView)
         host.frame = NSRect(origin: .zero, size: frame.size)
         host.autoresizingMask = [.width, .height]
         window.contentView = host
@@ -7976,6 +9402,7 @@ final class LockScreenMediaPanelManager: ObservableObject {
         }
         window.orderFrontRegardless()
         keepNotchAbovePanel()
+        installUnlockMouseMonitors()
     }
 
     /// The panel and the notch windows share the same window class and level, so the panel (shown last)
@@ -8830,6 +10257,18 @@ struct LockScreenPanelRootView: View {
         return artworkService.videoURL(for: trackKey, albumKey: albumKey)
     }
 
+    private var isFullScreenSurface: Bool {
+        manager.isLyricsLayout || manager.isWallpaperMode
+    }
+
+    private var compactCardBottomPadding: CGFloat {
+        guard manager.isWindowExpanded else { return 0 }
+        if manager.isWallpaperMode && manager.isUnlockZoneRevealed {
+            return max(manager.cardBottomInset, LockScreenMediaPanelManager.unlockCutoutHeight + 14)
+        }
+        return manager.cardBottomInset
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             if manager.isLyricsLayout {
@@ -8848,11 +10287,37 @@ struct LockScreenPanelRootView: View {
                 }
 
                 LockScreenMediaPanelView(onClosePreview: onClosePreview)
-                    .padding(.bottom, manager.isWindowExpanded ? manager.cardBottomInset : 0)
+                    .padding(.bottom, compactCardBottomPadding)
                     .offset(x: manager.isWindowExpanded ? manager.cardHorizontalOffset : 0)
+                    .animation(.spring(response: 0.34, dampingFraction: 0.9), value: manager.isUnlockZoneRevealed)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .overlay(alignment: .bottom) {
+            if isFullScreenSurface && manager.isUnlockZoneRevealed {
+                UnevenRoundedRectangle(
+                    topLeadingRadius: LockScreenMediaPanelManager.unlockCornerRadius,
+                    bottomLeadingRadius: 0,
+                    bottomTrailingRadius: 0,
+                    topTrailingRadius: LockScreenMediaPanelManager.unlockCornerRadius,
+                    style: .continuous
+                )
+                .fill(Color.black)
+                .frame(
+                    width: LockScreenMediaPanelManager.unlockCutoutWidth,
+                    height: LockScreenMediaPanelManager.unlockCutoutHeight
+                )
+                .blendMode(.destinationOut)
+                .allowsHitTesting(false)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .compositingGroup()
+        .overlay(alignment: .bottom) {
+            if isFullScreenSurface {
+                unlockOverlayChrome
+            }
+        }
         .onChange(of: animatedArtworkURL, initial: true) { _, url in
             manager.setAnimatedArtwork(url)
         }
@@ -8867,6 +10332,56 @@ struct LockScreenPanelRootView: View {
                 fallbackCover: musicManager.albumArt,
                 isAppleMusic: musicManager.bundleIdentifier == "com.apple.Music"
             )
+        }
+    }
+
+    @ViewBuilder
+    private var unlockOverlayChrome: some View {
+        if manager.isUnlockZoneRevealed {
+            UnevenRoundedRectangle(
+                topLeadingRadius: LockScreenMediaPanelManager.unlockCornerRadius,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: LockScreenMediaPanelManager.unlockCornerRadius,
+                style: .continuous
+            )
+            .strokeBorder(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.24), Color.white.opacity(0.06)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                lineWidth: 0.9
+            )
+            .frame(
+                width: LockScreenMediaPanelManager.unlockCutoutWidth,
+                height: LockScreenMediaPanelManager.unlockCutoutHeight
+            )
+            .allowsHitTesting(false)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else {
+            Button {
+                manager.revealUnlockZone()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 10.5, weight: .semibold))
+                    Text(String(localized: "Password"))
+                        .font(.system(size: 11.5, weight: .medium))
+                        .tracking(-0.1)
+                }
+                .foregroundStyle(.white.opacity(0.64))
+                .padding(.horizontal, 13)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.white.opacity(0.09)))
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.7)
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 16)
+            .transition(.opacity)
         }
     }
 }
@@ -9874,12 +11389,17 @@ struct LockScreenLyricsLayoutView: View {
         let horizontal = CGFloat(min(max(horizontalPosition, 0), 1))
         let vertical = CGFloat(min(max(verticalPosition, 0), 1))
         let x = sideMargin + horizontalRange * horizontal + playerSize.width / 2
+        let minClearance: CGFloat = (!showsLyrics && manager.isUnlockZoneRevealed)
+            ? (LockScreenMediaPanelManager.unlockCutoutHeight + 24)
+            : bottomMargin
         if hasMotionArtwork {
             // A little above the bottom edge, about where the regular player sits
-            let lift = max(110, size.height * 0.11)
+            let lift = max(minClearance, max(110, size.height * 0.11))
             return CGPoint(x: x, y: size.height - lift - playerSize.height / 2)
         }
-        return CGPoint(x: x, y: size.height - bottomMargin - verticalRange * vertical - playerSize.height / 2)
+        let targetY = size.height - bottomMargin - verticalRange * vertical - playerSize.height / 2
+        let maxY = size.height - minClearance - playerSize.height / 2
+        return CGPoint(x: x, y: min(targetY, maxY))
     }
 
     private var accent: Color {
@@ -9917,6 +11437,7 @@ struct LockScreenLyricsLayoutView: View {
             }
             .animation(.spring(response: 0.6, dampingFraction: 0.86), value: showsLyrics)
             .animation(.spring(response: 0.6, dampingFraction: 0.86), value: hasMotionArtwork)
+            .animation(.spring(response: 0.34, dampingFraction: 0.9), value: manager.isUnlockZoneRevealed)
         }
         .ignoresSafeArea()
         .onPreferenceChange(LockScreenPlayerSizeKey.self) { playerSize = $0 }

@@ -13,7 +13,7 @@
   <meta property="og:image" content="https://adrielakak.github.io/GravityNotch/assets/og-preview.jpg">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" type="image/png" href="assets/favicon.png">
-  <link rel="stylesheet" href="styles.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=14">
   <script>document.documentElement.classList.add("js", "at-hero");</script>
 </head>
 <body class="docs-page">
@@ -382,6 +382,7 @@
                 <p><b>Carte</b> : un lecteur compact avec pochette, commandes et paroles. <b>Plein écran</b> : le lecteur à gauche et les paroles à droite, comme dans Apple Music, mot par mot et en vague.</p>
                 <p>En plein écran, chaque mot se soulève quand il est chanté, et une syllabe tenue gonfle et brille d'autant plus qu'elle dure (macOS 15 et plus). L'effet se coupe dans <span class="path">Réglages › Média › Animer les lettres au fil du chant</span>.</p>
                 <p>Seules les paroles synchronisées s'affichent ; un morceau sans paroles synchronisées garde un lecteur simple.</p>
+                <p>Pour déverrouiller, approchez le pointeur du bas de l'écran, au centre : le champ de mot de passe de macOS apparaît à travers l'affichage, prêt à taper.</p>
               </div>
               <div class="doc-card">
                 <h3>Pochettes animées</h3>
@@ -408,6 +409,7 @@
                 <p><b>Card</b>: a compact player with cover, controls and lyrics. <b>Full screen</b>: the player on the left and the lyrics on the right, like in Apple Music, word by word, in a wave.</p>
                 <p>In full screen, each word rises as it is sung, and a held syllable swells and glows the longer it lasts (macOS 15 and later). Turn the effect off in <span class="path">Settings › Media › Animate letters as words are sung</span>.</p>
                 <p>Only synced lyrics are shown; a song without synced lyrics keeps a simple player.</p>
+                <p>To unlock, move the pointer to the bottom center of the screen: the macOS password field shows through, ready to type.</p>
               </div>
               <div class="doc-card">
                 <h3>Animated covers</h3>
@@ -443,6 +445,10 @@
                 <h3>Sortie audio</h3>
                 <p>Passez des haut-parleurs aux AirPods ou à un écran en un clic, depuis la commande du lecteur ou le clic droit sur le bouton de capture.</p>
               </div>
+              <div class="doc-card">
+                <h3>Notifications système <span class="doc-badge">bêta</span></h3>
+                <p>De petites animations façon Dynamic Island quand un mode Concentration s'active ou se coupe, quand un texte copié sur l'iPhone ou l'iPad arrive par le Presse-papiers universel (un clic ouvre Clips), quand la langue du clavier change, ou quand la batterie de vos AirPods est faible. Un mode Concentration actif laisse aussi une petite icône au coin de la pochette. Au survol, chaque bannière s'élargit pour donner le détail, comme celle de la batterie du Mac. À régler dans <span class="path">Réglages › HUDs › Notifications système</span>, avec des boutons d'aperçu. Aucune autorisation en plus.</p>
+              </div>
             </div>
             <p class="doc-note">Sous macOS 27, la bannière «&nbsp;Connectés&nbsp;» d'Apple ne peut plus être masquée par aucune app : elle s'affiche à côté de l'animation de GravityNotch.</p>
           </div>
@@ -468,6 +474,10 @@
               <div class="doc-card">
                 <h3>Audio output</h3>
                 <p>Switch from the speakers to AirPods or a display in one click, from the player control or by right-clicking the capture button.</p>
+              </div>
+              <div class="doc-card">
+                <h3>System notifications <span class="doc-badge">beta</span></h3>
+                <p>Small Dynamic Island style animations when a Focus mode turns on or off, when text copied on your iPhone or iPad arrives through Universal Clipboard (one click opens Clips), when the keyboard language changes, or when your AirPods battery runs low. An active Focus mode also leaves a small icon on the corner of the cover. On hover, each banner widens to show the detail, like the Mac battery one. Set it in <span class="path">Settings › HUDs › System Notifications</span>, with preview buttons. No extra permission needed.</p>
               </div>
             </div>
             <p class="doc-note">On macOS 27, Apple's "Connected" banner can no longer be hidden by any app: it shows next to the GravityNotch animation.</p>
@@ -551,7 +561,7 @@
                 <ul>
                   <li>Dans l'encoche fermée : un anneau aux couleurs de l'agent tant qu'il travaille, puis une coche verte quand il a fini.</li>
                   <li>Dans l'onglet Agents : le projet, l'étape en cours, le contexte utilisé, les outils appelés.</li>
-                  <li>Le fichier en train d'être modifié, avec sa barre verte et rouge de lignes ajoutées et supprimées.</li>
+                  <li>Le fichier en train d'être modifié, avec sa barre verte et rouge de lignes ajoutées et supprimées. Les modifications faites par un script ou par un sous-agent de Claude Code comptent aussi, et avec Antigravity le total repart de zéro à chaque nouvelle demande.</li>
                   <li>Ce que l'agent supprime depuis son terminal (<code>rm</code>, <code>git rm</code>…), avec une corbeille rouge et le nombre d'éléments.</li>
                 </ul>
               </div>
@@ -575,7 +585,7 @@
                 <ul>
                   <li>In the closed notch: a ring in the agent's colors while it works, then a green check when it's done.</li>
                   <li>In the Agents tab: the project, the current step, the context used, the tools called.</li>
-                  <li>The file being edited, with its green and red bar of added and removed lines.</li>
+                  <li>The file being edited, with its green and red bar of added and removed lines. Edits made by a script or by a Claude Code subagent count too, and with Antigravity the total starts over with each new request.</li>
                   <li>What the agent deletes from its terminal (<code>rm</code>, <code>git rm</code>…), with a red trash can and the number of items.</li>
                 </ul>
               </div>

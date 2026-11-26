@@ -20,6 +20,7 @@ enum SneakContentType {
     case download
     case bluetoothAudio
     case listeningMode
+    case systemNotification
     case updateReady
 }
 
@@ -187,6 +188,7 @@ class BoringViewCoordinator: ObservableObject {
             _ = ClipboardHistoryManager.shared
             _ = BluetoothAudioLiveActivityManager.shared
             AirPodsListeningModeMonitor.shared.start()
+            SystemNotificationMonitor.shared.start()
             AppleMusicAutoMixMonitor.shared.start()
 
             if Defaults[.hudReplacement] {
@@ -299,7 +301,7 @@ class BoringViewCoordinator: ObservableObject {
         value: CGFloat = 0,
         browser: BrowserType = .chromium
     ) {
-        let anim: Animation = (type == .bluetoothAudio || type == .listeningMode)
+        let anim: Animation = (type == .bluetoothAudio || type == .listeningMode || type == .systemNotification)
             ? .spring(response: 0.40, dampingFraction: 0.84)
             : .smooth
         // Single struct assignment on @MainActor so expandingView.didSet runs once and cancels stale hide tasks immediately
@@ -358,6 +360,8 @@ class BoringViewCoordinator: ObservableObject {
                         duration = 4.2
                     case .listeningMode:
                         duration = 2.4
+                    case .systemNotification:
+                        duration = 2.6
                     case .updateReady:
                         duration = 5
                     default:

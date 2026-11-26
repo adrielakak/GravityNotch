@@ -20,6 +20,7 @@ struct ContentView: View {
     @ObservedObject var coordinator = BoringViewCoordinator.shared
     @ObservedObject var musicManager = MusicManager.shared
     @ObservedObject var autoMixMonitor = AppleMusicAutoMixMonitor.shared
+    @ObservedObject var systemNotificationMonitor = SystemNotificationMonitor.shared
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var agentMonitor = AntigravityAgentMonitor.shared
     @ObservedObject var notchTimer = NotchTimerManager.shared
@@ -50,6 +51,7 @@ struct ContentView: View {
     @Default(.showPowerStatusNotifications) var showPowerStatusNotifications
     @Default(.showBluetoothAudioLiveActivity) var showBluetoothAudioLiveActivity
     @Default(.showListeningModeLiveActivity) var showListeningModeLiveActivity
+    @Default(.showFocusLiveActivity) var showFocusLiveActivity
     @Default(.inlineHUD) var inlineHUD
     @Default(.sneakPeekStyles) var sneakPeekStyles
     @Default(.coloredSpectrogram) var coloredSpectrogram
@@ -117,6 +119,24 @@ struct ContentView: View {
             && !vm.hideOnClosed
     }
 
+    private var shouldShowSystemNotificationLiveActivity: Bool {
+        coordinator.expandingView.type == .systemNotification
+            && coordinator.expandingView.show
+            && systemNotificationMonitor.currentItem != nil
+            && vm.notchState == .closed
+            && !coordinator.sneakPeek.show
+            && !vm.hideOnClosed
+    }
+
+    private var shouldShowBatteryNotification: Bool {
+        coordinator.expandingView.type == .battery
+            && coordinator.expandingView.show
+            && vm.notchState == .closed
+            && showPowerStatusNotifications
+            && !coordinator.sneakPeek.show
+            && !vm.hideOnClosed
+    }
+
     private var shouldShowTimerLiveActivity: Bool {
         notchTimer.isActive
             && !coordinator.expandingView.show
@@ -127,18 +147,24 @@ struct ContentView: View {
     private var computedChinWidth: CGFloat {
         var chinWidth: CGFloat = vm.closedNotchSize.width
 
-        if coordinator.expandingView.type == .battery && coordinator.expandingView.show
-            && vm.notchState == .closed && showPowerStatusNotifications
-        {
-            chinWidth = 640
+        if shouldShowBatteryNotification {
+            chinWidth += 2 * (isHovering ? 148 : 38)
         } else if coordinator.expandingView.type == .updateReady && coordinator.expandingView.show
             && vm.notchState == .closed
         {
             chinWidth = vm.closedNotchSize.width + 10 + 2 * UpdateReadyClosedView.wingWidth
         } else if shouldShowBluetoothLiveActivity {
-            chinWidth += 2 * BluetoothAudioClosedNotchView.compactWingWidth(closedHeight: vm.effectiveClosedNotchHeight)
+            chinWidth += 2 * (isHovering
+                ? BluetoothAudioClosedNotchView.expandedWingWidth
+                : BluetoothAudioClosedNotchView.compactWingWidth(closedHeight: vm.effectiveClosedNotchHeight))
         } else if shouldShowListeningModeLiveActivity {
-            chinWidth += 2 * ListeningModeClosedNotchView.wingWidth
+            chinWidth += 2 * (isHovering
+                ? ListeningModeClosedNotchView.expandedWingWidth
+                : ListeningModeClosedNotchView.compactWingWidth(closedHeight: vm.effectiveClosedNotchHeight))
+        } else if shouldShowSystemNotificationLiveActivity {
+            chinWidth += 2 * (isHovering
+                ? SystemNotificationClosedNotchView.expandedWingWidth
+                : SystemNotificationClosedNotchView.compactWingWidth(closedHeight: vm.effectiveClosedNotchHeight))
         } else if shouldShowTimerLiveActivity {
             chinWidth += 2 * TimerClosedNotchView.wingWidth
         } else if shouldShowAgentLiveActivity {
@@ -203,6 +229,8 @@ struct ContentView: View {
                             .animation(vm.notchState == .open ? openAnimation : closeAnimation, value: vm.notchState)
                             .animation(bluetoothAnimation, value: shouldShowBluetoothLiveActivity)
                             .animation(bluetoothAnimation, value: shouldShowListeningModeLiveActivity)
+                            .animation(bluetoothAnimation, value: shouldShowSystemNotificationLiveActivity)
+                            .animation(bluetoothAnimation, value: shouldShowBatteryNotification)
                             .animation(bluetoothAnimation, value: shouldShowTimerLiveActivity)
                             .animation(.smooth, value: gestureProgress)
                     }
@@ -216,6 +244,16 @@ struct ContentView: View {
                             doOpen()
                         } else if shouldShowListeningModeLiveActivity {
                             coordinator.toggleExpandingView(status: false, type: .listeningMode)
+                            doOpen()
+                        } else if shouldShowSystemNotificationLiveActivity {
+                            let opensClips = systemNotificationMonitor.currentItem?.opensClipboard == true
+                            coordinator.toggleExpandingView(status: false, type: .systemNotification)
+                            if opensClips && showClipboardTab {
+                                coordinator.currentView = .clipboard
+                            }
+                            doOpen()
+                        } else if shouldShowBatteryNotification {
+                            coordinator.toggleExpandingView(status: false, type: .battery)
                             doOpen()
                         } else if shouldShowTimerLiveActivity {
                             coordinator.currentView = .timer
@@ -378,23 +416,44 @@ struct ContentView: View {
                     .padding(.top, 40)
                     Spacer()
                 } else {
-                    if coordinator.expandingView.type == .battery && coordinator.expandingView.show
-                        && vm.notchState == .closed && showPowerStatusNotifications
-                    {
+                    if shouldShowBatteryNotification {
+                        let batteryWing: CGFloat = isHovering ? 148 : 38
+                        let earHeight = vm.effectiveClosedNotchHeight > 0 ? max(28, vm.effectiveClosedNotchHeight) : 32
                         HStack(spacing: 0) {
-                            HStack {
-                                Text(batteryModel.statusText)
-                                    .font(.subheadline)
-                                    .foregroundStyle(.white)
+                            HStack(spacing: 6) {
+                                Image(systemName: batteryModel.isCharging ? "bolt.fill" : (batteryModel.isInLowPowerMode ? "battery.25percent" : "powerplug.fill"))
+                                    .font(.system(size: 13.5, weight: .semibold))
+                                    .foregroundStyle(batteryModel.isCharging ? .green : (batteryModel.isInLowPowerMode ? .yellow : .white.opacity(0.85)))
+                                    .frame(width: 18, height: 18)
+
+                                if isHovering {
+                                    Text(batteryModel.statusText)
+                                        .font(.system(size: 11.5, weight: .semibold))
+                                        .tracking(-0.1)
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.8)
+                                        .transition(.opacity.combined(with: .offset(x: -4)))
+                                }
                             }
+                            .padding(.leading, 4)
+                            .frame(width: batteryWing, height: earHeight, alignment: .leading)
+                            .clipped()
 
                             Rectangle()
                                 .fill(.black)
-                                .frame(width: vm.closedNotchSize.width + 10)
+                                .frame(width: vm.closedNotchSize.width)
 
-                            HStack {
+                            HStack(spacing: 5) {
+                                if isHovering {
+                                    Text("\(Int(batteryModel.levelBattery))%")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.white.opacity(0.75))
+                                        .transition(.opacity.combined(with: .offset(x: 4)))
+                                }
                                 BoringBatteryView(
-                                    batteryWidth: 30,
+                                    batteryWidth: 26,
                                     isCharging: batteryModel.isCharging,
                                     isInLowPowerMode: batteryModel.isInLowPowerMode,
                                     isPluggedIn: batteryModel.isPluggedIn,
@@ -402,9 +461,12 @@ struct ContentView: View {
                                     isForNotification: true
                                 )
                             }
-                            .frame(width: 76, alignment: .trailing)
+                            .padding(.trailing, 4)
+                            .frame(width: batteryWing, height: earHeight, alignment: .trailing)
+                            .clipped()
                         }
-                        .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
+                        .frame(height: earHeight, alignment: .center)
+                        .animation(.spring(response: 0.36, dampingFraction: 0.88), value: isHovering)
                       } else if coordinator.expandingView.type == .updateReady && coordinator.expandingView.show
                                     && vm.notchState == .closed {
                           UpdateReadyClosedView(
@@ -425,7 +487,15 @@ struct ContentView: View {
                       } else if shouldShowListeningModeLiveActivity {
                           ListeningModeClosedNotchView(
                               closedHeight: vm.effectiveClosedNotchHeight,
-                              centerSpacerWidth: vm.closedNotchSize.width
+                              centerSpacerWidth: vm.closedNotchSize.width,
+                              isHovered: isHovering
+                          )
+                          .transition(.opacity)
+                      } else if shouldShowSystemNotificationLiveActivity {
+                          SystemNotificationClosedNotchView(
+                              closedHeight: vm.effectiveClosedNotchHeight,
+                              centerSpacerWidth: vm.closedNotchSize.width,
+                              isHovered: isHovering
                           )
                           .transition(.opacity)
                       } else if shouldShowTimerLiveActivity {
@@ -606,6 +676,17 @@ struct ContentView: View {
                     width: max(0, vm.effectiveClosedNotchHeight - 12),
                     height: max(0, vm.effectiveClosedNotchHeight - 12)
                 )
+                .overlay(alignment: .bottomTrailing) {
+                    if showFocusLiveActivity, let focus = systemNotificationMonitor.activeFocus {
+                        Image(systemName: focus.symbol)
+                            .font(.system(size: 7.5, weight: .bold))
+                            .foregroundStyle(focus.tint)
+                            .frame(width: 12, height: 12)
+                            .background(Circle().fill(Color.black.opacity(0.88)))
+                            .offset(x: 2, y: 2)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
 
             Rectangle()
                 .fill(.black)
@@ -764,7 +845,12 @@ struct ContentView: View {
                 isHovering = true
             }
 
-            if shouldShowBluetoothLiveActivity {
+            let isShowingCompactBanner = shouldShowBluetoothLiveActivity
+                || shouldShowListeningModeLiveActivity
+                || shouldShowSystemNotificationLiveActivity
+                || shouldShowBatteryNotification
+
+            if isShowingCompactBanner {
                 coordinator.setExpandingViewHover(true, screenUUID: hoverKey)
             }
             
@@ -777,7 +863,7 @@ struct ContentView: View {
                 && Date().timeIntervalSince(coordinator.sneakPeekShownAt) < 0.4
             guard vm.notchState == .closed,
                   !hoverCausedBySneakPeek,
-                  !shouldShowBluetoothLiveActivity,
+                  !isShowingCompactBanner,
                   !shouldShowTimerLiveActivity,
                   Defaults[.openNotchOnHover] else { return }
             
@@ -789,6 +875,9 @@ struct ContentView: View {
                     guard self.vm.notchState == .closed,
                           self.isHovering,
                           !self.shouldShowBluetoothLiveActivity,
+                          !self.shouldShowListeningModeLiveActivity,
+                          !self.shouldShowSystemNotificationLiveActivity,
+                          !self.shouldShowBatteryNotification,
                           !self.shouldShowTimerLiveActivity else { return }
                     
                     self.openForUser()
