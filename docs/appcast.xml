@@ -6,6 +6,16 @@
         <description>Latest releases of GravityNotch for macOS.</description>
         <language>en</language>
         <item>
+            <title>GravityNotch 1.6.0</title>
+            <link>https://github.com/adrielakak/GravityNotch/releases/tag/gravitynotch-v1.6.0</link>
+            <sparkle:version>294</sparkle:version>
+            <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+            <sparkle:releaseNotesLink>https://github.com/adrielakak/GravityNotch/releases/tag/gravitynotch-v1.6.0</sparkle:releaseNotesLink>
+            <pubDate>Thu, 26 Nov 2026 05:10:17 GMT</pubDate>
+            <enclosure url="https://github.com/adrielakak/GravityNotch/releases/download/gravitynotch-v1.6.0/GravityNotch.dmg" length="10507698" type="application/octet-stream" sparkle:edSignature="pYdo4gsinqw8ClY7VKpxS1soB3ukHY8ktO4UWQvraZebs2euwxJ5AfyhEmzeeO6S5MbJ5WXvaV9JabnLyN/oAg==" />
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+        </item>
+        <item>
             <title>GravityNotch 1.5.0</title>
             <link>https://github.com/adrielakak/GravityNotch/releases/tag/gravitynotch-v1.5.0</link>
             <sparkle:version>293</sparkle:version>
