@@ -6769,6 +6769,62 @@ final class AntigravityAgentMonitor: ObservableObject {
         return parent.isEmpty || parent == "/" ? URL(fileURLWithPath: path).lastPathComponent : parent
     }
 
+    private nonisolated static func isWorkspaceContainerFolder(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return name == "/"
+            || name == "Users"
+            || name == "Desktop"
+            || name == "Documents"
+            || name == "Downloads"
+            || lower == "projects"
+            || lower == "repos"
+            || lower == "code"
+            || lower == "dev"
+            || name.contains("Développement")
+            || name.contains("Projets")
+    }
+
+    /// Resolves a file or subdirectory path (such as `.../website/backend`) up to its enclosing workspace
+    /// root (`.../website`), so `cd backend` inside Claude Code or Codex keeps the real project name & root.
+    private nonisolated static func inferProjectRootPath(fromPath path: String, home: String) -> String? {
+        guard !path.isEmpty, !path.contains("/.gemini/"), !path.contains("/.claude/") else { return nil }
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL
+        var isDir: ObjCBool = false
+        let startURL: URL = (FileManager.default.fileExists(atPath: standardized.path, isDirectory: &isDir) && isDir.boolValue)
+            ? standardized
+            : standardized.deletingLastPathComponent()
+
+        // 1. Outermost `.git` ancestor below container folders (handles monorepos like `website/backend`).
+        var cursor = startURL
+        var outermostGitRoot: String? = nil
+        for _ in 0..<10 {
+            let p = cursor.path
+            let name = cursor.lastPathComponent
+            if p.isEmpty || p == "/" || p == home || isWorkspaceContainerFolder(name) { break }
+            if FileManager.default.fileExists(atPath: cursor.appendingPathComponent(".git").path) {
+                outermostGitRoot = p
+            }
+            cursor.deleteLastPathComponent()
+        }
+        if let outermostGitRoot {
+            return outermostGitRoot
+        }
+
+        // 2. Direct child of the deepest workspace container (`Développement`, `Projets & Intérêts`, `Desktop`, etc.).
+        let components = startURL.pathComponents
+        if let idx = components.lastIndex(where: { isWorkspaceContainerFolder($0) && $0 != "/" && $0 != "Users" }),
+           idx + 1 < components.count {
+            if let rootURL = NSURL.fileURL(withPathComponents: Array(components.prefix(idx + 2))) {
+                var rootIsDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &rootIsDir), rootIsDir.boolValue {
+                    return rootURL.path
+                }
+            }
+        }
+
+        return startURL.path
+    }
+
     private nonisolated static func parseAntigravitySessions(
         home: String,
         now: Date,
@@ -6820,7 +6876,8 @@ final class AntigravityAgentMonitor: ObservableObject {
             if let cached = cache[key],
                cached.modDate == candidate.modDate,
                cached.fileSize == candidate.fileSize,
-               (meta?.title.isEmpty ?? true) || cached.snapshot.sessionTitle == meta?.title {
+               ((meta?.title.isEmpty ?? true) || cached.snapshot.sessionTitle == meta?.title),
+               (meta?.workspacePath == nil || cached.snapshot.projectPath == meta?.workspacePath) {
                 entries.append(cached)
                 continue
             }
@@ -6847,7 +6904,7 @@ final class AntigravityAgentMonitor: ObservableObject {
             var latestPhase: AgentWorkPhase = .waiting
             var latestFile: String? = nil
             var inferredProject = meta?.workspaceName ?? "Antigravity"
-            let inferredProjectPath = meta?.workspacePath
+            var inferredProjectPath = meta?.workspacePath
             var events: [AgentToolEvent] = []
             var lastStepDate: Date = candidate.modDate
             var firstEventDate: Date? = nil
@@ -6944,6 +7001,10 @@ final class AntigravityAgentMonitor: ObservableObject {
                             let proj = inferProjectName(fromPath: clean)
                             if !proj.isEmpty && proj != "/" && (inferredProject == "Antigravity" || isWorkspacePath) {
                                 inferredProject = proj
+                            }
+                            if inferredProjectPath == nil,
+                               let rootPath = inferProjectRootPath(fromPath: clean, home: home) {
+                                inferredProjectPath = rootPath
                             }
                         }
 
@@ -7456,8 +7517,9 @@ final class AntigravityAgentMonitor: ObservableObject {
                     let rowType = (obj["type"] as? String) ?? ""
                     let parsedTimestamp = dateParser.parse(obj["timestamp"] as? String)
                     if !isSubagent, let cwd = obj["cwd"] as? String, !cwd.isEmpty {
-                        projectName = URL(fileURLWithPath: cwd).lastPathComponent
-                        projectPath = cwd
+                        let root = inferProjectRootPath(fromPath: cwd, home: home) ?? cwd
+                        projectName = URL(fileURLWithPath: root).lastPathComponent
+                        projectPath = root
                     }
 
                     if !isSubagent && rowType == "ai-title", let title = obj["aiTitle"] as? String, !title.isEmpty {
@@ -7879,8 +7941,9 @@ final class AntigravityAgentMonitor: ObservableObject {
 
                 let payload = obj["payload"] as? [String: Any]
                 if rowType == "session_meta", let cwd = payload?["cwd"] as? String, !cwd.isEmpty {
-                    projectName = URL(fileURLWithPath: cwd).lastPathComponent
-                    projectPath = cwd
+                    let root = inferProjectRootPath(fromPath: cwd, home: home) ?? cwd
+                    projectName = URL(fileURLWithPath: root).lastPathComponent
+                    projectPath = root
                 } else if rowType == "event_msg", let payload {
                     let pType = (payload["type"] as? String) ?? ""
                     if pType == "task_started" {
@@ -8539,32 +8602,44 @@ private struct AgentTimelineColumn: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                AgentPixelMascot(
+            Button {
+                AgentHostAppLauncher.open(
                     kind: session.kind,
-                    isWorking: session.isWorkingNow,
-                    isActive: session.isActive,
-                    pixel: 2
+                    projectPath: session.projectPath,
+                    projectName: session.projectName,
+                    sessionTitle: session.sessionTitle,
+                    sessionID: session.id
                 )
+            } label: {
+                HStack(spacing: 8) {
+                    AgentPixelMascot(
+                        kind: session.kind,
+                        isWorking: session.isWorkingNow,
+                        isActive: session.isActive,
+                        pixel: 2
+                    )
 
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(session.kind.shortLabel)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                        if let model = session.modelName {
-                            Text(model)
-                                .font(.system(size: 10.5, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.38))
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(session.kind.shortLabel)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.white)
+                            if let model = session.modelName {
+                                Text(model)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.38))
+                            }
                         }
-                    }
-                    .lineLimit(1)
-                    Text(subtitle)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.42))
                         .lineLimit(1)
+                        Text(subtitle)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.42))
+                            .lineLimit(1)
+                    }
                 }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
             if session.recentEvents.isEmpty {
                 Text("Waiting for agent tool calls…")
@@ -13277,6 +13352,7 @@ struct AgentSpeechBubble: Identifiable, Equatable {
     let message: String
     let detail: String
     let projectPath: String?
+    let sessionTitle: String
     let sessionID: String?
 }
 
@@ -13329,12 +13405,26 @@ final class AgentSpeechBubbleController: ObservableObject {
                     continue
                 }
             }
-            show(kind: session.kind, reason: reason, detail: session.projectName, projectPath: session.projectPath, sessionID: session.id)
+            show(
+                kind: session.kind,
+                reason: reason,
+                detail: session.projectName,
+                projectPath: session.projectPath,
+                sessionTitle: session.sessionTitle,
+                sessionID: session.id
+            )
             return
         }
     }
 
-    func show(kind: AgentKind, reason: AgentSpeechBubble.Reason, detail: String, projectPath: String? = nil, sessionID: String? = nil) {
+    func show(
+        kind: AgentKind,
+        reason: AgentSpeechBubble.Reason,
+        detail: String,
+        projectPath: String? = nil,
+        sessionTitle: String = "",
+        sessionID: String? = nil
+    ) {
         guard openNotches.allObjects.isEmpty else { return }
         let message: String
         switch reason {
@@ -13380,7 +13470,15 @@ final class AgentSpeechBubbleController: ObservableObject {
         panel.orderFrontRegardless()
 
         withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
-            bubble = AgentSpeechBubble(kind: kind, reason: reason, message: message, detail: detail, projectPath: projectPath, sessionID: sessionID)
+            bubble = AgentSpeechBubble(
+                kind: kind,
+                reason: reason,
+                message: message,
+                detail: detail,
+                projectPath: projectPath,
+                sessionTitle: sessionTitle,
+                sessionID: sessionID
+            )
         }
 
         dismissTask?.cancel()
@@ -13407,19 +13505,50 @@ final class AgentSpeechBubbleController: ObservableObject {
     }
 }
 
-/// Brings forward the app an agent runs in. The agent process is traced up its parents to the first one
-/// living inside an .app bundle: the editor or terminal hosting it (Antigravity, VS Code, Cursor, Terminal…).
+/// Brings forward the exact existing app AND project window an agent runs in, without ever opening a new
+/// IDE window on a subfolder (such as `backend/`). Raises the matching `AXWindow` immediately (matching
+/// both the target path and ancestor workspace folders), and only uses a folder URL for cross-Space focus
+/// when that exact workspace root is confirmed to be already open in the IDE's `storage.json`.
 enum AgentHostAppLauncher {
-    static func open(kind: AgentKind, projectPath: String?, sessionID: String? = nil) {
+    private static let ideStorageFolderByBundleID: [String: String] = [
+        "com.google.antigravity-ide": "Antigravity IDE",
+        "com.microsoft.vscode": "Code",
+        "com.microsoft.vscodeinsiders": "Code - Insiders",
+        "com.todesktop.230313mzl4w4u92": "Cursor",
+        "com.exafunction.windsurf": "Windsurf",
+        "com.codeium.windsurf": "Windsurf"
+    ]
+
+    static func open(
+        kind: AgentKind,
+        projectPath: String?,
+        projectName: String? = nil,
+        sessionTitle: String? = nil,
+        sessionID: String? = nil
+    ) {
         Task.detached(priority: .userInitiated) {
             let bundlePath = kind == .antigravity
                 ? antigravityHostBundlePath(sessionID: sessionID)
                 : hostBundlePath(kind: kind, projectPath: projectPath)
-            await MainActor.run { activate(bundlePath: bundlePath, kind: kind) }
+            await MainActor.run {
+                activate(
+                    bundlePath: bundlePath,
+                    kind: kind,
+                    projectPath: projectPath,
+                    projectName: projectName,
+                    sessionTitle: sessionTitle
+                )
+            }
         }
     }
 
-    @MainActor private static func activate(bundlePath: String?, kind: AgentKind) {
+    @MainActor private static func activate(
+        bundlePath: String?,
+        kind: AgentKind,
+        projectPath: String?,
+        projectName: String?,
+        sessionTitle: String?
+    ) {
         let url: URL?
         if let bundlePath {
             url = URL(fileURLWithPath: bundlePath)
@@ -13429,11 +13558,282 @@ enum AgentHostAppLauncher {
             url = nil
         }
         guard let url else { return }
-        // LaunchServices activates a running app too, and unlike NSRunningApplication.activate() it is not
-        // refused for a caller that is not frontmost (the bubble panel never activates GravityNotch)
+
+        let standardizedPath: String? = projectPath.flatMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        }
+
+        let bundleID = Bundle(url: url)?.bundleIdentifier ?? ""
+        let lowerBundleID = bundleID.lowercased()
+        let runningApp: NSRunningApplication? = {
+            if !bundleID.isEmpty,
+               let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+                return app
+            }
+            let stdAppURL = url.standardizedFileURL
+            return NSWorkspace.shared.runningApplications.first {
+                $0.bundleURL?.standardizedFileURL == stdAppURL
+            }
+        }()
+
+        // 1. Raise the matching existing window immediately via Accessibility. If the host app is already
+        // frontmost and the window was found on the current Space, stop right here so we never trigger
+        // any folder-open event that could spawn a duplicate or subfolder window.
+        let raisedImmediately = runningApp.map {
+            raiseMatchingAXWindow(
+                in: $0,
+                projectPath: standardizedPath,
+                projectName: projectName,
+                sessionTitle: sessionTitle
+            )
+        } ?? false
+
+        if let runningApp, runningApp.isActive, raisedImmediately {
+            return
+        }
+
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+
+        // 2. Only if AX could not find the window on the current Space (e.g. the window lives on another
+        // macOS Space / fullscreen desktop), check the IDE's live `openedWindows` list in `storage.json`.
+        // Pass ONLY a confirmed already-open workspace root URL, never an unverified subfolder like `backend/`.
+        if !raisedImmediately,
+           let standardizedPath,
+           let openRootPath = alreadyOpenIDEWorkspaceRoot(bundleID: lowerBundleID, targetPath: standardizedPath) {
+            let folderURL = URL(fileURLWithPath: openRootPath, isDirectory: true)
+            NSWorkspace.shared.open([folderURL], withApplicationAt: url, configuration: configuration) { app, _ in
+                Task { @MainActor in
+                    if let targetApp = app ?? runningApp {
+                        _ = raiseMatchingAXWindow(
+                            in: targetApp,
+                            projectPath: openRootPath,
+                            projectName: URL(fileURLWithPath: openRootPath).lastPathComponent,
+                            sessionTitle: sessionTitle
+                        )
+                    }
+                }
+            }
+            return
+        }
+
+        // 3. Default safe activation: bring the host application forward without opening any new folder/window,
+        // then raise the matching AXWindow once LaunchServices finishes activating the app.
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, _ in
+            Task { @MainActor in
+                if let targetApp = app ?? runningApp {
+                    _ = raiseMatchingAXWindow(
+                        in: targetApp,
+                        projectPath: standardizedPath,
+                        projectName: projectName,
+                        sessionTitle: sessionTitle
+                    )
+                }
+            }
+        }
+    }
+
+    /// Returns the exact root path of an ALREADY-OPEN workspace window in VS Code / Antigravity IDE / Cursor /
+    /// Windsurf that equals or encloses `targetPath`, or `nil` if no open window matches.
+    private static func alreadyOpenIDEWorkspaceRoot(bundleID: String, targetPath: String) -> String? {
+        guard let appSupportSubdir = ideStorageFolderByBundleID[bundleID] else { return nil }
+        let storageURL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support")
+            .appendingPathComponent(appSupportSubdir)
+            .appendingPathComponent("User/globalStorage/storage.json")
+        guard let data = try? Data(contentsOf: storageURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let windowsState = json["windowsState"] as? [String: Any] else { return nil }
+
+        var openFolderURIs: [String] = []
+        if let opened = windowsState["openedWindows"] as? [[String: Any]] {
+            for win in opened {
+                if let folder = win["folder"] as? String, !folder.isEmpty {
+                    openFolderURIs.append(folder)
+                }
+            }
+        }
+        if let lastActive = windowsState["lastActiveWindow"] as? [String: Any],
+           let folder = lastActive["folder"] as? String, !folder.isEmpty {
+            openFolderURIs.append(folder)
+        }
+
+        var bestMatch: String? = nil
+        for uri in openFolderURIs {
+            guard let url = URL(string: uri), url.isFileURL else { continue }
+            let openPath = url.standardizedFileURL.path
+            guard !openPath.isEmpty, openPath != "/" else { continue }
+            if targetPath == openPath || targetPath.hasPrefix(openPath + "/") {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: openPath, isDirectory: &isDir), isDir.boolValue {
+                    // Prefer the deepest enclosing open workspace if nested workspaces are open
+                    if bestMatch == nil || openPath.count > bestMatch!.count {
+                        bestMatch = openPath
+                    }
+                }
+            }
+        }
+        return bestMatch
+    }
+
+    @MainActor @discardableResult
+    private static func raiseMatchingAXWindow(
+        in app: NSRunningApplication,
+        projectPath: String?,
+        projectName: String?,
+        sessionTitle: String?
+    ) -> Bool {
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var rawWindows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &rawWindows) == .success,
+              let windows = rawWindows as? [AXUIElement],
+              !windows.isEmpty else { return false }
+
+        // Build candidate folder tokens from deepest to ancestor workspace root (e.g. ["backend", "website"])
+        // so an agent running inside `website/backend` still matches the open `website` IDE window.
+        var candidateTokens: [String] = []
+        let ignoredTokens: Set<String> = [
+            "/", "Users", "Desktop", "Documents", "Downloads",
+            "Antigravity", "Claude", "Claude Code", "Codex"
+        ]
+        if let rawName = projectName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawName.isEmpty, !ignoredTokens.contains(rawName) {
+            candidateTokens.append(rawName)
+        }
+        if let projectPath {
+            let home = NSHomeDirectory()
+            var cursor = URL(fileURLWithPath: projectPath).standardizedFileURL
+            for _ in 0..<6 {
+                let p = cursor.path
+                let name = cursor.lastPathComponent
+                if p.isEmpty || p == "/" || p == home || ignoredTokens.contains(name)
+                    || name.contains("Développement") || name.contains("Projets")
+                    || name.lowercased() == "projects" || name.lowercased() == "repos" {
+                    break
+                }
+                if !candidateTokens.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                    candidateTokens.append(name)
+                }
+                cursor.deleteLastPathComponent()
+            }
+        }
+
+        let cleanTitleToken: String? = {
+            guard let t = sessionTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  t.count >= 4,
+                  !t.hasPrefix("Step #"),
+                  !t.hasPrefix("Étape") else { return nil }
+            return t
+        }()
+
+        guard projectPath != nil || !candidateTokens.isEmpty || cleanTitleToken != nil else { return false }
+
+        var bestWindow: AXUIElement?
+        var bestScore = 0
+        for window in windows {
+            let score = axWindowMatchScore(
+                window,
+                projectPath: projectPath,
+                folderTokens: candidateTokens,
+                sessionTitle: cleanTitleToken
+            )
+            if score > bestScore {
+                bestScore = score
+                bestWindow = window
+            }
+        }
+
+        guard let targetWindow = bestWindow, bestScore >= 70 else { return false }
+
+        var minRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(targetWindow, kAXMinimizedAttribute as CFString, &minRef) == .success,
+           let isMinimized = minRef as? Bool, isMinimized {
+            AXUIElementSetAttributeValue(targetWindow, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        }
+        AXUIElementSetAttributeValue(targetWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(targetWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(targetWindow, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(axApp, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        return true
+    }
+
+    private static func axWindowMatchScore(
+        _ window: AXUIElement,
+        projectPath: String?,
+        folderTokens: [String],
+        sessionTitle: String?
+    ) -> Int {
+        var docRef: CFTypeRef?
+        if let projectPath,
+           AXUIElementCopyAttributeValue(window, kAXDocumentAttribute as CFString, &docRef) == .success,
+           let docStr = docRef as? String, !docStr.isEmpty {
+            let docPath: String? = {
+                if let docURL = URL(string: docStr), docURL.isFileURL {
+                    return docURL.standardizedFileURL.path
+                }
+                return URL(fileURLWithPath: docStr).standardizedFileURL.path
+            }()
+            if let docPath {
+                if docPath == projectPath { return 100 }
+                if docPath.hasPrefix(projectPath + "/") || projectPath.hasPrefix(docPath + "/") { return 98 }
+            }
+        }
+
+        var titleRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+              let rawTitle = titleRef as? String else { return 0 }
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return 0 }
+
+        let titleLower = title.lowercased()
+        let leadingSeparators = [
+            " \u{2014} ", " - ", " \u{00B7} ", " \u{2013} ", ": ", " (", " ["
+        ]
+        let trailingSeparators = [
+            " \u{2014} ", " - ", " \u{00B7} ", " \u{2013} ", "/"
+        ]
+
+        for (depth, token) in folderTokens.enumerated() {
+            let penalty = min(depth * 2, 10)
+            let tokenLower = token.lowercased()
+            if titleLower == tokenLower {
+                return 96 - penalty
+            }
+            for sep in leadingSeparators where titleLower.hasPrefix(tokenLower + sep) {
+                return 92 - penalty
+            }
+            for sep in trailingSeparators where titleLower.hasSuffix(sep + tokenLower) {
+                return 88 - penalty
+            }
+            if containsStandaloneProjectToken(titleLower, token: tokenLower) {
+                return 82 - penalty
+            }
+        }
+
+        if let sessionTitle, titleLower.contains(sessionTitle.lowercased()) {
+            return 75
+        }
+        return 0
+    }
+
+    /// Ensures e.g. "web" or "boring-notch" never falsely matches "webank" or "boring-notch-v2".
+    private static func containsStandaloneProjectToken(_ text: String, token: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        let isIdentifierChar: (Character) -> Bool = { ch in
+            ch.isLetter || ch.isNumber || ch == "-" || ch == "_"
+        }
+        var searchStart = text.startIndex
+        while let range = text.range(of: token, range: searchStart..<text.endIndex) {
+            let leftOK = (range.lowerBound == text.startIndex) || !isIdentifierChar(text[text.index(before: range.lowerBound)])
+            let rightOK = (range.upperBound == text.endIndex) || !isIdentifierChar(text[range.upperBound])
+            if leftOK && rightOK {
+                return true
+            }
+            searchStart = text.index(after: range.lowerBound)
+        }
+        return false
     }
 
     /// Used when no host could be traced
@@ -13531,10 +13931,13 @@ enum AgentHostAppLauncher {
             if kind == .claudeCode ? match.claude : match.codex { agents.append(pid) }
         }
 
-        // Several sessions may run at once: the one started in the bubble's project comes first
+        // Several sessions may run at once: the one started in (or inside a subfolder of) the project comes first
         let target = projectPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
-        let ordered = agents.filter { target != nil && workingDirectory(of: $0) == target }
-            + agents.filter { target == nil || workingDirectory(of: $0) != target }
+        let matchesTarget: (pid_t) -> Bool = { pid in
+            guard let target, let wd = workingDirectory(of: pid) else { return false }
+            return wd == target || wd.hasPrefix(target + "/") || target.hasPrefix(wd + "/")
+        }
+        let ordered = agents.filter(matchesTarget) + agents.filter { !matchesTarget($0) }
 
         for pid in ordered {
             if let bundle = appBundle(above: pid, parents: parents) { return bundle }
@@ -13591,7 +13994,13 @@ private struct AgentSpeechBubbleHost: View {
                     .transition(.scale(scale: 0.4, anchor: .top).combined(with: .opacity))
                     .onTapGesture {
                         setPointingCursor(false)
-                        AgentHostAppLauncher.open(kind: bubble.kind, projectPath: bubble.projectPath, sessionID: bubble.sessionID)
+                        AgentHostAppLauncher.open(
+                            kind: bubble.kind,
+                            projectPath: bubble.projectPath,
+                            projectName: bubble.detail,
+                            sessionTitle: bubble.sessionTitle,
+                            sessionID: bubble.sessionID
+                        )
                         controller.dismiss()
                     }
                     .onHover { inside in
